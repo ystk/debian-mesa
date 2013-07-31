@@ -1,3 +1,16 @@
+mesa (7.7.1-6) oldstable-security; urgency=low
+
+  * CVE-2013-1993
+
+ -- Moritz Muehlenhoff <jmm@debian.org>  Thu, 17 May 2013 01:07:04 +0000
+
+mesa (7.7.1-5) squeeze; urgency=low
+
+  * glx: suppress BadRequest from DRI2Connect (which is expected for non-local
+    clients).
+
+ -- Julien Cristau <jcristau@debian.org>  Sat, 03 Sep 2011 17:12:53 +0200
+
 mesa (7.7.1-4) unstable; urgency=low
 
   [ Brice Goglin ]
