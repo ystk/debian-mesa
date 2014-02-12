@@ -27,7 +27,6 @@
 
 
 #include "main/context.h"
-#include "main/colormac.h"
 #include "st_context.h"
 #include "st_atom.h"
 #include "pipe/p_context.h"
@@ -42,16 +41,20 @@
 static void
 update_viewport( struct st_context *st )
 {
-   GLcontext *ctx = st->ctx;
+   struct gl_context *ctx = st->ctx;
    GLfloat yScale, yBias;
 
    /* _NEW_BUFFERS
     */
    if (st_fb_orientation(ctx->DrawBuffer) == Y_0_TOP) {
+      /* Drawing to a window.  The corresponding gallium surface uses
+       * Y=0=TOP but OpenGL is Y=0=BOTTOM.  So we need to invert the viewport.
+       */
       yScale = -1;
       yBias = (GLfloat)ctx->DrawBuffer->Height;
    }
    else {
+      /* Drawing to an FBO where Y=0=BOTTOM, like OpenGL - don't invert */
       yScale = 1.0;
       yBias = 0.0;
    }
@@ -62,9 +65,9 @@ update_viewport( struct st_context *st )
       GLfloat x = (GLfloat)ctx->Viewport.X;
       GLfloat y = (GLfloat)ctx->Viewport.Y;
       GLfloat z = ctx->Viewport.Near;
-      GLfloat half_width = (GLfloat)ctx->Viewport.Width / 2.0f;
-      GLfloat half_height = (GLfloat)ctx->Viewport.Height / 2.0f;
-      GLfloat half_depth = (GLfloat)(ctx->Viewport.Far - ctx->Viewport.Near) / 2.0f;
+      GLfloat half_width = (GLfloat)ctx->Viewport.Width * 0.5f;
+      GLfloat half_height = (GLfloat)ctx->Viewport.Height * 0.5f;
+      GLfloat half_depth = (GLfloat)(ctx->Viewport.Far - ctx->Viewport.Near) * 0.5f;
       
       st->state.viewport.scale[0] = half_width;
       st->state.viewport.scale[1] = half_height * yScale;

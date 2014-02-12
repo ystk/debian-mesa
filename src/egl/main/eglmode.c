@@ -1,32 +1,47 @@
-#include <stdio.h>
+/**************************************************************************
+ *
+ * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2009-2010 Chia-I Wu <olvaffe@gmail.com>
+ * Copyright 2010 LunarG, Inc.
+ * All Rights Reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sub license, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial portions
+ * of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ *
+ **************************************************************************/
+
+
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "egldisplay.h"
-#include "egldriver.h"
 #include "eglmode.h"
-#include "eglglobals.h"
+#include "eglcurrent.h"
 #include "eglscreen.h"
 
 
+#ifdef EGL_MESA_screen_surface
+
+
 #define MIN2(A, B)  (((A) < (B)) ? (A) : (B))
-
-
-static char *
-my_strdup(const char *s)
-{
-   if (s) {
-      int l = strlen(s);
-      char *s2 = malloc(l + 1);
-      if (s2)
-         strcpy(s2, s);
-      return s2;
-   }
-   else {
-      return NULL;
-   }
-}
 
 
 /**
@@ -38,59 +53,30 @@ _eglLookupMode(EGLModeMESA mode, _EGLDisplay *disp)
 {
    EGLint scrnum;
 
+   if (!disp || !disp->Screens)
+      return NULL;
+
    /* loop over all screens on the display */
-   for (scrnum = 0; scrnum < disp->NumScreens; scrnum++) {
-      const _EGLScreen *scrn = disp->Screens[scrnum];
-      EGLint i;
-      /* search list of modes for handle */
-      for (i = 0; i < scrn->NumModes; i++) {
-         if (scrn->Modes[i].Handle == mode) {
-            return scrn->Modes + i;
-         }
+   for (scrnum = 0; scrnum < disp->Screens->Size; scrnum++) {
+      const _EGLScreen *scrn = disp->Screens->Elements[scrnum];
+      EGLint idx;
+
+      /*
+       * the mode ids of a screen ranges from scrn->Handle to scrn->Handle +
+       * scrn->NumModes
+       */
+      if (mode >= scrn->Handle &&
+          mode < scrn->Handle + _EGL_SCREEN_MAX_MODES) {
+         idx = mode - scrn->Handle;
+
+         assert(idx < scrn->NumModes && scrn->Modes[idx].Handle == mode);
+
+         return &scrn->Modes[idx];
       }
    }
 
    return NULL;
 }
-
-
-/**
- * Add a new mode with the given attributes (width, height, depth, refreshRate)
- * to the given screen.
- * Assign a new mode ID/handle to the mode as well.
- * \return pointer to the new _EGLMode
- */
-_EGLMode *
-_eglAddNewMode(_EGLScreen *screen, EGLint width, EGLint height,
-               EGLint refreshRate, const char *name)
-{
-   EGLint n;
-   _EGLMode *newModes;
-
-   assert(screen);
-   assert(width > 0);
-   assert(height > 0);
-   assert(refreshRate > 0);
-
-   n = screen->NumModes;
-   newModes = (_EGLMode *) realloc(screen->Modes, (n+1) * sizeof(_EGLMode));
-   if (newModes) {
-      screen->Modes = newModes;
-      screen->Modes[n].Handle = n + 1;
-      screen->Modes[n].Width = width;
-      screen->Modes[n].Height = height;
-      screen->Modes[n].RefreshRate = refreshRate;
-      screen->Modes[n].Optimal = EGL_FALSE;
-      screen->Modes[n].Interlaced = EGL_FALSE;
-      screen->Modes[n].Name = my_strdup(name);
-      screen->NumModes++;
-      return screen->Modes + n;
-   }
-   else {
-      return NULL;
-   }
-}
-
 
 
 /**
@@ -368,39 +354,4 @@ _eglQueryModeStringMESA(_EGLDriver *drv, _EGLDisplay *dpy, _EGLMode *m)
 }
 
 
-#if 0
-static int
-_eglRand(int max)
-{
-   return rand() % max;
-}
-
-void
-_eglTestModeModule(void)
-{
-   EGLint count = 30;
-   _EGLMode *modes = (_EGLMode *) malloc(count * sizeof(_EGLMode));
-   _EGLMode **modeList = (_EGLMode **) malloc(count * sizeof(_EGLMode*));
-   EGLint i;
-
-   for (i = 0; i < count; i++) {
-      modes[i].Handle = _eglRand(20);
-      modes[i].Width = 512 + 256 * _eglRand(2);
-      modes[i].Height = 512 + 256 * _eglRand(2);
-      modes[i].RefreshRate = 50 + 5 * _eglRand(3);
-      modes[i].Interlaced = _eglRand(2);
-      modes[i].Optimal = _eglRand(4) == 0;
-      modeList[i] = modes + i;
-   }
-
-   /* sort array of pointers */
-   qsort(modeList, count, sizeof(_EGLMode *), compareModes);
-
-   for (i = 0; i < count; i++) {
-      _EGLMode *m = modeList[i];
-      printf("%2d: %3d  %4d x %4d  @ %3d  opt %d  int %d\n", i,
-             m->Handle, m->Width, m->Height, m->RefreshRate,
-             m->Optimal, m->Interlaced);
-   }
-}
-#endif
+#endif /* EGL_MESA_screen_surface */

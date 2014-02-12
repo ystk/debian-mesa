@@ -103,13 +103,13 @@ pb_ondemand_buffer_destroy(struct pb_buffer *_buf)
 
 static void *
 pb_ondemand_buffer_map(struct pb_buffer *_buf, 
-                       unsigned flags)
+                       unsigned flags, void *flush_ctx)
 {
    struct pb_ondemand_buffer *buf = pb_ondemand_buffer(_buf);
 
    if(buf->buffer) {
       assert(!buf->data);
-      return pb_map(buf->buffer, flags);
+      return pb_map(buf->buffer, flags, flush_ctx);
    }
    else {
       assert(buf->data);
@@ -150,7 +150,7 @@ pb_ondemand_buffer_instantiate(struct pb_ondemand_buffer *buf)
       if(!buf->buffer)
          return PIPE_ERROR_OUT_OF_MEMORY;
       
-      map = pb_map(buf->buffer, PIPE_BUFFER_USAGE_CPU_READ);
+      map = pb_map(buf->buffer, PB_USAGE_CPU_READ, NULL);
       if(!map) {
          pb_reference(&buf->buffer, NULL);
          return PIPE_ERROR;
@@ -244,10 +244,10 @@ pb_ondemand_manager_create_buffer(struct pb_manager *_mgr,
    if(!buf)
       return NULL;
 
-   pipe_reference_init(&buf->base.base.reference, 1);
-   buf->base.base.alignment = desc->alignment;
-   buf->base.base.usage = desc->usage;
-   buf->base.base.size = size;
+   pipe_reference_init(&buf->base.reference, 1);
+   buf->base.alignment = desc->alignment;
+   buf->base.usage = desc->usage;
+   buf->base.size = size;
    buf->base.vtbl = &pb_ondemand_buffer_vtbl;
    
    buf->mgr = mgr;

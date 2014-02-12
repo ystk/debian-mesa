@@ -1,20 +1,725 @@
-mesa (7.7.1-4) unstable; urgency=low
+mesa (8.0.5-4+deb7u2) wheezy-security; urgency=high
 
-  [ Brice Goglin ]
-  * Add 07_fix_i915_dri1.patch to fix X server crash when starting Compiz
-    on i8xx when using legacy UMS/DRI1.
+  * Memory corruption (OOB read/write) on intel drivers [CVE-2013-1872]
+
+ -- Julien Cristau <jcristau@debian.org>  Wed, 05 Jun 2013 16:44:36 +0200
+
+mesa (8.0.5-4+deb7u1) wheezy-security; urgency=high
+
+  * integer overflows calculating memory needs for replies [CVE-2013-1993]
+
+ -- Julien Cristau <jcristau@debian.org>  Wed, 15 May 2013 21:18:58 +0200
+
+mesa (8.0.5-4) unstable; urgency=low
+
+  * Cherry-pick commit 17f1cb1d99 (dri/nouveau: fix crash in
+    nouveau_flush) from upstream master branch.
+
+ -- Sven Joachim <svenjoac@gmx.de>  Wed, 13 Mar 2013 17:52:18 +0100
+
+mesa (8.0.5-3) unstable; urgency=high
+
+  * mesa: add bounds checking for uniform array access (CVE-2012-5129).
+
+ -- Julien Cristau <jcristau@debian.org>  Thu, 06 Dec 2012 10:20:40 +0100
+
+mesa (8.0.5-2) unstable; urgency=low
+
+  * Fix regression in 8.0.5 (spurious GL_INVALID_ENUM errors):
+    mesa: test for GL_EXT_framebuffer_sRGB in glPopAttrib().
+    Thanks to Simon Chopin for the report.
+
+ -- Julien Cristau <jcristau@debian.org>  Wed, 28 Nov 2012 22:09:14 +0100
+
+mesa (8.0.5-1) unstable; urgency=low
+
+  * New upstream stable release
+  * Pull a couple more fixes from upstream's 8.0 branch, including:
+    - nvfx: handle some unknown PIPE_CAPs (closes: 674965)
+  * Install drirc in libgl1-mesa-dri package with some settings for i965
+    (closes: #671747).
+
+ -- Julien Cristau <jcristau@debian.org>  Sun, 04 Nov 2012 16:55:17 +0100
+
+mesa (8.0.4-2) unstable; urgency=high
+
+  * Use xz for all binary packages not just *-dbg.
+  * glsl/linker: Avoid buffer over-run in
+    parcel_out_uniform_storage::visit_field (CVE-2012-2864; closes: #685667).
+
+ -- Julien Cristau <jcristau@debian.org>  Fri, 24 Aug 2012 00:09:47 +0200
+
+mesa (8.0.4-1) unstable; urgency=low
+
+  [ Sven Joachim ]
+  * New upstream stable release (Closes: #682703).
+  * Cherry-pick commit fbf86c7f0f (i965/gen7: Reduce GT1 WM thread count
+    according to updated BSpec.) from upstream.
+
+ -- Cyril Brulebois <kibi@debian.org>  Sun, 29 Jul 2012 13:17:06 +0200
+
+mesa (8.0.3-1) unstable; urgency=low
+
+  [ Robert Hooker ]
+  * New upstream stable release (Closes: #673532)
+  * Refresh patches.
+
+ -- Cyril Brulebois <kibi@debian.org>  Wed, 13 Jun 2012 14:58:54 +0200
+
+mesa (8.0.2-2) unstable; urgency=low
+
+  * Upload to unstable.
+
+ -- Cyril Brulebois <kibi@debian.org>  Tue, 01 May 2012 21:42:35 +0200
+
+mesa (8.0.2-1) experimental; urgency=low
+
+  [ Timo Aaltonen ]
+  * New upstream bugfix release. (LP: #926379)
+  * control: libegl1-mesa-dev should depend on -drivers so that the
+    symlinks work.
+
+  [ Robert Hooker ]
+  * Add libudev-dev to libgbm-dev dependencies.
+
+ -- Cyril Brulebois <kibi@debian.org>  Sun, 29 Apr 2012 15:51:10 +0200
+
+mesa (8.0-2) experimental; urgency=low
+
+  [ Julien Cristau ]
+  * Only build the radeon, r200, i915 and i965 dri drivers on Linux.  They
+    require KMS.
 
   [ Cyril Brulebois ]
-  * Add myself to Uploaders.
+  * Fix FTBFS on GNU/kFreeBSD with libgl1-mesa-dri.install.kfreebsd.in:
+    there's no *_dri.so file left in the top directory, only swrast is
+    built and shipped under gallium/. So mention it explicitly, in the
+    same way as it is done in the libgl1-mesa-dri.install.linux.in file.
+  * Enable wayland support again, but only on Linux. Wayland needs some
+    porting (it uses *CLOEXEC flags and epoll). For that, add those files
+    since EGL packages are also shipped on GNU/kFreeBSD, and we need to
+    add a few files for Wayland, but only for Linux:
+    - libegl1-mesa-dev.install.linux.in
+    - libegl1-mesa-drivers.install.linux.in
+  * Limit the wl_drm_interface symbol to arch=linux-any accordingly,
+    and bump the version.
+  * Limit the build-dependency on libwayland-dev to linux-any too, and
+    bump it.
+  * Automatically revert changes to bin/{config.{guess,sub},install-sh} in
+    the clean target. The first two are modified, the last one needs to be
+    turned back into a symlink.
 
- -- Cyril Brulebois <kibi@debian.org>  Thu, 15 Jul 2010 13:54:53 +0200
+ -- Cyril Brulebois <kibi@debian.org>  Tue, 14 Feb 2012 16:18:14 +0100
 
-mesa (7.7.1-3) unstable; urgency=medium
+mesa (8.0-1) experimental; urgency=low
 
-  * Pull from mesa_7_7_branch to get the fix for a regression introduced in
-    7.7.1-2 (closes: #584163)
+  [ Cyril Brulebois ]
+  * New upstream release.
+  * Disable patch temporarily (needs a refresh):
+    - 11-hurd-ftbfs-again.diff
+  * Drop patch, no longer needed since swrastg was renamed to swrast:
+    - 14-load-swrastg-before-swrast.diff
+  * Update rules file to strop building DRI1 drivers, they went away
+    with the following upstream commit:
+    - dri: Remove all DRI1 drivers (e4344161bd).
+  * Update not-installed for removed files.
+  * Stop trying to ship swrastg through libgl1-mesa-dri-experimental,
+    it replaced the non-gallium variant.
 
- -- Julien Cristau <jcristau@debian.org>  Thu, 03 Jun 2010 17:52:40 +0200
+  [ Timo Aaltonen ]
+  * Refresh patches.
+  * control: Add libxcb-glx0-dev to build-depends.
+  * control: Drop libglw1-mesa, libglw1-mesa-dev, glw got moved to a
+    separate source package.
+  * libegl-mesa.symbols, libgles2-mesa.symbols: Add new symbols.
+  * rules: Drop obsolete configure options.
+  * Enable vmwgfx gallium driver & xatracker. (Closes: #652501).
+  * Build llvmpipe swrast only on non-hurd x86, traditional for the
+    rest.
+  * rules: No need to copy nouveau_vieux to the gallium dir, it's
+    installed in libgl1-mesa-dri now.
+  * rules: Handle installing r300_dri.so like other gallium drivers,
+    in libgl1-mesa-dri.install.linux.in.
+
+  [ Robert Hooker ]
+  * Bump libdrm build dep to 2.4.30, x11proto-gl-dev to 1.4.14, and
+    x11proto-dri2-dev to 2.6.
+  * Add libxatracker packaging.
+  * Add libxcb-glx0-dev to libegl1-mesa-dev depends.
+
+  [ Christopher James Halse Rogers ]
+  * debian/control: Add libx11-xcb-dev to libegl1-mesa-dev depends.
+
+ -- Cyril Brulebois <kibi@debian.org>  Fri, 10 Feb 2012 14:02:04 +0100
+
+mesa (7.11.2-1) unstable; urgency=low
+
+  * New upstream release:
+    - Fix a few intel bugs.
+
+ -- Cyril Brulebois <kibi@debian.org>  Sun, 11 Dec 2011 15:43:40 +0100
+
+mesa (7.11.1-1) unstable; urgency=low
+
+  [ Sven Joachim ]
+  * New upstream release.
+  * Move the Nouveau drivers to the libgl1-mesa-dri package
+    (Closes: #645239).
+  * Install the swrastg driver in the libgl1-mesa-dri-experimental package
+    (Closes: #605444).
+    - New patch 14-load-swrastg-before-swrast.diff to prefer swrastg over
+      swrast.
+    - Build-depend on llvm-2.9-dev also on kfreebsd-{amd64,i386}.
+
+ -- Cyril Brulebois <kibi@debian.org>  Sun, 27 Nov 2011 18:54:24 +0100
+
+mesa (7.11-6) unstable; urgency=low
+
+  [ Julien Cristau ]
+  * Inline what's left of debian/scripts/choose-configs in debian/rules.
+  * Enable texture-float for dri (closes: #635651).
+  * Update from upstream's 7.11 branch (commit e7794048)
+  * Merge changes from 7.10.3-4, including:
+    - Fix comments in libegl1-mesa.symbols to avoid impending FTBFS with the
+      upcoming dpkg-dev 1.16.1 (closes: #642690)
+
+  [ Cyril Brulebois ]
+  * Document the symlink dance in README.source.
+
+ -- Cyril Brulebois <kibi@debian.org>  Sat, 24 Sep 2011 20:32:55 +0200
+
+mesa (7.11-5) unstable; urgency=low
+
+  * Merge patch from Pino Tiscano (thanks!):
+    - Use hurd-any instead of: hurd-i386 (“wildcard archs are free”).
+    - Use any-i386 instead of: i386 kfreebsd-i386 hurd-i386.
+    - Rewrite a check in debian/rules to follow the same logic.
+    - Switch libgbm1-dbg to arch: linux-any. This fixes uninstallability
+      on kfreebsd-* by getting rid of this package there.
+    - Switch libglapi-mesa{,-dbg} arch: any. This fixes the FTBFS on
+      hurd-i386^Wany.
+
+ -- Cyril Brulebois <kibi@debian.org>  Sun, 28 Aug 2011 19:07:48 +0200
+
+mesa (7.11-4) unstable; urgency=low
+
+  * Use xz compression for dbg packages.
+  * Simplify dh_strip calls a bit using make variables.
+  * libgbm-dev is also linux-only, not just libgbm1.
+
+ -- Julien Cristau <jcristau@debian.org>  Sat, 27 Aug 2011 12:02:42 +0200
+
+mesa (7.11-3) unstable; urgency=low
+
+  * Don't build libgbm on kfreebsd, it needs KMS/udev.
+  * Build/ship r300g on all Linux architectures, not just x86.
+
+ -- Julien Cristau <jcristau@debian.org>  Fri, 26 Aug 2011 11:04:45 +0200
+
+mesa (7.11-2) unstable; urgency=low
+
+  * Work around the lack of O_CLOEXEC on kfreebsd, fix FTBFS.
+  * Don't crash on BadRequest from DRI2Connect, just fall back to sw or
+    indirect.
+
+ -- Julien Cristau <jcristau@debian.org>  Thu, 25 Aug 2011 23:13:35 +0200
+
+mesa (7.11-1) unstable; urgency=low
+
+  [ Christopher James Halse Rogers ]
+  * New upstream release.
+    - Fix regression from 7.10, missing characters in text display with
+      intel drivers (Closes: #631516). Thanks to Martin Steigerwald for
+      the report and the tests.
+  * Temporarily disable Wayland EGL backend as it requires a newer
+    libwayland-dev
+  * Update rules for configure changes
+  * debian/lib{egl1,openvg1}-mesa.install.in:
+  * debian/libegl1-mesa-drivers.install.in:
+    - Stop trying to install st_{GL,OpenVG} and pipe_*
+      as they are all now built in to egl_gallium.so
+  * Add libgbm{1,1-dbg,-dev} packages for the new buffer-manager library.
+  * Drop 12-llvm-config-check.diff; upstream.
+  * Refresh 13-llvm-config-pick-a-version.diff for new upstream.
+  * Add strictly versioned dependencies on libglapi-mesa to libgl1-mesa-glx
+    and libegl1-mesa-drivers as they also now depend on this internal library.
+  * debian/rules:
+  * debian/libgl1-mesa-dri.install.linux.in:
+    - Manually install r300g only when we actually build it.  Fixes build on
+      non-i386, non-amd64 linux.
+
+  [ Julien Cristau ]
+  * Don't use dh_testroot in clean.
+
+ -- Julien Cristau <jcristau@debian.org>  Thu, 25 Aug 2011 00:15:27 +0200
+
+mesa (7.11~0-2) experimental; urgency=low
+
+  * Thank you sbuild for giving a green light when that's not actually the
+    case. Fix missing Pre-Depends for the libegl1-mesa-drivers package
+    (multiarch-support).
+
+ -- Cyril Brulebois <kibi@debian.org>  Sun, 19 Jun 2011 21:26:00 +0200
+
+mesa (7.11~0-1) experimental; urgency=low
+
+  * New upstream snapshot, from the master branch (up to 2fe39b46e7).
+  * Drop 05_hurd-ftbfs.diff, merged upstream (as 758561786c).
+  * Refresh 06_kfreebsd-ftbfs.diff (due to 8fd8de3995).
+  * Refresh 08-kfreebsd-gallium.diff (adjust offsets).
+  * Add 10-hurd-configure-tweaks.diff to enable x86 assembler on Hurd,
+    thanks to Pino Toscano.
+  * Refresh 11-hurd-ftbfs-again.diff (adjust offsets and drop the
+    src/gallium/auxiliary/os/os_time.c hunk, which should be OK since
+    PIPE_OS_UNIX is used there, and should happily replace the use of
+    PIPE_OS_HURD; and adapt for the removal of the PIPE_OS_EMBEDDED check).
+  * debian/libegl1-mesa.install.in: Stop trying to install egl_dri2.so and
+    egl_glx.so, since they are now built-in (since c98ea26e16).
+  * debian/libgles{1,2}-mesa.install.in: Stop trying to install
+    st_GLESv{1,2}_CM.so (respectively), which got removed. Quoting the
+    commit message: “Remove GLES overlay. With core mesa doing runtime API
+    checks, GLES overlay is no longer needed.” (12583174c5).
+  * Drop --enable-gles-overlay from debian/rules accordingly.
+  * Add 12-llvm-config-check.diff to handle --disable-gallium more
+    properly.
+  * Add 13-llvm-config-pick-a-version.diff, so that llvm-config-2.9 is
+    searched by configure, instead of unversioned llvm-config.
+  * Add a NOT_INSTALLED_EITHER variable to debian/not-installed. A few
+    files might have to be removed, but only if that's a git snapshot
+    (those files aren't in the released tarballs). Let's consider it's OK
+    to run “rm -f” on them: {,dri/}usr/include/GL/glut{,f90}.h
+  * Add libglapi-mesa{,-dbg} packages.
+  * Use a package-name-doesnt-match-sonames override accordingly.
+  * Update libegl1-mesa.symbols with new symbols.
+  * Update libgles{1,2}-mesa.symbols now that internal symbols (_glapi_*
+    and _glthread_GetID) moved to libglapi-mesa.
+  * Add a gentarball target, to generate tarballs for git snapshots.
+  * Replace “The OpenGL utility library…” with “Mesa OpenGL utility
+    library…” in the description of the libglu1-mesa* packages.
+  * Replace radeon with r300 in GALLIUM_DRIVERS to match upstream renaming
+    (5722286be2).
+  * Build r300 classic (through DRI_DRIVERS) everywhere, since r300g comes
+    with a few additional requirements: LLVM is needed for this driver,
+    and apparently only works fine on x86 platform. As a consequence, only
+    build r300g on amd and i386, and add llvm-2.9-dev build-dep on those
+    platforms accordingly. Disable it explicitly on other platforms.
+  * Stop building i915g at all, it's apparently never going to be a
+    suitable replacement for i915c.
+  * Add libwayland-dev build-dep.
+  * Add wayland to EGL_DISPLAYS on Linux.
+  * Ship wayland-egl.pc and libwayland-egl.so in libegl1-mesa-dev; and ship
+    libwayland-egl.so.1* in libegl1-mesa-drivers.
+  * Update libegl1-mesa.symbols with new wl_drm_interface symbol.
+
+ -- Cyril Brulebois <kibi@debian.org>  Sun, 19 Jun 2011 19:01:52 +0200
+
+mesa (7.10.3-4) unstable; urgency=medium
+
+  [ Cyril Brulebois ]
+  * Accept libmotif-dev as an alternative to lesstif2-dev in
+    libglw1-mesa-dev's dependencies, as requested by Michael Hanke
+    (Closes: #631236).
+  * Merge upstream 7.10 branch up to e041956cb2.
+  * Wrap Breaks fields.
+  * Add Breaks: {xserver-xorg-core,libgl1-mesa-glx}-no-multiarch to
+    libgl1-mesa-dri* to handle upgrades from squeeze-backports (without
+    multiarch) to wheezy (with multiarch).
+  * Add lintian overrides for breaks-without-version accordingly, those
+    packages are only provided in squeeze-backports.
+  * Replace “The OpenGL utility library…” with “Mesa OpenGL utility
+    library…” in the description of the libglu1-mesa* packages.
+  * Rename all remaining *.install files as *.install.in and use
+    “${DEB_HOST_MULTIARCH}” instead of “*”.
+  * Use the sed substitution on all debian/*.in files accordingly.
+  * Remove debian/clean, and use the same for loop to remove the generated
+    files.
+  * Set urgency to “medium” to speed things up. Migration to testing is
+    a prerequisite for squeeze backports.
+
+  [ Sven Joachim ]
+  * Fix comments in libegl1-mesa.symbols to avoid impending FTBFS with
+    the upcoming dpkg-dev 1.16.1.
+
+ -- Cyril Brulebois <kibi@debian.org>  Sun, 07 Aug 2011 21:50:46 +0200
+
+mesa (7.10.3-3) unstable; urgency=low
+
+  * Update the “Breaks: xserver-xorg-core” from “(<= 2:1.10.2-1)” to
+    “(<< 2:1.10.2-2)”. The first binNMU migrated to testing too soon,
+    so it was needed to rebuild it again, in testing. Updating the
+    Breaks makes sure that a multiarch mesa doesn't get installed with
+    a server built against a pre-multiarch mesa.
+  * Merge upstream 7.10 branch up to 1ad06c7a25.
+
+ -- Cyril Brulebois <kibi@debian.org>  Sun, 19 Jun 2011 17:31:17 +0200
+
+mesa (7.10.3-2) unstable; urgency=low
+
+  [ Cyril Brulebois ]
+  * Add Breaks against nvidia and fglrx packages, since they are also
+    affected by the multiarch changes, and need fixing. Until fixed
+    packages reach the archive, nvidia and fglrx users should stick to
+    mesa 7.10.2-3 packages, currently available in testing. Thanks to
+    Andreas and Patrick for the version strings (Closes: #630710).
+  * Set CXXFLAGS along with CFLAGS (Closes: #630602). Thanks for the
+    report and the patch, Fabio Pedretti!
+
+  [ Julien Cristau ]
+  * Prepend the multiarch dir to the dri driver search path.  ${ORIGIN}/dri
+    works for libGL, but not for egl_dri2.so (which lives in /usr/lib/*/egl/).
+    Thanks to Michel Dänzer for the heads-up!
+
+ -- Cyril Brulebois <kibi@debian.org>  Fri, 17 Jun 2011 11:46:20 +0200
+
+mesa (7.10.3-1) unstable; urgency=low
+
+  * New upstream release.
+  * Add flex and bison build-deps (even though the generated files are
+    stored in VCS, and shipped…).
+
+ -- Cyril Brulebois <kibi@debian.org>  Tue, 14 Jun 2011 15:37:41 +0200
+
+mesa (7.10.2-4) unstable; urgency=low
+
+  [ Steve Langasek ]
+  * Build for multiarch.
+
+  [ Cyril Brulebois ]
+  * Explanation of the “Breaks: xserver-xorg-core” part for our users: the
+    server queries the DRI driver path at build time, which is getting
+    changed for multiarch, so the server needs be rebuilt; a binNMU will
+    take care of getting the server ready.
+  * Many thanks for multiarch, Steve!
+  * Update Uploaders list. Thanks, David and Brice!
+  * Wrap Build-Depends.
+
+ -- Cyril Brulebois <kibi@debian.org>  Tue, 14 Jun 2011 12:19:33 +0200
+
+mesa (7.10.2-3) unstable; urgency=low
+
+  * Merge upstream 7.10 branch up to eaadbacb5c.
+  * Ship r600g again, it should be more usable now.
+
+ -- Cyril Brulebois <kibi@debian.org>  Tue, 31 May 2011 17:48:47 +0200
+
+mesa (7.10.2-2) unstable; urgency=low
+
+  [ Cyril Brulebois ]
+  * Merge upstream 7.10 branch up to b8c6362389.
+  * Get rid of leading article in short descriptions, taking care of this
+    lintian tag for almost all binary packages:
+    - description-synopsis-starts-with-article
+  * Get rid of libgl1-mesa-dri-i686, already commented out in control file.
+
+  [ Sven Joachim ]
+  * Avoid installing the nouveau_vieux driver into libgl1-mesa-dri
+    (Closes: #622222).
+
+ -- Cyril Brulebois <kibi@debian.org>  Mon, 02 May 2011 12:29:37 +0200
+
+mesa (7.10.2-1) unstable; urgency=low
+
+  * New upstream release.
+
+ -- Cyril Brulebois <kibi@debian.org>  Sun, 10 Apr 2011 23:42:41 +0200
+
+mesa (7.10.1-1) experimental; urgency=low
+
+  [ Cyril Brulebois ]
+  * Revert to r600 classic, r600 gallium doesn't seem ready yet, after all
+    (Closes: #612609).
+
+  [ Julien Cristau ]
+  * Set the DRI driver search path to "${ORIGIN}/dri", allowing libGL to find
+    the drivers after being relocated to /usr/lib32 by ia32-libs
+    (closes: #466790).  Thanks to Javier Serrano Polo for the suggestion.
+
+  [ Christopher James Halse Rogers ]
+  * New upstream release
+    - Lots of intel bugfixes, mainly for Sandybridge.
+    - Lots of GLSL spec conformance fixes
+    - Drop 12-fix-fdo-31940.diff; included included in new release.
+  * Remove talloc from build-depends.  This has been re-implemented in-tree.
+  * Also drop patch fixing talloc linking.
+  * Cherry-pick fix from master for changed nouveau headers in libdrm 2.4.24.
+    - Also bump build-depend on libdrm to 2.4.24
+  * Build and install nouveau_vieux driver in libgl1-mesa-dri-experimental.
+    (Closes: #586062)
+
+ -- Cyril Brulebois <kibi@debian.org>  Sun, 03 Apr 2011 21:26:05 +0200
+
+mesa (7.10-4) unstable; urgency=low
+
+  * debian/not-installed: Ignore the same files on *i386.
+  * debian/local/control: Report-with: xserver-xorg{,-core}.
+  * debian/local/script: New bug script, calling glxinfo if available,
+    then the server's bug script.
+  * New patch, thanks to Pino Toscano, fixing FTBFS on GNU/Hurd:
+    - 11-hurd-ftbfs-again.diff
+  * Make a lot of binary packages linux-any kfreebsd-any:
+    - libegl1-mesa
+    - libegl1-mesa-dbg
+    - libegl1-mesa-dev
+    - libegl1-mesa-drivers
+    - libegl1-mesa-drivers-dbg
+    - libopenvg1-mesa
+    - libopenvg1-mesa-dbg
+    - libopenvg1-mesa-dev
+    - libgles1-mesa
+    - libgles1-mesa-dbg
+    - libgles1-mesa-dev
+    - libgles2-mesa
+    - libgles2-mesa-dbg
+    - libgles2-mesa-dev
+  * Disable EGL/Gallium/GLES/state trackers on GNU/Hurd.
+  * Fix FTBFS on sparc64, treat it the same way as sparc. Thanks, Aurélien
+    Jarno! (Closes: #613106).
+  * Add patch for a crash in dri2_invalidate_drawable, thanks to Kai
+    Wasserbäch (Closes: #612640):
+    - 12-fix-fdo-31940.diff
+
+ -- Cyril Brulebois <kibi@debian.org>  Wed, 16 Feb 2011 11:53:26 +0100
+
+mesa (7.10-3) unstable; urgency=low
+
+  [ Julien Cristau ]
+  * debian/rules: RIP lpia.
+
+  [ Cyril Brulebois ]
+  * Cherry-pick from upstream (thanks to Dave Airlie for the hint):
+    - radeon: fix build on non-KMS systems.
+    This fixes the FTBFS on GNU/kFreeBSD.
+  * Ship r300g (r300 gallium) on Linux only: Introduce Linux-specific
+    libgl1-mesa-dri.install.linux to that effect.
+  * According to Michel Dänzer, r600g (r600 gallium) is working well
+    enough to be shipped now. Let's ship it, then!
+  * Cherry-pick from upstream, fixing X's failure to start with UMS on
+    r300g (Closes: #612380):
+    - dri_util: fail driCreateNewScreen if InitScreen is NULL
+
+ -- Cyril Brulebois <kibi@debian.org>  Tue, 08 Feb 2011 16:06:38 +0100
+
+mesa (7.10-2) unstable; urgency=low
+
+  * Fix FTBFS on i386: Add some files to debian/not-installed, on a
+    per-architecture fashion (those are under /usr/lib/i686/cmov/).
+  * Work around FTBFS on sparc due to new symbols: pass -c1 to
+    dpkg-gensymbols instead of -c4 (on sparc only). Those symbols probably
+    shouldn't be exported, but let's make it possible to build xorg-server
+    1.9 in sid.
+
+ -- Cyril Brulebois <kibi@debian.org>  Sat, 05 Feb 2011 11:16:26 +0100
+
+mesa (7.10-1) experimental; urgency=low
+
+  * New upstream release.
+  * Add patch: 10-fix-talloc-linking.diff
+  * Use debian/not-installed to keep track of files which aren't getting
+    installed for now. Delete them before running dh_install. Use the list
+    of files appearing in the build logs for 7.9+repack-2.
+  * Switch from --list-missing to --fail-missing accordingly.
+  * Pass -c4 to dpkg-gensymbols through dh_makeshlibs to make sure
+    symbol-related changes are noticed and dealt with.
+  * Update symbols files with new symbols:
+    - libopenvg1-mesa.symbols
+  * Remove “mesa internal ASM optimized functions” lines from symbols
+    files, those seem to be gone, and with -c4 passed to dpkg-gensymbols,
+    any related issue will break the build:
+    - libgles1-mesa.symbols
+    - libgles2-mesa.symbols
+  * Stop using dh_strip -s --remaining-packages. When a build is resumed
+    (-nc), this dh_strip call is a no-op if it was previously written to
+    the debhelper log files. Specify all remaining packages instead.
+    That's boring, but avoid getting non-stripped packages.
+  * Add debian/git-cleanup.sh script to ease removing files in git which
+    aren't in the release tarballs, and make dpkg-source error out.
+  * Keep my eyes wide shut and add myself to Uploaders.
+
+ -- Cyril Brulebois <kibi@debian.org>  Tue, 25 Jan 2011 00:20:57 +0100
+
+mesa (7.9+repack-2) experimental; urgency=low
+
+  [ Cyril Brulebois ]
+  * Specify PASV in watch file, and mangle +repack.
+
+  [ Christopher James Halse Rogers ]
+  * debian/control:
+    - Add libudev-dev to build-depends.  This is required for the DRI2 EGL
+      driver to work with a drm display.
+
+  [ Sven Joachim ]
+  * Update for the latest libdrm-nouveau API:
+    - Cherry-pick commit c25fcf5a from Mesa master.
+    - Build-depend on libdrm-dev 2.4.23 or newer.
+  * Use linux-any for linux-libc-dev and libudev-dev build-depends.
+
+  [ Julien Cristau ]
+  * Update from upstream 7.9 branch, commit 0ff45dd.
+  * Refresh patches.
+
+ -- Julien Cristau <jcristau@debian.org>  Tue, 04 Jan 2011 12:46:59 +0100
+
+mesa (7.9+repack-1) experimental; urgency=low
+
+  * Repack the upstream tarball to get rid of duplicate files which make dpkg
+    choke.  Thanks to Luca Falavigna for his help diagnosing this.
+
+ -- Julien Cristau <jcristau@debian.org>  Mon, 15 Nov 2010 23:04:45 +0100
+
+mesa (7.9-1) experimental; urgency=low
+
+  [ Christopher James Halse Rogers ]
+  * debian/control:
+    - Add EGL, GLESv1, GLESv2, and OpenVG virtual packages.  The Khronos group
+      specifies a de-facto linux ABI for these libraries.  We have a similar
+      package for libgl1.
+  * debian/README.Debian:
+    - Document the virtual packages above.
+
+  [ Sven Joachim ]
+  * Bump libdrm-dev build dependency to 2.4.21-2~, the Nouveau Gallium
+    driver does not build with squeeze's libdrm-nouveau1.
+
+  [ Julien Cristau ]
+  * New upstream release.
+  * Update patches:
+    - 03_optional-progs-and-install.patch dropped, demos moved to a separate
+      package
+    - 07-nouveau-update.diff and
+      09-intel-fix-invalidate-before-initialisation.diff dropped, they were
+      backports from upstream
+    - 04_osmesa_version.diff updated
+  * Add build-dep on talloc.
+  * Drop the mesa-utils package, demos were moved out of the mesa tree.
+  * Use --with-egl-platforms instead of --with-egl-displays, and replace kms
+    with drm.
+  * Merge some packaging changes from ubuntu:
+    - libegl1-mesa-drivers-x11,kms: There are no longer separate kms or x11
+      drivers for EGL, libegl1-mesa-drivers now contains a single driver that
+      provides both backends (Christopher James Halse Rogers)
+    - Remove pre-generated .pc's, use the ones generated at build time instead
+      (Robert Hooker)
+    - Build the r600 gallium driver
+    - Update symbols files
+  * README.source: we don't need to repack MesaLib.tar.gz anymore.
+  * Kill old sourceforge url from debian/watch.
+  * Ship the gallium r300 driver instead of the classic one.
+
+ -- Julien Cristau <jcristau@debian.org>  Sat, 13 Nov 2010 00:36:11 +0100
+
+mesa (7.8.2-2) experimental; urgency=low
+
+  * Add missing dependencies to libegl1-mesa-dev, thanks to Alexandros
+    Frantzis (LP: #600243).
+  * gallium: handle kfreebsd like freebsd, fixing FTBFS (closes: #585618)
+  * intel: Fix invalidate before initialisation (stolen from fdo bugzilla
+    #29091, fixes server 1.9rc crash when starting an app using GLX 1.3)
+  * Pull from 7.8-branch up to commit d06e011.
+  * Fixup hurd and kfreebsd patches to apply.
+
+ -- Julien Cristau <jcristau@debian.org>  Tue, 20 Jul 2010 15:57:31 +0200
+
+mesa (7.8.2-1) experimental; urgency=low
+
+  [ Robert Hooker ]
+  * Adjust the build system to install the dri target in a separate
+    DESTDIR, no longer passing --libdir=/usr/lib/glx at configure time
+    messing with the .pc's since it is used for a majority of the 
+    packages now.
+  * Fix up the mesa-common-dev header install location.
+
+  [ Julien Cristau ]
+  * Add ${misc:Depends} to all packages.
+  * libc6-dev is build-essential, no need to depend on it.
+  * Replace nonsensical dependency of libglw1-mesa-dev on libxext6 with a
+    dependency on libxt-dev and lesstif2-dev.
+  * Add new lintian overrides for the package-name-doesnt-match-sonames stuff.
+  * Don't ship progs/objviewer in the tarball, it's insanely big and unused.
+  * New upstream release.
+  * Refresh patches.
+  * Stop shipping an upstream git log, it's unlikely to be useful to anyone,
+    and it's big.
+  * debian/scripts/choose-configs: use DEB_HOST_ARCH, not DEB_BUILD_ARCH
+    (closes: #451648).
+  * Rename radeong_dri.so to r300_dri.so in build, not binary.
+
+  [ Christopher James Halse Rogers ]
+  * debian/patches/07-nouveau-update.diff:
+    - Pull in nouveau_class.h header no longer shipped by libdrm 2.4.21 and 
+      update nouveau build to use it.  Fixes FTBFS against libdrm 2.4.21.
+  * debian/rules:
+    - Simplify selecting which gallium drivers are built.  Use this to only
+      act on gallium packages on archs where we're actually building them.
+      Part of the fix for FTBFS on Hurd and kFreeBSD.
+
+ -- Julien Cristau <jcristau@debian.org>  Thu, 01 Jul 2010 12:50:18 +0200
+
+mesa (7.8.1-2) experimental; urgency=low
+
+  [ Tormod Volden ]
+  * debian/rules: Do not strip the same packages twice
+
+  [ Julien Cristau ]
+  * Stop building the ffb dri driver on sparc, it no longer exists.
+  * Merge changes from 7.7.1-2.
+
+  [ Christopher James Halse Rogers ]
+  * debian/compat:
+    - Bump to v7 for dh_install search path behaviour
+  * debian/rules:
+    - Enable gallium for dri build.
+    - Enable egl for dri build.
+    - Build nouveau, radeon & swrast gallium drivers
+    - Build OpenVG, OpenGL|ES, dri, glx & egl state trackers
+  * debian/libegl1-mesa-dev.install:
+  * debian/libegl1-mesa.install:
+  * debian/libegl1-mesa.symbols:
+    - New libEGL package.
+  * debian/libgles1-mesa-dev.install:
+  * debian/libgles1-mesa.install:
+  * debian/libgles1-mesa.symbols:
+    - New OpenGL|ES v1.x package.
+  * debian/libgles2-mesa-dev.install:
+  * debian/libgles2-mesa.install:
+  * debian/libgles2-mesa.symbols:
+    - New OpenGL|ES v2.x package.
+  * debian/libopenvg1-mesa-dev.install:
+  * debian/libopenvg1-mesa.install:
+  * debian/libopenvg1-mesa.symbols:
+    - New OpenVG package.
+  * debian/libegl1-mesa-drivers-x11.install:
+    - New gallium EGL drivers package.
+  * debian/libegl1-mesa-drivers-kms.install:
+    - New gallium EGL kms driver package.
+  * debian/egl.pc:
+  * debian/vg.pc:
+  * debian/glesv1_cm.pc:
+  * debian/glesv2.pc:
+    - Pull pkg-config files from master and install them in the respective
+      -dev packages.
+  * debian/libgl1-mesa-dri-experimental.install:
+  * debian/libgl1-mesa-dri.install:
+    - “make install” puts classic and gallium drivers in the same path, but
+      builds gallium drivers in the gallium/ subdirectory.  Copy the drivers 
+      directly from the build path, rather than trying to separate them out 
+      post-hock.
+  * debian/control:
+    - Add new packages.
+    - Add new build-depends on libx11-xcb-dev, libxcb-dri2-0-dev, 
+      libxcb-xfixes0-dev and python-libxml2 for gallium.
+    - Bump build-depends on dpkg-dev for regex in symbols files.
+
+ -- Julien Cristau <jcristau@debian.org>  Fri, 11 Jun 2010 03:19:09 +0200
+
+mesa (7.8.1-1) experimental; urgency=low
+
+  * New upstream release.
+    + Pull from upstream 7.8 branch up to commit db3b3421.
+  * Refresh patches.
+  * Bump build dependency to libdrm-dev 2.4.19, x11proto-gl-dev 1.4.11,
+    and x11proto-dri2-dev 2.1.
+
+ -- Brice Goglin <bgoglin@debian.org>  Sun, 18 Apr 2010 09:25:39 +0200
 
 mesa (7.7.1-2) unstable; urgency=low
 

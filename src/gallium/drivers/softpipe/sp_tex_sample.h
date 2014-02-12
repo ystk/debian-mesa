@@ -2,6 +2,7 @@
  * 
  * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
  * All Rights Reserved.
+ * Copyright 2010 VMware, Inc.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
@@ -31,7 +32,7 @@
 
 #include "tgsi/tgsi_exec.h"
 
-struct sp_sampler_varient;
+struct sp_sampler_variant;
 
 typedef void (*wrap_nearest_func)(const float s[4],
                                   unsigned size,
@@ -43,17 +44,17 @@ typedef void (*wrap_linear_func)(const float s[4],
                                  int icoord1[4],
                                  float w[4]);
 
-typedef float (*compute_lambda_func)(const struct sp_sampler_varient *sampler,
+typedef float (*compute_lambda_func)(const struct sp_sampler_variant *sampler,
                                      const float s[QUAD_SIZE],
                                      const float t[QUAD_SIZE],
-                                     const float p[QUAD_SIZE],
-                                     float lodbias);
+                                     const float p[QUAD_SIZE]);
 
 typedef void (*filter_func)(struct tgsi_sampler *tgsi_sampler,
                             const float s[QUAD_SIZE],
                             const float t[QUAD_SIZE],
                             const float p[QUAD_SIZE],
-                            float lodbias,
+                            const float c0[QUAD_SIZE],
+                            enum tgsi_sampler_control control,
                             float rgba[NUM_CHANNELS][QUAD_SIZE]);
 
 
@@ -63,7 +64,11 @@ union sp_sampler_key {
       unsigned is_pot:1;
       unsigned processor:2;
       unsigned unit:4;
-      unsigned pad:22;
+      unsigned swizzle_r:3;
+      unsigned swizzle_g:3;
+      unsigned swizzle_b:3;
+      unsigned swizzle_a:3;
+      unsigned pad:10;
    } bits;
    unsigned value;
 };
@@ -71,7 +76,7 @@ union sp_sampler_key {
 /**
  * Subclass of tgsi_sampler
  */
-struct sp_sampler_varient
+struct sp_sampler_variant
 {
    struct tgsi_sampler base;  /**< base class */
 
@@ -84,7 +89,7 @@ struct sp_sampler_varient
 
    /* Currently bound texture:
     */
-   const struct pipe_texture *texture;
+   const struct pipe_sampler_view *view;
    struct softpipe_tex_tile_cache *cache;
 
    unsigned processor;
@@ -112,32 +117,33 @@ struct sp_sampler_varient
 
    filter_func mip_filter;
    filter_func compare;
+   filter_func sample_target;
    
    /* Linked list:
     */
-   struct sp_sampler_varient *next;
+   struct sp_sampler_variant *next;
 };
 
 struct sp_sampler;
 
-/* Create a sampler varient for a given set of non-orthogonal state.  Currently the 
+/* Create a sampler variant for a given set of non-orthogonal state.  Currently the 
  */
-struct sp_sampler_varient *
-sp_create_sampler_varient( const struct pipe_sampler_state *sampler,
+struct sp_sampler_variant *
+sp_create_sampler_variant( const struct pipe_sampler_state *sampler,
                            const union sp_sampler_key key );
 
-void sp_sampler_varient_bind_texture( struct sp_sampler_varient *varient,
-                                      struct softpipe_tex_tile_cache *tex_cache,
-                                      const struct pipe_texture *tex );
+void sp_sampler_variant_bind_view( struct sp_sampler_variant *variant,
+                                   struct softpipe_tex_tile_cache *tex_cache,
+                                   const struct pipe_sampler_view *view );
 
-void sp_sampler_varient_destroy( struct sp_sampler_varient * );
+void sp_sampler_variant_destroy( struct sp_sampler_variant * );
 
 
 
-static INLINE struct sp_sampler_varient *
-sp_sampler_varient(const struct tgsi_sampler *sampler)
+static INLINE struct sp_sampler_variant *
+sp_sampler_variant(const struct tgsi_sampler *sampler)
 {
-   return (struct sp_sampler_varient *) sampler;
+   return (struct sp_sampler_variant *) sampler;
 }
 
 extern void

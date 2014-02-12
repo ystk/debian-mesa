@@ -43,6 +43,7 @@ struct offset_stage {
 
    float scale;
    float units;
+   float clamp;
 };
 
 
@@ -63,7 +64,7 @@ static INLINE struct offset_stage *offset_stage( struct draw_stage *stage )
 static void do_offset_tri( struct draw_stage *stage,
 			   struct prim_header *header )
 {
-   const unsigned pos = stage->draw->vs.position_output;
+   const unsigned pos = draw_current_shader_position_output(stage->draw);
    struct offset_stage *offset = offset_stage(stage);   
    float inv_det = 1.0f / header->det;
 
@@ -89,6 +90,10 @@ static void do_offset_tri( struct draw_stage *stage,
    float dzdy = fabsf(b * inv_det);
 
    float zoffset = offset->units + MAX2(dzdx, dzdy) * offset->scale;
+
+   if (offset->clamp)
+      zoffset = (offset->clamp < 0.0f) ? MAX2(zoffset, offset->clamp) :
+                                         MIN2(zoffset, offset->clamp);
 
    /*
     * Note: we're applying the offset and clamping per-vertex.
@@ -125,6 +130,7 @@ static void offset_first_tri( struct draw_stage *stage,
 
    offset->units = (float) (stage->draw->rasterizer->offset_units * stage->draw->mrd);
    offset->scale = stage->draw->rasterizer->offset_scale;
+   offset->clamp = stage->draw->rasterizer->offset_clamp;
 
    stage->tri = offset_tri;
    stage->tri( stage, header );
@@ -163,8 +169,6 @@ struct draw_stage *draw_offset_stage( struct draw_context *draw )
    if (offset == NULL)
       goto fail;
 
-   draw_alloc_temp_verts( &offset->stage, 3 );
-
    offset->stage.draw = draw;
    offset->stage.name = "offset";
    offset->stage.next = NULL;
@@ -175,9 +179,12 @@ struct draw_stage *draw_offset_stage( struct draw_context *draw )
    offset->stage.reset_stipple_counter = offset_reset_stipple_counter;
    offset->stage.destroy = offset_destroy;
 
+   if (!draw_alloc_temp_verts( &offset->stage, 3 ))
+      goto fail;
+
    return &offset->stage;
 
- fail:
+fail:
    if (offset)
       offset->stage.destroy( &offset->stage );
 

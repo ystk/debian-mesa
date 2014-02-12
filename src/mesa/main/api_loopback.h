@@ -27,7 +27,10 @@
 #ifndef API_LOOPBACK_H
 #define API_LOOPBACK_H
 
-#include "main/mtypes.h"
+#include "main/compiler.h"
+#include "main/mfeatures.h"
+
+struct _glapi_table;
 
 #if FEATURE_beginend
 
@@ -35,7 +38,7 @@ extern void _mesa_loopback_init_api_table( struct _glapi_table *dest );
 
 #else /* FEATURE_beginend */
 
-static INLINE void
+static inline void
 _mesa_loopback_init_api_table( struct _glapi_table *dest )
 {
 }

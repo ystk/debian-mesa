@@ -2,11 +2,15 @@ Patch that fixes Debian bug #349437.
 
 This patch by David Nusinow.
 
+---
+ src/mesa/main/compiler.h |    3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
 Index: mesa/src/mesa/main/compiler.h
 ===================================================================
---- mesa.orig/src/mesa/main/compiler.h
-+++ mesa/src/mesa/main/compiler.h
-@@ -351,8 +351,9 @@
+--- mesa.orig/src/mesa/main/compiler.h	2012-01-18 16:04:58.338654818 +0200
++++ mesa/src/mesa/main/compiler.h	2012-01-18 16:05:00.930732513 +0200
+@@ -369,8 +369,9 @@
   * USE_IEEE: Determine if we're using IEEE floating point
   */
  #if defined(__i386__) || defined(__386__) || defined(__sparc__) || \

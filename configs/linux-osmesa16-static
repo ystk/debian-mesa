@@ -24,9 +24,7 @@ OSMESA_LIB_NAME = libOSMesa16.a
 # Directories
 SRC_DIRS = gallium mesa glu
 DRIVER_DIRS = osmesa
-PROGRAM_DIRS = 
 
 
 # Dependencies
 OSMESA_LIB_DEPS = -lm -lpthread
-APP_LIB_DEPS = -lm -lpthread

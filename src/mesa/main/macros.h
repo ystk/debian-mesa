@@ -54,12 +54,15 @@ extern GLfloat _mesa_ubyte_to_float_color_tab[256];
 #define FLOAT_TO_BYTE(X)    ( (((GLint) (255.0F * (X))) - 1) / 2 )
 
 
+/** Convert GLbyte to GLfloat while preserving zero */
+#define BYTE_TO_FLOATZ(B)   ((B) == 0 ? 0.0F : BYTE_TO_FLOAT(B))
+
+
 /** Convert GLbyte in [-128,127] to GLfloat in [-1.0,1.0], texture/fb data */
 #define BYTE_TO_FLOAT_TEX(B)    ((B) == -128 ? -1.0F : (B) * (1.0F/127.0F))
 
 /** Convert GLfloat in [-1.0,1.0] to GLbyte in [-128,127], texture/fb data */
-#define FLOAT_TO_BYTE_TEX(X)    ( (GLint) (127.0F * (X)) )
-
+#define FLOAT_TO_BYTE_TEX(X)    CLAMP( (GLint) (127.0F * (X)), -128, 127 )
 
 /** Convert GLushort in [0,65535] to GLfloat in [0.0,1.0] */
 #define USHORT_TO_FLOAT(S)  ((GLfloat) (S) * (1.0F / 65535.0F))
@@ -74,6 +77,9 @@ extern GLfloat _mesa_ubyte_to_float_color_tab[256];
 /** Convert GLfloat in [-1.0,1.0] to GLshort in [-32768,32767] */
 #define FLOAT_TO_SHORT(X)   ( (((GLint) (65535.0F * (X))) - 1) / 2 )
 
+/** Convert GLshort to GLfloat while preserving zero */
+#define SHORT_TO_FLOATZ(S)   ((S) == 0 ? 0.0F : SHORT_TO_FLOAT(S))
+
 
 /** Convert GLshort in [-32768,32767] to GLfloat in [-1.0,1.0], texture/fb data */
 #define SHORT_TO_FLOAT_TEX(S)    ((S) == -32768 ? -1.0F : (S) * (1.0F/32767.0F))
@@ -83,14 +89,14 @@ extern GLfloat _mesa_ubyte_to_float_color_tab[256];
 
 
 /** Convert GLuint in [0,4294967295] to GLfloat in [0.0,1.0] */
-#define UINT_TO_FLOAT(U)    ((GLfloat) (U) * (1.0F / 4294967295.0))
+#define UINT_TO_FLOAT(U)    ((GLfloat) ((U) * (1.0F / 4294967295.0)))
 
 /** Convert GLfloat in [0.0,1.0] to GLuint in [0,4294967295] */
 #define FLOAT_TO_UINT(X)    ((GLuint) ((X) * 4294967295.0))
 
 
 /** Convert GLint in [-2147483648,2147483647] to GLfloat in [-1.0,1.0] */
-#define INT_TO_FLOAT(I)     ((2.0F * (I) + 1.0F) * (1.0F/4294967294.0))
+#define INT_TO_FLOAT(I)     ((GLfloat) ((2.0F * (I) + 1.0F) * (1.0F/4294967294.0)))
 
 /** Convert GLfloat in [-1.0,1.0] to GLint in [-2147483648,2147483647] */
 /* causes overflow:
@@ -127,6 +133,44 @@ extern GLfloat _mesa_ubyte_to_float_color_tab[256];
 #define CLAMPED_FLOAT_TO_USHORT(us, f)  \
         us = ( (GLushort) IROUND( (f) * 65535.0F) )
 
+#define UNCLAMPED_FLOAT_TO_SHORT(s, f)  \
+        s = ( (GLshort) IROUND( CLAMP((f), -1.0F, 1.0F) * 32767.0F) )
+
+/***
+ *** UNCLAMPED_FLOAT_TO_UBYTE: clamp float to [0,1] and map to ubyte in [0,255]
+ *** CLAMPED_FLOAT_TO_UBYTE: map float known to be in [0,1] to ubyte in [0,255]
+ ***/
+#if defined(USE_IEEE) && !defined(DEBUG)
+#define IEEE_0996 0x3f7f0000	/* 0.996 or so */
+/* This function/macro is sensitive to precision.  Test very carefully
+ * if you change it!
+ */
+#define UNCLAMPED_FLOAT_TO_UBYTE(UB, F)					\
+        do {								\
+           fi_type __tmp;						\
+           __tmp.f = (F);						\
+           if (__tmp.i < 0)						\
+              UB = (GLubyte) 0;						\
+           else if (__tmp.i >= IEEE_0996)				\
+              UB = (GLubyte) 255;					\
+           else {							\
+              __tmp.f = __tmp.f * (255.0F/256.0F) + 32768.0F;		\
+              UB = (GLubyte) __tmp.i;					\
+           }								\
+        } while (0)
+#define CLAMPED_FLOAT_TO_UBYTE(UB, F)					\
+        do {								\
+           fi_type __tmp;						\
+           __tmp.f = (F) * (255.0F/256.0F) + 32768.0F;			\
+           UB = (GLubyte) __tmp.i;					\
+        } while (0)
+#else
+#define UNCLAMPED_FLOAT_TO_UBYTE(ub, f) \
+	ub = ((GLubyte) IROUND(CLAMP((f), 0.0F, 1.0F) * 255.0F))
+#define CLAMPED_FLOAT_TO_UBYTE(ub, f) \
+	ub = ((GLubyte) IROUND((f) * 255.0F))
+#endif
+
 /*@}*/
 
 
@@ -138,10 +182,6 @@ extern GLfloat _mesa_ubyte_to_float_color_tab[256];
 #define STRIDE_4UB(p, i)  (p = (GLubyte (*)[4])((GLubyte *)p + i))
 /** Stepping a GLfloat[4] pointer by a byte stride */
 #define STRIDE_4F(p, i)  (p = (GLfloat (*)[4])((GLubyte *)p + i))
-/** Stepping a GLchan[4] pointer by a byte stride */
-#define STRIDE_4CHAN(p, i)  (p = (GLchan (*)[4])((GLubyte *)p + i))
-/** Stepping a GLchan pointer by a byte stride */
-#define STRIDE_CHAN(p, i)  (p = (GLchan *)((GLubyte *)p + i))
 /** Stepping a \p t pointer by a byte stride */
 #define STRIDE_T(p, t, i)  (p = (t)((GLubyte *)p + i))
 
@@ -202,17 +242,12 @@ do {                                \
 #endif
 
 /**
- * Copy a 4-element float vector (avoid using FPU registers)
- * XXX Could use two 64-bit moves on 64-bit systems
+ * Copy a 4-element float vector
+ * memcpy seems to be most efficient
  */
 #define COPY_4FV( DST, SRC )                  \
 do {                                          \
-   const GLuint *_s = (const GLuint *) (SRC); \
-   GLuint *_d = (GLuint *) (DST);             \
-   _d[0] = _s[0];                             \
-   _d[1] = _s[1];                             \
-   _d[2] = _s[2];                             \
-   _d[3] = _s[3];                             \
+   memcpy(DST, SRC, sizeof(GLfloat) * 4);     \
 } while (0)
 
 /** Copy \p SZ elements into a 4-element vector */
@@ -560,27 +595,6 @@ do {				\
  */
 #define LINTERP(T, OUT, IN) ((OUT) + (T) * ((IN) - (OUT)))
 
-/* Can do better with integer math
- */
-#define INTERP_UB( t, dstub, outub, inub )  \
-do {                        \
-   GLfloat inf = UBYTE_TO_FLOAT( inub );    \
-   GLfloat outf = UBYTE_TO_FLOAT( outub );  \
-   GLfloat dstf = LINTERP( t, outf, inf );  \
-   UNCLAMPED_FLOAT_TO_UBYTE( dstub, dstf ); \
-} while (0)
-
-#define INTERP_CHAN( t, dstc, outc, inc )   \
-do {                        \
-   GLfloat inf = CHAN_TO_FLOAT( inc );      \
-   GLfloat outf = CHAN_TO_FLOAT( outc );    \
-   GLfloat dstf = LINTERP( t, outf, inf );  \
-   UNCLAMPED_FLOAT_TO_CHAN( dstc, dstf );   \
-} while (0)
-
-#define INTERP_UI( t, dstui, outui, inui )  \
-   dstui = (GLuint) (GLint) LINTERP( (t), (GLfloat) (outui), (GLfloat) (inui) )
-
 #define INTERP_F( t, dstf, outf, inf )      \
    dstf = LINTERP( t, outf, inf )
 
@@ -599,31 +613,6 @@ do {                        \
    dst[2] = LINTERP( (t), (out)[2], (in)[2] );  \
 } while (0)
 
-#define INTERP_4CHAN( t, dst, out, in )         \
-do {                            \
-   INTERP_CHAN( (t), (dst)[0], (out)[0], (in)[0] ); \
-   INTERP_CHAN( (t), (dst)[1], (out)[1], (in)[1] ); \
-   INTERP_CHAN( (t), (dst)[2], (out)[2], (in)[2] ); \
-   INTERP_CHAN( (t), (dst)[3], (out)[3], (in)[3] ); \
-} while (0)
-
-#define INTERP_3CHAN( t, dst, out, in )         \
-do {                            \
-   INTERP_CHAN( (t), (dst)[0], (out)[0], (in)[0] ); \
-   INTERP_CHAN( (t), (dst)[1], (out)[1], (in)[1] ); \
-   INTERP_CHAN( (t), (dst)[2], (out)[2], (in)[2] ); \
-} while (0)
-
-#define INTERP_SZ( t, vec, to, out, in, sz )                \
-do {                                    \
-   switch (sz) {                            \
-   case 4: vec[to][3] = LINTERP( (t), (vec)[out][3], (vec)[in][3] );    \
-   case 3: vec[to][2] = LINTERP( (t), (vec)[out][2], (vec)[in][2] );    \
-   case 2: vec[to][1] = LINTERP( (t), (vec)[out][1], (vec)[in][1] );    \
-   case 1: vec[to][0] = LINTERP( (t), (vec)[out][0], (vec)[in][0] );    \
-   }                                    \
-} while(0)
-
 /*@}*/
 
 
@@ -631,17 +620,15 @@ do {                                    \
 /** Clamp X to [MIN,MAX] */
 #define CLAMP( X, MIN, MAX )  ( (X)<(MIN) ? (MIN) : ((X)>(MAX) ? (MAX) : (X)) )
 
-/** Assign X to CLAMP(X, MIN, MAX) */
-#define CLAMP_SELF(x, mn, mx)  \
-   ( (x)<(mn) ? ((x) = (mn)) : ((x)>(mx) ? ((x)=(mx)) : (x)) )
-
-
-
 /** Minimum of two values: */
 #define MIN2( A, B )   ( (A)<(B) ? (A) : (B) )
 
 /** Maximum of two values: */
 #define MAX2( A, B )   ( (A)>(B) ? (A) : (B) )
+
+/** Minimum and maximum of three values: */
+#define MIN3( A, B, C ) ((A) < (B) ? MIN2(A, C) : MIN2(B, C))
+#define MAX3( A, B, C ) ((A) > (B) ? MAX2(A, C) : MAX2(B, C))
 
 /** Dot product of two 2-element vectors */
 #define DOT2( a, b )  ( (a)[0]*(b)[0] + (a)[1]*(b)[1] )
@@ -652,9 +639,6 @@ do {                                    \
 /** Dot product of two 4-element vectors */
 #define DOT4( a, b )  ( (a)[0]*(b)[0] + (a)[1]*(b)[1] + \
             (a)[2]*(b)[2] + (a)[3]*(b)[3] )
-
-/** Dot product of two 4-element vectors */
-#define DOT4V(v,a,b,c,d) (v[0]*(a) + v[1]*(b) + v[2]*(c) + v[3]*(d))
 
 
 /** Cross product of two 3-element vectors */
@@ -683,6 +667,10 @@ do {                        \
 
 #define LEN_SQUARED_3FV( V ) ((V)[0]*(V)[0]+(V)[1]*(V)[1]+(V)[2]*(V)[2])
 #define LEN_SQUARED_2FV( V ) ((V)[0]*(V)[0]+(V)[1]*(V)[1])
+
+
+/** Compute ceiling of integer quotient of A divided by B. */
+#define CEILING( A, B )  ( (A) % (B) == 0 ? (A)/(B) : (A)/(B)+1 )
 
 
 /** casts to silence warnings with some compilers */

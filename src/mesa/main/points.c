@@ -245,11 +245,11 @@ _mesa_PointParameterfv( GLenum pname, const GLfloat *params)
  *
  * \param ctx GL context.
  *
- * Initializes __GLcontextRec::Point and point related constants in
- * __GLcontextRec::Const.
+ * Initializes __struct gl_contextRec::Point and point related constants in
+ * __struct gl_contextRec::Const.
  */
 void
-_mesa_init_point(GLcontext *ctx)
+_mesa_init_point(struct gl_context *ctx)
 {
    GLuint i;
 
@@ -266,7 +266,7 @@ _mesa_init_point(GLcontext *ctx)
    ctx->Point.PointSprite = GL_FALSE; /* GL_ARB/NV_point_sprite */
    ctx->Point.SpriteRMode = GL_ZERO; /* GL_NV_point_sprite (only!) */
    ctx->Point.SpriteOrigin = GL_UPPER_LEFT; /* GL_ARB_point_sprite */
-   for (i = 0; i < MAX_TEXTURE_COORD_UNITS; i++) {
+   for (i = 0; i < Elements(ctx->Point.CoordReplace); i++) {
       ctx->Point.CoordReplace[i] = GL_FALSE; /* GL_ARB/NV_point_sprite */
    }
 }

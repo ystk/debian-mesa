@@ -28,15 +28,18 @@
 #ifndef _INTEL_TEX_OBJ_H
 #define _INTEL_TEX_OBJ_H
 
+#include "swrast/s_context.h"
+
+
 struct intel_texture_object
 {
-   struct gl_texture_object base;       /* The "parent" object */
+   struct gl_texture_object base;
 
-   /* The mipmap tree must include at least these levels once
-    * validated:
+   /* This is a mirror of base._MaxLevel, updated at validate time,
+    * except that we don't bother with the non-base levels for
+    * non-mipmapped textures.
     */
-   GLuint firstLevel;
-   GLuint lastLevel;
+   unsigned int _MaxLevel;
 
    /* Offset for firstLevel image:
     */
@@ -46,27 +49,22 @@ struct intel_texture_object
     * regions will be copied to this region and the old storage freed.
     */
    struct intel_mipmap_tree *mt;
-
-   GLboolean imageOverride;
-   GLint depthOverride;
-   GLuint pitchOverride;
 };
 
+
+/**
+ * intel_texture_image is a subclass of swrast_texture_image because we
+ * sometimes fall back to using the swrast module for software rendering.
+ */
 struct intel_texture_image
 {
-   struct gl_texture_image base;
-
-   /* These aren't stored in gl_texture_image 
-    */
-   GLuint level;
-   GLuint face;
+   struct swrast_texture_image base;
 
    /* If intelImage->mt != NULL, image data is stored here.
-    * Else if intelImage->base.Data != NULL, image is stored there.
+    * Else if intelImage->base.Buffer != NULL, image is stored there.
     * Else there is no image data.
     */
    struct intel_mipmap_tree *mt;
-   GLboolean used_as_render_target;
 };
 
 static INLINE struct intel_texture_object *

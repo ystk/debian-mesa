@@ -28,6 +28,8 @@
 #ifndef TGSI_DUMP_H
 #define TGSI_DUMP_H
 
+#include "pipe/p_compiler.h"
+#include "pipe/p_defines.h"
 #include "pipe/p_shader_tokens.h"
 
 #if defined __cplusplus
@@ -49,6 +51,7 @@ tgsi_dump(
 struct tgsi_full_immediate;
 struct tgsi_full_instruction;
 struct tgsi_full_declaration;
+struct tgsi_full_property;
 
 void
 tgsi_dump_immediate(
@@ -62,6 +65,10 @@ tgsi_dump_instruction(
 void
 tgsi_dump_declaration(
    const struct tgsi_full_declaration *decl );
+
+void
+tgsi_dump_property(
+   const struct tgsi_full_property *prop );
 
 #if defined __cplusplus
 }

@@ -6,34 +6,39 @@
 #export DH_VERBOSE=1
 
 CFLAGS = -Wall -g
+CXXFLAGS = -Wall -g
 ifneq (,$(filter noopt,$(DEB_BUILD_OPTIONS)))
 	CFLAGS += -O0
+	CXXFLAGS += -O0
 else
 	CFLAGS += -O2
+	CXXFLAGS += -O2
 endif
 ifneq (,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
 	NUMJOBS = $(patsubst parallel=%,%,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
 	MAKEFLAGS += -j$(NUMJOBS)
 endif
 
-DEB_BUILD_ARCH     ?= $(shell dpkg-architecture -qDEB_BUILD_ARCH)
-DEB_HOST_ARCH     ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
-DEB_HOST_ARCH_OS     ?= $(shell dpkg-architecture -qDEB_HOST_ARCH_OS)
+DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
+DEB_HOST_ARCH      ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
+DEB_HOST_ARCH_OS   ?= $(shell dpkg-architecture -qDEB_HOST_ARCH_OS)
 DEB_HOST_GNU_TYPE  ?= $(shell dpkg-architecture -qDEB_HOST_GNU_TYPE)
 DEB_BUILD_GNU_TYPE ?= $(shell dpkg-architecture -qDEB_BUILD_GNU_TYPE)
-DEB_HOST_ARCH_CPU ?= $(shell dpkg-architecture -qDEB_HOST_ARCH_CPU)
+DEB_HOST_ARCH_CPU  ?= $(shell dpkg-architecture -qDEB_HOST_ARCH_CPU)
 DEB_BUILD_DIR      ?= $(CURDIR)/build
 ifeq ($(DEB_BUILD_GNU_TYPE), $(DEB_HOST_GNU_TYPE))
-        confflags += --build=$(DEB_HOST_GNU_TYPE)
+	confflags += --build=$(DEB_HOST_GNU_TYPE)
 else
-        confflags += --build=$(DEB_BUILD_GNU_TYPE) --host=$(DEB_HOST_GNU_TYPE)
+	confflags += --build=$(DEB_BUILD_GNU_TYPE) --host=$(DEB_HOST_GNU_TYPE)
 endif
 
-# choose which configurations to build
-include debian/scripts/choose-configs
+# keep a list of files we don't install (yet), but since it's a bit
+# large, use an external file:
+include debian/not-installed
 
 # build the following configurations by default
-CONFIGS = $(SWX11_GLU_CONFIGS) \
+CONFIGS = swx11+glu \
+	  swx11+glu-static \
 	  dri \
 	  osmesa \
 	  osmesa-static \
@@ -42,6 +47,10 @@ CONFIGS = $(SWX11_GLU_CONFIGS) \
 	  osmesa32 \
 	  osmesa32-static
 
+ifeq ($(DEB_HOST_ARCH_CPU), i386)
+	CONFIGS += swx11+glu-i386-i686
+endif
+
 STAMP_DIR = debian/stamp
 STAMP = $(STAMP_DIR)/$(DEB_BUILD_GNU_TYPE)
 BUILD_STAMPS = $(addprefix $(STAMP)-build-, $(CONFIGS))
@@ -49,116 +58,148 @@ BUILD_STAMPS = $(addprefix $(STAMP)-build-, $(CONFIGS))
 QUILT_STAMPFN = $(STAMP_DIR)/patch
 include /usr/share/quilt/quilt.make
 
-# temporary until we figure out what to build
-confflags += --disable-gallium
-
 confflags-common = \
-	--disable-egl \
 	--disable-glu \
-	--disable-glut \
-	--disable-glw \
-	CFLAGS="$(CFLAGS)"
+	CFLAGS="$(CFLAGS)" \
+	CXXFLAGS="$(CXXFLAGS)"
 
-DRI_DRIVERS = swrast
+DRI_DRIVERS =
+GALLIUM_DRIVERS =
 
 # hurd doesn't do direct rendering
 ifeq ($(DEB_HOST_ARCH_OS), hurd)
-	DIRECT_RENDERING = --disable-driglx-direct
+	confflags_DIRECT_RENDERING = --disable-driglx-direct
+	confflags_EGL = --disable-egl
+	confflags_GALLIUM = --with-gallium-drivers=
+	DRI_DRIVERS += swrast
 else
-	DIRECT_RENDERING = --enable-driglx-direct
-  ifeq ($(DEB_HOST_ARCH), lpia)
+	EGL_DISPLAYS = x11
+
+  ifeq ($(DEB_HOST_ARCH_OS), linux)
+# Gallium drivers require libdrm-{nouveau,radeon}, only available on Linux
+	GALLIUM_DRIVERS += nouveau r600 r300 svga
+# Although the KMS egl drivers will probably build on kfreebsd & hurd
+# only linux actually has KMS drivers implemented at this point.
+	EGL_DISPLAYS += drm
+# Non-Linux ports also lack *_CLOEXEC and epoll, so wayland isn't ready yet:
+	EGL_DISPLAYS += wayland
+    ifeq (,$(filter $(DEB_HOST_ARCH), s390 s390x))
+	DRI_DRIVERS += r200 radeon nouveau
+    endif
+    ifneq (,$(filter $(DEB_HOST_ARCH_CPU), amd64 i386))
 	DRI_DRIVERS += i915 i965
-  else ifneq ($(DEB_HOST_ARCH), s390)
-	DRI_DRIVERS += mach64 mga r128 r200 r300 r600 radeon savage tdfx
-    ifeq ($(DEB_HOST_ARCH_CPU), i386)
-	DRI_DRIVERS += i810 i915 i965 sis unichrome
-    else ifeq ($(DEB_HOST_ARCH_CPU), amd64)
-	DRI_DRIVERS += i915 i965 sis unichrome
-    else ifeq ($(DEB_HOST_ARCH), sparc)
-	DRI_DRIVERS += ffb
-    else ifeq ($(DEB_HOST_ARCH), sparc64)
-	DRI_DRIVERS += ffb
     endif
   endif
+
+
+# Build the llvmpipe driver only on amd64, i386 until it's tested elsewhere
+  ifeq (,$(filter $(DEB_HOST_ARCH_CPU), amd64 i386))
+	DRI_DRIVERS += swrast
+  else
+	GALLIUM_DRIVERS += swrast
+  endif
+
+  # LLVM is required for r300g and recommended for swrastg on x86:
+  ifneq (,$(filter $(DEB_HOST_ARCH),amd64 i386 kfreebsd-amd64 kfreebsd-i386))
+	confflags_GALLIUM += --enable-gallium-llvm
+  endif
+
+	confflags_DIRECT_RENDERING = --enable-driglx-direct
+	confflags_EGL = --with-egl-platforms="$(EGL_DISPLAYS)"
+	confflags_GALLIUM += --with-gallium-drivers="$(GALLIUM_DRIVERS)"
+	confflags_GLES = --enable-gles1 --enable-gles2
+	confflags_OPENVG = --enable-openvg --enable-gallium-egl
 endif
 
 confflags-dri = \
 	--with-driver=dri \
 	--with-dri-drivers="$(DRI_DRIVERS)" \
-	--with-demos=xdemos \
-	--libdir=/usr/lib/glx \
-	--with-dri-driverdir=/usr/lib/dri \
+	--with-dri-driverdir=/usr/lib/$(DEB_HOST_MULTIARCH)/dri \
+	--with-dri-searchpath='/usr/lib/$(DEB_HOST_MULTIARCH)/dri:\$$$${ORIGIN}/dri:/usr/lib/dri' \
 	--enable-glx-tls \
-	$(DIRECT_RENDERING) \
+	--enable-shared-glapi \
+	--enable-texture-float \
+	--enable-xa \
+	$(confflags_DIRECT_RENDERING) \
+	$(confflags_EGL) \
+	$(confflags_GALLIUM) \
+	$(confflags_GLES) \
+	$(confflags_OPENVG) \
 	$(confflags-common)
 
 confflags-osmesa = \
+	--disable-egl \
+	--with-gallium-drivers= \
 	--with-driver=osmesa \
-	--with-demos= \
 	$(confflags-common)
 
 confflags-osmesa-static = \
+	--disable-egl \
+	--with-gallium-drivers= \
 	--with-driver=osmesa \
 	--enable-static \
-	--with-demos= \
 	$(confflags-common)
 
 confflags-osmesa16 = \
+	--disable-egl \
+	--with-gallium-drivers= \
 	--with-driver=osmesa \
 	--with-osmesa-bits=16 \
-	--with-demos= \
 	$(confflags-common)
 
 confflags-osmesa16-static = \
+	--disable-egl \
+	--with-gallium-drivers= \
 	--with-driver=osmesa \
 	--with-osmesa-bits=16 \
 	--enable-static \
-	--with-demos= \
 	$(confflags-common)
 
 confflags-osmesa32 = \
+	--disable-egl \
+	--with-gallium-drivers= \
 	--with-driver=osmesa \
 	--with-osmesa-bits=32 \
-	--with-demos= \
 	$(confflags-common)
 
 confflags-osmesa32-static = \
+	--disable-egl \
+	--with-gallium-drivers= \
 	--with-driver=osmesa \
 	--with-osmesa-bits=32 \
 	--enable-static \
-	--with-demos= \
 	$(confflags-common)
 
 confflags-swx11+glu = \
-	--with-driver=xlib \
-	--disable-gl-osmesa \
-	--with-demos= \
 	--disable-egl \
-	--disable-glut \
-	--enable-motif \
-	CFLAGS="$(CFLAGS)"
+	--with-gallium-drivers= \
+	--with-driver=xlib \
+	--disable-egl \
+	CFLAGS="$(CFLAGS)" \
+	CXXFLAGS="$(CXXFLAGS)"
 
 confflags-swx11+glu-static = \
-	--with-driver=xlib \
-	--disable-gl-osmesa \
-	--enable-static \
-	--with-demos= \
 	--disable-egl \
-	--disable-glut \
-	--enable-motif \
-	CFLAGS="$(CFLAGS)"
+	--with-gallium-drivers= \
+	--with-driver=xlib \
+	--enable-static \
+	--disable-egl \
+	CFLAGS="$(CFLAGS)" \
+	CXXFLAGS="$(CXXFLAGS)"
 
 confflags-swx11+glu-i386-i686 = \
-	--with-driver=xlib \
-	--disable-gl-osmesa \
-	--with-demos= \
-	--disable-glut \
 	--disable-egl \
-	--enable-motif \
-	--libdir=/usr/lib/i686/cmov \
-	CFLAGS="$(CFLAGS) -march=i686"
+	--with-gallium-drivers= \
+	--with-driver=xlib \
+	--disable-egl \
+	--libdir=/usr/lib/$(DEB_HOST_MULTIARCH)/i686/cmov \
+	CFLAGS="$(CFLAGS) -march=i686" \
+	CXXFLAGS="$(CXXFLAGS) -march=i686"
+
+autotools_files = bin/config.guess bin/config.sub
 
 configure: $(QUILT_STAMPFN) configure.ac
+	for file in $(autotools_files); do cp $$file $$file.pristine; done
 	autoreconf -vfi
 
 # list the configurations that will built
@@ -172,7 +213,10 @@ $(STAMP_DIR)/stamp:
 
 $(QUILT_STAMPFN): $(STAMP_DIR)/stamp
 
-build: $(BUILD_STAMPS)
+build: build-stamp
+
+build-stamp: $(BUILD_STAMPS)
+	>$@
 
 $(STAMP)-build-%: configure
 	dh_testdir
@@ -180,29 +224,35 @@ $(STAMP)-build-%: configure
 	mkdir -p $(DEB_BUILD_DIR)/$*
 	find $(CURDIR)/* -maxdepth 0 -not -path '$(DEB_BUILD_DIR)*' | \
 		xargs cp -rlf -t $(DEB_BUILD_DIR)/$*
+
 	cd $(DEB_BUILD_DIR)/$* && \
 	../../configure --prefix=/usr --mandir=\$${prefix}/share/man \
 	             --infodir=\$${prefix}/share/info --sysconfdir=/etc \
+	             --libdir=\$${prefix}/lib/$(DEB_HOST_MULTIARCH) \
 	             --localstatedir=/var $(confflags) $(confflags-$*)
 	cd $(DEB_BUILD_DIR)/$* && $(MAKE)
-
-	touch $@
+	>$@
 
 install: build
 	# Add here commands to install the package into debian/tmp
 	dh_testdir
 	dh_testroot
-	dh_clean -k
+	dh_prep
 	dh_installdirs
-	set -e; for config in $(CONFIGS); do \
+	set -e; for config in $(filter-out dri, $(CONFIGS)); do \
 		$(MAKE) -C $(DEB_BUILD_DIR)/$$config DESTDIR=$(CURDIR)/debian/tmp install; \
+	done
+	$(MAKE) -C $(DEB_BUILD_DIR)/dri DESTDIR=$(CURDIR)/debian/tmp/dri install
+	for file in debian/*.in; \
+	do \
+		sed -e"s,\$${DEB_HOST_MULTIARCH},$(DEB_HOST_MULTIARCH),g" \
+			$${file} > $${file%%.in}; \
 	done
 
 clean: unpatch
 	dh_testdir
-	dh_testroot
 	rm -rf .pc
-	
+
 	rm -f config.cache config.log config.status
 	rm -f */config.cache */config.log */config.status
 	rm -f conftest* */conftest*
@@ -212,36 +262,86 @@ clean: unpatch
 	rm -rf $$(find -name Makefile.in)
 	rm -rf aclocal.m4 missing depcomp install-sh ltmain.sh
 	rm -rf $(STAMP_DIR)
-	
+	for file in debian/*.in; do rm -f $${file%%.in}; done
+	# Those are auto-updated, grr:
+	for file in $(autotools_files); do if [ -f $$file.pristine ]; then mv -f $$file.pristine $$file; fi; done
+	ln -sf minstall bin/install-sh
+
 	dh_clean
 
 # Build architecture-independent files here.
 binary-indep: install
+
+allpkg = $(shell dh_listpackages -s)
+dbgpkg = $(filter %-dbg, $(allpkg))
+otherpkg = $(filter-out %-dbg, $(allpkg))
+havedbgpkg = $(patsubst %-dbg,%,$(dbgpkg))
+nodbgpkg = $(filter-out $(havedbgpkg),$(otherpkg))
 
 # Build architecture-dependent files here.
 binary-arch: install
 	dh_testdir
 	dh_testroot
 	dh_installchangelogs -s
-	dh_installchangelogs -pmesa-common-dev ChangeLog
+	dh_installchangelogs -pmesa-common-dev
 	dh_installdocs -s
 	dh_installexamples -s
-	dh_install -s --sourcedir=debian/tmp --list-missing
+
+	# Classic DRI and Gallium DRI are mixed up together here
+	# Remove the whole tree to avoid false-positives in --list-missing, and
+	# install the right files manually.
+	rm -r debian/tmp/dri/usr/lib/$(DEB_HOST_MULTIARCH)/dri
+
+	# Also get rid of other files which aren't installed. Do not
+	# use -f to ensure we notice disappearing files:
+	set -e; for file in $(NOT_INSTALLED); do rm debian/tmp/$$file; done
+	# Files only in git, not in tarballs, OK to use rm -f here:
+	set -e; for file in $(NOT_INSTALLED_EITHER); do rm -f debian/tmp/$$file; done
+	# No need for this .so, libglapi is just a convenience library:
+	rm debian/tmp/dri/usr/lib/${DEB_HOST_MULTIARCH}/libglapi.so
+
+	dh_install -s --fail-missing
+
+# If the llvmpipe driver was built, copy it to the package dir
+ifneq (,$(filter swrast,$(GALLIUM_DRIVERS)))
+	dh_install -plibgl1-mesa-dri build/dri/$(DEB_HOST_MULTIARCH)/gallium/swrast_dri.so \
+		usr/lib/${DEB_HOST_MULTIARCH}/dri
+endif
+
 	dh_installman -s
 	dh_lintian -s
 	dh_link -s
-	dh_strip -plibgl1-mesa-swx11 --dbg-package=libgl1-mesa-swx11-dbg
-	dh_strip -plibgl1-mesa-glx --dbg-package=libgl1-mesa-glx-dbg
-	dh_strip -plibgl1-mesa-dri --dbg-package=libgl1-mesa-dri-dbg
-	dh_strip -s
+	# Install bug control and script:
+	set -e; for p in $(allpkg); do \
+		install -d debian/$$p/usr/share/bug/$$p && \
+		install -m 644 debian/local/control debian/$$p/usr/share/bug/$$p && \
+		install -m 755 debian/local/script  debian/$$p/usr/share/bug/$$p; \
+	done
+	set -e; for p in $(havedbgpkg); do \
+		dh_strip -p$${p} --dbg-package=$${p}-dbg; \
+	done
+	# dh_strip -s --remaining-packages doesn't work with resumed
+	# builds (see changelog for mesa 7.10-1):
+	dh_strip $(foreach p,$(nodbgpkg),-p$(p))
 	dh_compress -s
 	dh_fixperms -s
-	dh_makeshlibs -s
+ifeq (,$(filter sparc sparc64,$(DEB_HOST_ARCH)))
+	dh_makeshlibs -s -- -c4
+else
+	# Temporarily work around FTBFS on sparc, ignore new symbols:
+	dh_makeshlibs -s -- -c1
+endif
 	dh_installdeb -s
 	dh_shlibdeps -s
 	dh_gencontrol -s
 	dh_md5sums -s
-	dh_builddeb -s
+	dh_builddeb -s -- -Zxz
 
 binary: binary-indep binary-arch
 .PHONY: configs build clean binary-indep binary-arch binary install
+
+# For maintainer use only, generate a tarball:
+gentarball: SOURCE=mesa
+gentarball: UV=$(shell dpkg-parsechangelog|awk '/^Version:/ {print $$2}'|sed 's/-.*$$//')
+gentarball:
+	git archive --format=tar upstream-experimental --prefix=$(SOURCE)-$(UV)/ | gzip -9 > ../$(SOURCE)_$(UV).orig.tar.gz

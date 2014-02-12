@@ -36,81 +36,73 @@
 #include "brw_defines.h"
 #include "main/macros.h"
 
-struct brw_vs_unit_key {
-   unsigned int total_grf;
-   unsigned int urb_entry_read_length;
-   unsigned int curb_entry_read_length;
-
-   unsigned int curbe_offset;
-
-   unsigned int nr_urb_entries, urb_size;
-
-   unsigned int nr_surfaces;
-};
-
 static void
-vs_unit_populate_key(struct brw_context *brw, struct brw_vs_unit_key *key)
+brw_upload_vs_unit(struct brw_context *brw)
 {
-   GLcontext *ctx = &brw->intel.ctx;
+   struct intel_context *intel = &brw->intel;
+   struct gl_context *ctx = &intel->ctx;
+   struct brw_vs_unit_state *vs;
 
-   memset(key, 0, sizeof(*key));
+   vs = brw_state_batch(brw, AUB_TRACE_VS_STATE,
+			sizeof(*vs), 32, &brw->vs.state_offset);
+   memset(vs, 0, sizeof(*vs));
 
-   /* CACHE_NEW_VS_PROG */
-   key->total_grf = brw->vs.prog_data->total_grf;
-   key->urb_entry_read_length = brw->vs.prog_data->urb_read_length;
-   key->curb_entry_read_length = brw->vs.prog_data->curb_read_length;
+   /* BRW_NEW_PROGRAM_CACHE | CACHE_NEW_VS_PROG */
+   vs->thread0.grf_reg_count = ALIGN(brw->vs.prog_data->total_grf, 16) / 16 - 1;
+   vs->thread0.kernel_start_pointer =
+      brw_program_reloc(brw,
+			brw->vs.state_offset +
+			offsetof(struct brw_vs_unit_state, thread0),
+			brw->vs.prog_offset +
+			(vs->thread0.grf_reg_count << 1)) >> 6;
 
-   /* BRW_NEW_URB_FENCE */
-   key->nr_urb_entries = brw->urb.nr_vs_entries;
-   key->urb_size = brw->urb.vsize;
-
-   /* BRW_NEW_NR_VS_SURFACES */
-   key->nr_surfaces = brw->vs.nr_surfaces;
-
-   /* BRW_NEW_CURBE_OFFSETS, _NEW_TRANSFORM */
-   if (ctx->Transform.ClipPlanesEnabled) {
-      /* Note that we read in the userclip planes as well, hence
-       * clip_start:
-       */
-      key->curbe_offset = brw->curbe.clip_start;
-   }
-   else {
-      key->curbe_offset = brw->curbe.vs_start;
-   }
-}
-
-static dri_bo *
-vs_unit_create_from_key(struct brw_context *brw, struct brw_vs_unit_key *key)
-{
-   struct brw_vs_unit_state vs;
-   dri_bo *bo;
-   int chipset_max_threads;
-
-   memset(&vs, 0, sizeof(vs));
-
-   vs.thread0.kernel_start_pointer = brw->vs.prog_bo->offset >> 6; /* reloc */
-   vs.thread0.grf_reg_count = ALIGN(key->total_grf, 16) / 16 - 1;
-   vs.thread1.floating_point_mode = BRW_FLOATING_POINT_NON_IEEE_754;
+   vs->thread1.floating_point_mode = BRW_FLOATING_POINT_NON_IEEE_754;
    /* Choosing multiple program flow means that we may get 2-vertex threads,
     * which will have the channel mask for dwords 4-7 enabled in the thread,
     * and those dwords will be written to the second URB handle when we
     * brw_urb_WRITE() results.
     */
-   vs.thread1.single_program_flow = 0;
+   /* Force single program flow on Ironlake.  We cannot reliably get
+    * all applications working without it.  See:
+    * https://bugs.freedesktop.org/show_bug.cgi?id=29172
+    *
+    * The most notable and reliably failing application is the Humus
+    * demo "CelShading"
+   */
+   vs->thread1.single_program_flow = (intel->gen == 5);
 
-   if (BRW_IS_IGDNG(brw))
-      vs.thread1.binding_table_entry_count = 0; /* hardware requirement */
-   else
-      vs.thread1.binding_table_entry_count = key->nr_surfaces;
+   vs->thread1.binding_table_entry_count = 0;
 
-   vs.thread3.urb_entry_read_length = key->urb_entry_read_length;
-   vs.thread3.const_urb_entry_read_length = key->curb_entry_read_length;
-   vs.thread3.dispatch_grf_start_reg = 1;
-   vs.thread3.urb_entry_read_offset = 0;
-   vs.thread3.const_urb_entry_read_offset = key->curbe_offset * 2;
+   if (brw->vs.prog_data->total_scratch != 0) {
+      vs->thread2.scratch_space_base_pointer =
+	 brw->vs.scratch_bo->offset >> 10; /* reloc */
+      vs->thread2.per_thread_scratch_space =
+	 ffs(brw->vs.prog_data->total_scratch) - 11;
+   } else {
+      vs->thread2.scratch_space_base_pointer = 0;
+      vs->thread2.per_thread_scratch_space = 0;
+   }
 
-   if (BRW_IS_IGDNG(brw)) {
-      switch (key->nr_urb_entries) {
+   vs->thread3.urb_entry_read_length = brw->vs.prog_data->urb_read_length;
+   vs->thread3.const_urb_entry_read_length = brw->vs.prog_data->curb_read_length;
+   vs->thread3.dispatch_grf_start_reg = 1;
+   vs->thread3.urb_entry_read_offset = 0;
+
+   /* BRW_NEW_CURBE_OFFSETS, _NEW_TRANSFORM, BRW_NEW_VERTEX_PROGRAM */
+   if (ctx->Transform.ClipPlanesEnabled && !brw->vs.prog_data->uses_new_param_layout) {
+      /* Note that we read in the userclip planes as well, hence
+       * clip_start:
+       */
+      vs->thread3.const_urb_entry_read_offset = brw->curbe.clip_start * 2;
+   }
+   else {
+      vs->thread3.const_urb_entry_read_offset = brw->curbe.vs_start * 2;
+   }
+
+
+   /* BRW_NEW_URB_FENCE */
+   if (intel->gen == 5) {
+      switch (brw->urb.nr_vs_entries) {
       case 8:
       case 12:
       case 16:
@@ -122,93 +114,67 @@ vs_unit_create_from_key(struct brw_context *brw, struct brw_vs_unit_key *key)
       case 192:
       case 224:
       case 256:
-	 vs.thread4.nr_urb_entries = key->nr_urb_entries >> 2;
+	 vs->thread4.nr_urb_entries = brw->urb.nr_vs_entries >> 2;
 	 break;
       default:
 	 assert(0);
       }
    } else {
-      switch (key->nr_urb_entries) {
+      switch (brw->urb.nr_vs_entries) {
       case 8:
       case 12:
       case 16:
       case 32:
 	 break;
       case 64:
-	 assert(BRW_IS_G4X(brw));
+	 assert(intel->is_g4x);
 	 break;
       default:
 	 assert(0);
       }
-      vs.thread4.nr_urb_entries = key->nr_urb_entries;
+      vs->thread4.nr_urb_entries = brw->urb.nr_vs_entries;
    }
 
-   vs.thread4.urb_entry_allocation_size = key->urb_size - 1;
+   vs->thread4.urb_entry_allocation_size = brw->urb.vsize - 1;
 
-   if (BRW_IS_IGDNG(brw))
-      chipset_max_threads = 72;
-   else if (BRW_IS_G4X(brw))
-      chipset_max_threads = 32;
-   else
-      chipset_max_threads = 16;
-   vs.thread4.max_threads = CLAMP(key->nr_urb_entries / 2,
-				  1, chipset_max_threads) - 1;
-
-   if (INTEL_DEBUG & DEBUG_SINGLE_THREAD)
-      vs.thread4.max_threads = 0;
+   vs->thread4.max_threads = CLAMP(brw->urb.nr_vs_entries / 2,
+				   1, brw->max_vs_threads) - 1;
 
    /* No samplers for ARB_vp programs:
     */
-   /* It has to be set to 0 for IGDNG
+   /* It has to be set to 0 for Ironlake
     */
-   vs.vs5.sampler_count = 0;
+   vs->vs5.sampler_count = 0;
 
-   if (INTEL_DEBUG & DEBUG_STATS)
-      vs.thread4.stats_enable = 1;
+   if (unlikely(INTEL_DEBUG & DEBUG_STATS))
+      vs->thread4.stats_enable = 1;
 
    /* Vertex program always enabled:
     */
-   vs.vs6.vs_enable = 1;
+   vs->vs6.vs_enable = 1;
 
-   bo = brw_upload_cache(&brw->cache, BRW_VS_UNIT,
-			 key, sizeof(*key),
-			 &brw->vs.prog_bo, 1,
-			 &vs, sizeof(vs),
-			 NULL, NULL);
-
-   /* Emit VS program relocation */
-   dri_bo_emit_reloc(bo,
-		     I915_GEM_DOMAIN_INSTRUCTION, 0,
-		     vs.thread0.grf_reg_count << 1,
-		     offsetof(struct brw_vs_unit_state, thread0),
-		     brw->vs.prog_bo);
-
-   return bo;
-}
-
-static void prepare_vs_unit(struct brw_context *brw)
-{
-   struct brw_vs_unit_key key;
-
-   vs_unit_populate_key(brw, &key);
-
-   dri_bo_unreference(brw->vs.state_bo);
-   brw->vs.state_bo = brw_search_cache(&brw->cache, BRW_VS_UNIT,
-				       &key, sizeof(key),
-				       &brw->vs.prog_bo, 1,
-				       NULL);
-   if (brw->vs.state_bo == NULL) {
-      brw->vs.state_bo = vs_unit_create_from_key(brw, &key);
+   /* Emit scratch space relocation */
+   if (brw->vs.prog_data->total_scratch != 0) {
+      drm_intel_bo_emit_reloc(intel->batch.bo,
+			      brw->vs.state_offset +
+			      offsetof(struct brw_vs_unit_state, thread2),
+			      brw->vs.scratch_bo,
+			      vs->thread2.per_thread_scratch_space,
+			      I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER);
    }
+
+   brw->state.dirty.cache |= CACHE_NEW_VS_UNIT;
 }
 
 const struct brw_tracked_state brw_vs_unit = {
    .dirty = {
       .mesa  = _NEW_TRANSFORM,
-      .brw   = (BRW_NEW_CURBE_OFFSETS |
-                BRW_NEW_NR_VS_SURFACES |
-		BRW_NEW_URB_FENCE),
+      .brw   = (BRW_NEW_BATCH |
+		BRW_NEW_PROGRAM_CACHE |
+		BRW_NEW_CURBE_OFFSETS |
+		BRW_NEW_URB_FENCE |
+                BRW_NEW_VERTEX_PROGRAM),
       .cache = CACHE_NEW_VS_PROG
    },
-   .prepare = prepare_vs_unit,
+   .emit = brw_upload_vs_unit,
 };

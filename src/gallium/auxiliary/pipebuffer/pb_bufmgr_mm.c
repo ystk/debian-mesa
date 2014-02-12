@@ -35,7 +35,7 @@
 
 #include "pipe/p_defines.h"
 #include "util/u_debug.h"
-#include "pipe/p_thread.h"
+#include "os/os_thread.h"
 #include "util/u_memory.h"
 #include "util/u_double_list.h"
 #include "util/u_mm.h"
@@ -97,7 +97,7 @@ mm_buffer_destroy(struct pb_buffer *buf)
    struct mm_buffer *mm_buf = mm_buffer(buf);
    struct mm_pb_manager *mm = mm_buf->mgr;
    
-   assert(!pipe_is_referenced(&mm_buf->base.base.reference));
+   assert(!pipe_is_referenced(&mm_buf->base.reference));
    
    pipe_mutex_lock(mm->mutex);
    u_mmFreeMem(mm_buf->block);
@@ -108,10 +108,13 @@ mm_buffer_destroy(struct pb_buffer *buf)
 
 static void *
 mm_buffer_map(struct pb_buffer *buf,
-              unsigned flags)
+              unsigned flags,
+              void *flush_ctx)
 {
    struct mm_buffer *mm_buf = mm_buffer(buf);
    struct mm_pb_manager *mm = mm_buf->mgr;
+
+   /* XXX: it will be necessary to remap here to propagate flush_ctx */
 
    return (unsigned char *) mm->map + mm_buf->block->ofs;
 }
@@ -189,10 +192,10 @@ mm_bufmgr_create_buffer(struct pb_manager *mgr,
       return NULL;
    }
 
-   pipe_reference_init(&mm_buf->base.base.reference, 1);
-   mm_buf->base.base.alignment = desc->alignment;
-   mm_buf->base.base.usage = desc->usage;
-   mm_buf->base.base.size = size;
+   pipe_reference_init(&mm_buf->base.reference, 1);
+   mm_buf->base.alignment = desc->alignment;
+   mm_buf->base.usage = desc->usage;
+   mm_buf->base.size = size;
    
    mm_buf->base.vtbl = &mm_buffer_vtbl;
    
@@ -268,8 +271,8 @@ mm_bufmgr_create_from_buffer(struct pb_buffer *buffer,
    mm->buffer = buffer; 
 
    mm->map = pb_map(mm->buffer, 
-		    PIPE_BUFFER_USAGE_CPU_READ |
-		    PIPE_BUFFER_USAGE_CPU_WRITE);
+		    PB_USAGE_CPU_READ |
+		    PB_USAGE_CPU_WRITE, NULL);
    if(!mm->map)
       goto failure;
 

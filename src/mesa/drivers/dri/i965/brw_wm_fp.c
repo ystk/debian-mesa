@@ -37,9 +37,9 @@
 #include "brw_wm.h"
 #include "brw_util.h"
 
-#include "shader/prog_parameter.h"
-#include "shader/prog_print.h"
-#include "shader/prog_statevars.h"
+#include "program/prog_parameter.h"
+#include "program/prog_print.h"
+#include "program/prog_statevars.h"
 
 
 /** An invalid texture target */
@@ -88,6 +88,9 @@ static struct prog_src_register src_reg(GLuint file, GLuint idx)
    reg.RelAddr = 0;
    reg.Negate = NEGATE_NONE;
    reg.Abs = 0;
+   reg.HasIndex2 = 0;
+   reg.RelAddr2 = 0;
+   reg.Index2 = 0;
    return reg;
 }
 
@@ -101,7 +104,7 @@ static struct prog_src_register src_undef( void )
    return src_reg(PROGRAM_UNDEFINED, 0);
 }
 
-static GLboolean src_is_undef(struct prog_src_register src)
+static bool src_is_undef(struct prog_src_register src)
 {
    return src.File == PROGRAM_UNDEFINED;
 }
@@ -138,7 +141,6 @@ static struct prog_dst_register dst_reg(GLuint file, GLuint idx)
    reg.CondMask = COND_TR;
    reg.CondSwizzle = 0;
    reg.CondSrc = 0;
-   reg.pad = 0;
    return reg;
 }
 
@@ -160,7 +162,7 @@ static struct prog_dst_register get_temp( struct brw_wm_compile *c )
    int bit = _mesa_ffs( ~c->fp_temp );
 
    if (!bit) {
-      _mesa_printf("%s: out of temporaries\n", __FILE__);
+      printf("%s: out of temporaries\n", __FILE__);
       exit(1);
    }
 
@@ -212,10 +214,6 @@ static struct prog_instruction * emit_tex_op(struct brw_wm_compile *c,
           tex_src_unit == TEX_UNIT_NONE);
    assert(tex_src_target < NUM_TEXTURE_TARGETS ||
           tex_src_target == TEX_TARGET_NONE);
-
-   /* update mask of which texture units are referenced by this program */
-   if (tex_src_unit != TEX_UNIT_NONE)
-      c->fp->tex_units_used |= (1 << tex_src_unit);
 
    memset(inst, 0, sizeof(*inst));
 
@@ -336,6 +334,14 @@ static struct prog_src_register get_delta_xy( struct brw_wm_compile *c )
 
 static struct prog_src_register get_pixel_w( struct brw_wm_compile *c )
 {
+   /* This is called for producing 1/w in pre-gen6 interp.  for gen6,
+    * the interp opcodes don't use this argument.  But to keep the
+    * nr_args = 3 expectations of pinterp happy, just stuff delta_xy
+    * into the slot.
+    */
+   if (c->func.brw->intel.gen >= 6)
+      return c->delta_xy;
+
    if (src_is_undef(c->pixel_w)) {
       struct prog_dst_register pixel_w = get_temp(c);
       struct prog_src_register deltas = get_delta_xy(c);
@@ -363,7 +369,9 @@ static void emit_interp( struct brw_wm_compile *c,
 {
    struct prog_dst_register dst = dst_reg(PROGRAM_INPUT, idx);
    struct prog_src_register interp = src_reg(PROGRAM_PAYLOAD, idx);
-   struct prog_src_register deltas = get_delta_xy(c);
+   struct prog_src_register deltas;
+
+   deltas = get_delta_xy(c);
 
    /* Need to use PINTERP on attributes which have been
     * multiplied by 1/W in the SF program, and LINTERP on those
@@ -405,25 +413,14 @@ static void emit_interp( struct brw_wm_compile *c,
 		 src_undef());
       }
       else {
-         if (c->key.linear_color) {
-            emit_op(c,
-                    WM_LINTERP,
-                    dst,
-                    0,
-                    interp,
-                    deltas,
-                    src_undef());
-         }
-         else {
-            /* perspective-corrected color interpolation */
-            emit_op(c,
-                    WM_PINTERP,
-                    dst,
-                    0,
-                    interp,
-                    deltas,
-                    get_pixel_w(c));
-         }
+	 /* perspective-corrected color interpolation */
+	 emit_op(c,
+		 WM_PINTERP,
+		 dst,
+		 0,
+		 interp,
+		 deltas,
+		 get_pixel_w(c));
       }
       break;
    case FRAG_ATTRIB_FOGC:
@@ -520,12 +517,6 @@ static struct prog_src_register search_or_add_param5(struct brw_wm_compile *c,
    tokens[2] = s2;
    tokens[3] = s3;
    tokens[4] = s4;
-   
-   for (idx = 0; idx < paramList->NumParameters; idx++) {
-      if (paramList->Parameters[idx].Type == PROGRAM_STATE_VAR &&
-	  memcmp(paramList->Parameters[idx].StateIndexes, tokens, sizeof(tokens)) == 0)
-	 return src_reg(PROGRAM_STATE_VAR, idx);
-   }
 
    idx = _mesa_add_state_reference( paramList, tokens );
 
@@ -540,31 +531,21 @@ static struct prog_src_register search_or_add_const4f( struct brw_wm_compile *c,
 						     GLfloat s3)
 {
    struct gl_program_parameter_list *paramList = c->fp->program.Base.Parameters;
-   GLfloat values[4];
+   gl_constant_value values[4];
    GLuint idx;
    GLuint swizzle;
+   struct prog_src_register reg;
 
-   values[0] = s0;
-   values[1] = s1;
-   values[2] = s2;
-   values[3] = s3;
+   values[0].f = s0;
+   values[1].f = s1;
+   values[2].f = s2;
+   values[3].f = s3;
 
-   /* Have to search, otherwise multiple compilations will each grow
-    * the parameter list.
-    */
-   for (idx = 0; idx < paramList->NumParameters; idx++) {
-      if (paramList->Parameters[idx].Type == PROGRAM_CONSTANT &&
-	  memcmp(paramList->ParameterValues[idx], values, sizeof(values)) == 0)
-
-	 /* XXX: this mimics the mesa bug which puts all constants and
-	  * parameters into the "PROGRAM_STATE_VAR" category:
-	  */
-	 return src_reg(PROGRAM_STATE_VAR, idx);
-   }
-   
    idx = _mesa_add_unnamed_constant( paramList, values, 4, &swizzle );
-   assert(swizzle == SWIZZLE_NOOP); /* Need to handle swizzle in reg setup */
-   return src_reg(PROGRAM_STATE_VAR, idx);
+   reg = src_reg(PROGRAM_STATE_VAR, idx);
+   reg.Swizzle = swizzle;
+
+   return reg;
 }
 
 
@@ -578,13 +559,14 @@ static void precalc_dst( struct brw_wm_compile *c,
    struct prog_src_register src0 = inst->SrcReg[0];
    struct prog_src_register src1 = inst->SrcReg[1];
    struct prog_dst_register dst = inst->DstReg;
-   
+   struct prog_dst_register temp = get_temp(c);
+
    if (dst.WriteMask & WRITEMASK_Y) {      
       /* dst.y = mul src0.y, src1.y
        */
       emit_op(c,
 	      OPCODE_MUL,
-	      dst_mask(dst, WRITEMASK_Y),
+	      dst_mask(temp, WRITEMASK_Y),
 	      inst->SaturateMode,
 	      src0,
 	      src1,
@@ -599,7 +581,7 @@ static void precalc_dst( struct brw_wm_compile *c,
        */
       swz = emit_op(c,
 		    OPCODE_SWZ,
-		    dst_mask(dst, WRITEMASK_XZ),
+		    dst_mask(temp, WRITEMASK_XZ),
 		    inst->SaturateMode,
 		    src_swizzle(src0, SWIZZLE_ONE, z, z, z),
 		    src_undef(),
@@ -612,12 +594,26 @@ static void precalc_dst( struct brw_wm_compile *c,
        */
       emit_op(c,
 	      OPCODE_MOV,
-	      dst_mask(dst, WRITEMASK_W),
+	      dst_mask(temp, WRITEMASK_W),
 	      inst->SaturateMode,
 	      src1,
 	      src_undef(),
 	      src_undef());
    }
+
+   /* This will get optimized out in general, but it ensures that we
+    * don't overwrite src operands in our channel-wise splitting
+    * above.  See piglit fp-dst-aliasing-[12].
+    */
+   emit_op(c,
+	   OPCODE_MOV,
+	   dst,
+	   0,
+	   src_reg_from_dst(temp),
+	   src_undef(),
+	   src_undef());
+
+   release_temp(c, temp);
 }
 
 
@@ -626,7 +622,17 @@ static void precalc_lit( struct brw_wm_compile *c,
 {
    struct prog_src_register src0 = inst->SrcReg[0];
    struct prog_dst_register dst = inst->DstReg;
-   
+
+   if (dst.WriteMask & WRITEMASK_YZ) {
+      emit_op(c,
+	      OPCODE_LIT,
+	      dst_mask(dst, WRITEMASK_YZ),
+	      inst->SaturateMode,
+	      src0,
+	      src_undef(),
+	      src_undef());
+   }
+
    if (dst.WriteMask & WRITEMASK_XW) {
       struct prog_instruction *swz;
 
@@ -642,16 +648,6 @@ static void precalc_lit( struct brw_wm_compile *c,
       /* Avoid letting the negation flag of src0 affect our 1 constant. */
       swz->SrcReg[0].Negate = NEGATE_NONE;
    }
-
-   if (dst.WriteMask & WRITEMASK_YZ) {
-      emit_op(c,
-	      OPCODE_LIT,
-	      dst_mask(dst, WRITEMASK_YZ),
-	      inst->SaturateMode,
-	      src0,
-	      src_undef(),
-	      src_undef());
-   }
 }
 
 
@@ -664,9 +660,22 @@ static void precalc_lit( struct brw_wm_compile *c,
 static void precalc_tex( struct brw_wm_compile *c,
 			 const struct prog_instruction *inst )
 {
+   struct brw_compile *p = &c->func;
+   struct intel_context *intel = &p->brw->intel;
    struct prog_src_register coord;
-   struct prog_dst_register tmpcoord;
+   struct prog_dst_register tmpcoord = { 0 };
    const GLuint unit = c->fp->program.Base.SamplerUnits[inst->TexSrcUnit];
+   struct prog_dst_register unswizzled_tmp;
+
+   /* If we are doing EXT_texture_swizzle, we need to write our result into a
+    * temporary, otherwise writemasking of the real dst could lose some of our
+    * channels.
+    */
+   if (c->key.tex.swizzles[unit] != SWIZZLE_NOOP) {
+      unswizzled_tmp = get_temp(c);
+   } else {
+      unswizzled_tmp = inst->DstReg;
+   }
 
    assert(unit < BRW_MAX_TEX_UNIT);
 
@@ -727,7 +736,7 @@ static void precalc_tex( struct brw_wm_compile *c,
        release_temp(c, tmp0);
        release_temp(c, tmp1);
    }
-   else if (inst->TexSrcTarget == TEXTURE_RECT_INDEX) {
+   else if (intel->gen < 6 && inst->TexSrcTarget == TEXTURE_RECT_INDEX) {
       struct prog_src_register scale = 
 	 search_or_add_param5( c, 
 			       STATE_INTERNAL, 
@@ -762,9 +771,9 @@ static void precalc_tex( struct brw_wm_compile *c,
     * conversion requires allocating a temporary variable which we
     * don't have the facility to do that late in the compilation.
     */
-   if (c->key.yuvtex_mask & (1 << unit)) {
+   if (c->key.tex.yuvtex_mask & (1 << unit)) {
       /* convert ycbcr to RGBA */
-      GLboolean  swap_uv = c->key.yuvtex_swap_mask & (1<<unit);
+      bool swap_uv = c->key.tex.yuvtex_swap_mask & (1 << unit);
 
       /* 
 	 CONST C0 = { -.5, -.0625,  -.5, 1.164 }
@@ -778,7 +787,6 @@ static void precalc_tex( struct brw_wm_compile *c,
 	    RGB.xyz = MAD UYV.xxz, C1,   UYV.y 
 	 RGB.y   = MAD UYV.z,   C1.w, RGB.y
       */
-      struct prog_dst_register dst = inst->DstReg;
       struct prog_dst_register tmp = get_temp(c);
       struct prog_src_register tmpsrc = src_reg_from_dst(tmp);
       struct prog_src_register C0 = search_or_add_const4f( c,  -.5, -.0625, -.5, 1.164 );
@@ -827,7 +835,7 @@ static void precalc_tex( struct brw_wm_compile *c,
 
       emit_op(c,
 	      OPCODE_MAD,
-	      dst_mask(dst, WRITEMASK_XYZ),
+	      dst_mask(unswizzled_tmp, WRITEMASK_XYZ),
 	      0,
 	      swap_uv?src_swizzle(tmpsrc, Z,Z,X,X):src_swizzle(tmpsrc, X,X,Z,Z),
 	      C1,
@@ -837,11 +845,11 @@ static void precalc_tex( struct brw_wm_compile *c,
        */
       emit_op(c,
 	      OPCODE_MAD,
-	      dst_mask(dst, WRITEMASK_Y),
+	      dst_mask(unswizzled_tmp, WRITEMASK_Y),
 	      0,
 	      src_swizzle1(tmpsrc, Z),
 	      src_swizzle1(C1, W),
-	      src_swizzle1(src_reg_from_dst(dst), Y));
+	      src_swizzle1(src_reg_from_dst(unswizzled_tmp), Y));
 
       release_temp(c, tmp);
    }
@@ -849,7 +857,7 @@ static void precalc_tex( struct brw_wm_compile *c,
       /* ordinary RGBA tex instruction */
       emit_tex_op(c, 
                   OPCODE_TEX,
-                  inst->DstReg,
+                  unswizzled_tmp,
                   inst->SaturateMode,
                   unit,
                   inst->TexSrcTarget,
@@ -860,13 +868,13 @@ static void precalc_tex( struct brw_wm_compile *c,
    }
 
    /* For GL_EXT_texture_swizzle: */
-   if (c->key.tex_swizzles[unit] != SWIZZLE_NOOP) {
+   if (c->key.tex.swizzles[unit] != SWIZZLE_NOOP) {
       /* swizzle the result of the TEX instruction */
-      struct prog_src_register tmpsrc = src_reg_from_dst(inst->DstReg);
+      struct prog_src_register tmpsrc = src_reg_from_dst(unswizzled_tmp);
       emit_op(c, OPCODE_SWZ,
               inst->DstReg,
               SATURATE_OFF, /* saturate already done above */
-              src_swizzle4(tmpsrc, c->key.tex_swizzles[unit]),
+              src_swizzle4(tmpsrc, c->key.tex.swizzles[unit]),
               src_undef(),
               src_undef());
    }
@@ -880,11 +888,11 @@ static void precalc_tex( struct brw_wm_compile *c,
 /**
  * Check if the given TXP instruction really needs the divide-by-W step.
  */
-static GLboolean projtex( struct brw_wm_compile *c,
-			  const struct prog_instruction *inst )
+static bool
+projtex(struct brw_wm_compile *c, const struct prog_instruction *inst)
 {
    const struct prog_src_register src = inst->SrcReg[0];
-   GLboolean retVal;
+   bool retVal;
 
    assert(inst->Opcode == OPCODE_TXP);
 
@@ -896,13 +904,13 @@ static GLboolean projtex( struct brw_wm_compile *c,
     * user-provided fragment programs anyway:
     */
    if (inst->TexSrcTarget == TEXTURE_CUBE_INDEX)
-      retVal = GL_FALSE;  /* ut2004 gun rendering !?! */
+      retVal = false;  /* ut2004 gun rendering !?! */
    else if (src.File == PROGRAM_INPUT && 
 	    GET_SWZ(src.Swizzle, W) == W &&
             (c->key.proj_attrib_mask & (1 << src.Index)) == 0)
-      retVal = GL_FALSE;
+      retVal = false;
    else
-      retVal = GL_TRUE;
+      retVal = true;
 
    return retVal;
 }
@@ -965,35 +973,31 @@ static void emit_render_target_writes( struct brw_wm_compile *c )
    struct prog_src_register outcolor;
    GLuint i;
 
-   struct prog_instruction *inst, *last_inst;
+   struct prog_instruction *inst = NULL;
 
    /* The inst->Aux field is used for FB write target and the EOT marker */
 
-   if (c->key.nr_color_regions > 1) {
-      for (i = 0 ; i < c->key.nr_color_regions; i++) {
-         outcolor = src_reg(PROGRAM_OUTPUT, FRAG_RESULT_DATA0 + i);
-         last_inst = inst = emit_op(c, WM_FB_WRITE, dst_mask(dst_undef(), 0),
-                                    0, outcolor, payload_r0_depth, outdepth);
-         inst->Aux = INST_AUX_TARGET(i);
-         if (c->fp_fragcolor_emitted) {
-            outcolor = src_reg(PROGRAM_OUTPUT, FRAG_RESULT_COLOR);
-            last_inst = inst = emit_op(c, WM_FB_WRITE, dst_mask(dst_undef(), 0),
-                                       0, outcolor, payload_r0_depth, outdepth);
-            inst->Aux = INST_AUX_TARGET(i);
-         }
+   for (i = 0; i < c->key.nr_color_regions; i++) {
+      if (c->fp->program.Base.OutputsWritten & (1 << FRAG_RESULT_COLOR)) {
+	 outcolor = src_reg(PROGRAM_OUTPUT, FRAG_RESULT_COLOR);
+      } else {
+	 outcolor = src_reg(PROGRAM_OUTPUT, FRAG_RESULT_DATA0 + i);
       }
-      last_inst->Aux |= INST_AUX_EOT;
+      inst = emit_op(c, WM_FB_WRITE, dst_mask(dst_undef(), 0),
+		     0, outcolor, payload_r0_depth, outdepth);
+      inst->Aux = INST_AUX_TARGET(i);
    }
-   else {
-      /* if gl_FragData[0] is written, use it, else use gl_FragColor */
-      if (c->fp->program.Base.OutputsWritten & BITFIELD64_BIT(FRAG_RESULT_DATA0))
-         outcolor = src_reg(PROGRAM_OUTPUT, FRAG_RESULT_DATA0);
-      else 
-         outcolor = src_reg(PROGRAM_OUTPUT, FRAG_RESULT_COLOR);
 
-      inst = emit_op(c, WM_FB_WRITE, dst_mask(dst_undef(),0),
-                     0, outcolor, payload_r0_depth, outdepth);
-      inst->Aux = INST_AUX_EOT | INST_AUX_TARGET(0);
+   /* Mark the last FB write as final, or emit a dummy write if we had
+    * no render targets bound.
+    */
+   if (c->key.nr_color_regions != 0) {
+      inst->Aux |= INST_AUX_EOT;
+   } else {
+      inst = emit_op(c, WM_FB_WRITE, dst_mask(dst_undef(), 0),
+		     0, src_reg(PROGRAM_OUTPUT, FRAG_RESULT_COLOR),
+		     payload_r0_depth, outdepth);
+      inst->Aux = INST_AUX_TARGET(0) | INST_AUX_EOT;
    }
 }
 
@@ -1019,34 +1023,23 @@ static void validate_src_regs( struct brw_wm_compile *c,
       }
    }
 }
-	 
-static void validate_dst_regs( struct brw_wm_compile *c,
-			       const struct prog_instruction *inst )
-{
-   if (inst->DstReg.File == PROGRAM_OUTPUT) {
-      GLuint idx = inst->DstReg.Index;
-      if (idx == FRAG_RESULT_COLOR)
-         c->fp_fragcolor_emitted = 1;
-   }
-}
 
 static void print_insns( const struct prog_instruction *insn,
 			 GLuint nr )
 {
    GLuint i;
    for (i = 0; i < nr; i++, insn++) {
-      _mesa_printf("%3d: ", i);
+      printf("%3d: ", i);
       if (insn->Opcode < MAX_OPCODE)
-	 _mesa_print_instruction(insn);
+	 _mesa_fprint_instruction_opt(stdout, insn, 0, PROG_PRINT_DEBUG, NULL);
       else if (insn->Opcode < MAX_WM_OPCODE) {
 	 GLuint idx = insn->Opcode - MAX_OPCODE;
 
-	 _mesa_print_alu_instruction(insn,
-				     wm_opcode_strings[idx],
-				     3);
+	 _mesa_fprint_alu_instruction(stdout, insn, wm_opcode_strings[idx],
+				      3, PROG_PRINT_DEBUG, NULL);
       }
       else 
-	 _mesa_printf("965 Opcode %d\n", insn->Opcode);
+	 printf("965 Opcode %d\n", insn->Opcode);
    }
 }
 
@@ -1057,20 +1050,28 @@ static void print_insns( const struct prog_instruction *insn,
  */
 void brw_wm_pass_fp( struct brw_wm_compile *c )
 {
+   struct intel_context *intel = &c->func.brw->intel;
    struct brw_fragment_program *fp = c->fp;
    GLuint insn;
 
-   if (INTEL_DEBUG & DEBUG_WM) {
-      _mesa_printf("pre-fp:\n");
-      _mesa_print_program(&fp->program.Base); 
-      _mesa_printf("\n");
+   if (unlikely(INTEL_DEBUG & DEBUG_WM)) {
+      printf("pre-fp:\n");
+      _mesa_fprint_program_opt(stdout, &fp->program.Base, PROG_PRINT_DEBUG,
+			       true);
+      printf("\n");
    }
 
    c->pixel_xy = src_undef();
-   c->delta_xy = src_undef();
+   if (intel->gen >= 6) {
+      /* The interpolation deltas come in as the perspective pixel
+       * location barycentric params.
+       */
+      c->delta_xy = src_reg(PROGRAM_PAYLOAD, PAYLOAD_DEPTH);
+   } else {
+      c->delta_xy = src_undef();
+   }
    c->pixel_w = src_undef();
    c->nr_fp_insns = 0;
-   c->fp->tex_units_used = 0x0;
 
    /* Emit preamble instructions.  This is where special instructions such as
     * WM_CINTERP, WM_LINTERP, WM_PINTERP and WM_WPOSXY are emitted to
@@ -1079,7 +1080,6 @@ void brw_wm_pass_fp( struct brw_wm_compile *c )
    for (insn = 0; insn < fp->program.Base.NumInstructions; insn++) {
       const struct prog_instruction *inst = &fp->program.Base.Instructions[insn];
       validate_src_regs(c, inst);
-      validate_dst_regs(c, inst);
    }
 
    /* Loop over all instructions doing assorted simplifications and
@@ -1127,6 +1127,11 @@ void brw_wm_pass_fp( struct brw_wm_compile *c )
 	 precalc_lit(c, inst);
 	 break;
 
+      case OPCODE_RSQ:
+	 out = emit_scalar_insn(c, inst);
+	 out->SrcReg[0].Abs = true;
+	 break;
+
       case OPCODE_TEX:
 	 precalc_tex(c, inst);
 	 break;
@@ -1168,10 +1173,10 @@ void brw_wm_pass_fp( struct brw_wm_compile *c )
       }
    }
 
-   if (INTEL_DEBUG & DEBUG_WM) {
-      _mesa_printf("pass_fp:\n");
+   if (unlikely(INTEL_DEBUG & DEBUG_WM)) {
+      printf("pass_fp:\n");
       print_insns( c->prog_instructions, c->nr_fp_insns );
-      _mesa_printf("\n");
+      printf("\n");
    }
 }
 

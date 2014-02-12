@@ -26,9 +26,10 @@
 #ifndef _M_TRANSLATE_H_
 #define _M_TRANSLATE_H_
 
-#include "main/config.h"
+#include "main/compiler.h"
+#include "main/glheader.h"
 #include "main/mtypes.h"		/* hack for GLchan */
-
+#include "swrast/s_chan.h"
 
 /**
  * Array translation.

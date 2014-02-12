@@ -131,10 +131,7 @@ void _vega_pack_rgba_span_float(struct vg_context *ctx,
    case VG_sL_8: {
       VGubyte *dst = (VGubyte *)dstAddr;
       for (i = 0; i < n; ++i) {
-         VGubyte r, g, b, a;
-         r = float_to_ubyte(rgba[i][0]);
-         g = float_to_ubyte(rgba[i][1]);
-         b = float_to_ubyte(rgba[i][2]);
+         VGubyte a;
          a = float_to_ubyte(rgba[i][3]);
 
          dst[i] =  a;
@@ -183,10 +180,7 @@ void _vega_pack_rgba_span_float(struct vg_context *ctx,
    case VG_lL_8: {
       VGubyte *dst = (VGubyte *)dstAddr;
       for (i = 0; i < n; ++i) {
-         VGubyte r, g, b ,a;
-         r = float_to_ubyte(rgba[i][0]);
-         g = float_to_ubyte(rgba[i][1]);
-         b = float_to_ubyte(rgba[i][2]);
+         VGubyte a;
          a = float_to_ubyte(rgba[i][3]);
          dst[i] = a;
       }
@@ -196,10 +190,7 @@ void _vega_pack_rgba_span_float(struct vg_context *ctx,
    case VG_A_8: {
       VGubyte *dst = (VGubyte *)dstAddr;
       for (i = 0; i < n; ++i) {
-         VGubyte r, g, b, a;
-         r = float_to_ubyte(rgba[i][0]);
-         g = float_to_ubyte(rgba[i][1]);
-         b = float_to_ubyte(rgba[i][2]);
+         VGubyte a;
          a = float_to_ubyte(rgba[i][3]);
 
          dst[i] = a;
@@ -227,10 +218,7 @@ void _vega_pack_rgba_span_float(struct vg_context *ctx,
    case VG_A_1: {
       VGshort *dst = (VGshort *)dstAddr;
       for (i = 0; i < n; ++i) {
-         VGubyte r, g, b, a;
-         r = float_to_ubyte(rgba[i][0]);
-         g = float_to_ubyte(rgba[i][1]);
-         b = float_to_ubyte(rgba[i][2]);
+         VGubyte a;
          a = float_to_ubyte(rgba[i][3]);
 
          dst[i] =   (a & (128));
@@ -241,11 +229,8 @@ void _vega_pack_rgba_span_float(struct vg_context *ctx,
    case VG_A_4: {
       VGshort *dst = (VGshort *)dstAddr;
       for (i = 0; i < n; ++i) {
-         VGubyte r, g, b, a;
+         VGubyte a;
          VGubyte res;
-         r = float_to_ubyte(rgba[i][0]);
-         g = float_to_ubyte(rgba[i][1]);
-         b = float_to_ubyte(rgba[i][2]);
          a = float_to_ubyte(rgba[i][3]);
 
          res = a/4;
@@ -474,6 +459,7 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
                                   VGfloat rgba[][4])
 {
    VGint i;
+   union util_color uc;
 
    switch (dataFormat) {
    case VG_sRGBX_8888: {
@@ -486,8 +472,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
          b = (*src >>  8) & 0xff;
          a = 0xff;
 
-         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i]);
+         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
    }
@@ -502,8 +491,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
          b = (*src >>  8) & 0xff;
          a = (*src >>  0) & 0xff;
 
-         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i]);
+         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
       return;
@@ -519,8 +511,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
          b = (*src >>  8) & 0xff;
          a = (*src >>  0) & 0xff;
 
-         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i]);
+         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
       return;
@@ -531,13 +526,16 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
       src += offset;
       for (i = 0; i < n; ++i) {
          VGfloat clr[4];
-         clr[0] = ((*src >> 10) & 31)/31.;
-         clr[1] = ((*src >>  5) & 95)/95.;
+         clr[0] = ((*src >> 11) & 31)/31.;
+         clr[1] = ((*src >>  5) & 63)/63.;
          clr[2] = ((*src >>  0) & 31)/31.;
          clr[3] = 1.f;
 
-         util_pack_color(clr, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                         rgba[i]);
+         util_pack_color(clr, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
    }
@@ -552,8 +550,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
          clr[2] = ((*src >>  1) & 31)/31.;
          clr[3] = ((*src >>  0) & 1)/1.;
 
-         util_pack_color(clr, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                         rgba[i]);
+         util_pack_color(clr, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
    }
@@ -568,8 +569,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
          clr[2] = ((*src >>  4) & 15)/15.;
          clr[3] = ((*src >>  0) & 15)/15.;
 
-         util_pack_color(clr, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                         rgba[i]);
+         util_pack_color(clr, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
    }
@@ -578,8 +582,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
       VGubyte *src = (VGubyte *)data;
       src += offset;
       for (i = 0; i < n; ++i) {
-         util_pack_color_ub(0xff, 0xff, 0xff, *src, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                         rgba[i]);
+         util_pack_color_ub(0xff, 0xff, 0xff, *src, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
    }
@@ -594,8 +601,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
          b = (*src >>  8) & 0xff;
          a = 0xff;
 
-         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i]);
+         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
    }
@@ -610,8 +620,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
          b = (*src >>  8) & 0xff;
          a = (*src >>  0) & 0xff;
 
-         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i]);
+         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
       return;
@@ -627,8 +640,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
          b = (*src >>  8) & 0xff;
          a = (*src >>  0) & 0xff;
 
-         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i]);
+         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
       return;
@@ -638,8 +654,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
       VGubyte *src = (VGubyte *)data;
       src += offset;
       for (i = 0; i < n; ++i) {
-         util_pack_color_ub(0xff, 0xff, 0xff, *src, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                         rgba[i]);
+         util_pack_color_ub(0xff, 0xff, 0xff, *src, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
    }
@@ -648,8 +667,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
       VGubyte *src = (VGubyte *)data;
       src += offset;
       for (i = 0; i < n; ++i) {
-         util_pack_color_ub(0xff, 0xff, 0xff, *src, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i]);
+         util_pack_color_ub(0xff, 0xff, 0xff, *src, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
    }
@@ -667,8 +689,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
             clr[2] = clr[0];
             clr[3] = 1.f;
 
-            util_pack_color(clr, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i+j]);
+            util_pack_color(clr, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+            rgba[i+j][0] = uc.f[0];
+            rgba[i+j][1] = uc.f[1];
+            rgba[i+j][2] = uc.f[2];
+            rgba[i+j][3] = uc.f[3];
          }
          ++src;
       }
@@ -688,8 +713,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
             clr[2] = 0.f;
             clr[3] = (((*src) & (1<<shift)) >> shift);
 
-            util_pack_color(clr, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i+j]);
+            util_pack_color(clr, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+            rgba[i+j][0] = uc.f[0];
+            rgba[i+j][1] = uc.f[1];
+            rgba[i+j][2] = uc.f[2];
+            rgba[i+j][3] = uc.f[3];
          }
          ++src;
       }
@@ -715,8 +743,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
             clr[2] = 0.f;
             clr[3] = ((*src) & (bitter)) >> shift;
 
-            util_pack_color(clr, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i +j]);
+            util_pack_color(clr, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+            rgba[i+j][0] = uc.f[0];
+            rgba[i+j][1] = uc.f[1];
+            rgba[i+j][2] = uc.f[2];
+            rgba[i+j][3] = uc.f[3];
          }
          ++src;
       }
@@ -735,8 +766,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
          g = (*src >>  8) & 0xff;
          b = (*src >>  0) & 0xff;
 
-         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i]);
+         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
       return;
@@ -752,8 +786,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
          g = (*src >>  8) & 0xff;
          b = (*src >>  0) & 0xff;
 
-         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i]);
+         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
       return;
@@ -775,8 +812,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
          g = (*src >>  8) & 0xff;
          b = (*src >>  0) & 0xff;
 
-         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i]);
+         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
       return;
@@ -792,8 +832,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
          g = (*src >>  8) & 0xff;
          b = (*src >>  0) & 0xff;
 
-         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i]);
+         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
       return;
@@ -811,8 +854,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
          r = (*src >>  8) & 0xff;
          a = (*src >>  0) & 0xff;
 
-         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i]);
+         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
       return;
@@ -828,8 +874,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
          r = (*src >>  8) & 0xff;
          a = (*src >>  0) & 0xff;
 
-         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i]);
+         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
       return;
@@ -853,8 +902,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
          r = (*src >>  8) & 0xff;
          a = (*src >>  0) & 0xff;
 
-         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i]);
+         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
       return;
@@ -870,8 +922,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
          r = (*src >>  8) & 0xff;
          a = (*src >>  0) & 0xff;
 
-         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i]);
+         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
       return;
@@ -889,8 +944,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
          g = (*src >>  8) & 0xff;
          r = (*src >>  0) & 0xff;
 
-         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i]);
+         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
       return;
@@ -906,8 +964,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
          g = (*src >>  8) & 0xff;
          r = (*src >>  0) & 0xff;
 
-         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i]);
+         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
       return;
@@ -929,8 +990,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
          g = (*src >>  8) & 0xff;
          r = (*src >>  0) & 0xff;
 
-         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i]);
+         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
       return;
@@ -946,8 +1010,11 @@ void _vega_unpack_float_span_rgba(struct vg_context *ctx,
          g = (*src >>  8) & 0xff;
          r = (*src >>  0) & 0xff;
 
-         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT,
-                            rgba[i]);
+         util_pack_color_ub(r, g, b, a, PIPE_FORMAT_R32G32B32A32_FLOAT, &uc);
+         rgba[i][0] = uc.f[0];
+         rgba[i][1] = uc.f[1];
+         rgba[i][2] = uc.f[2];
+         rgba[i][3] = uc.f[3];
          ++src;
       }
       return;

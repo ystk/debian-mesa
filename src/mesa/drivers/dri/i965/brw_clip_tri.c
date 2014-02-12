@@ -32,7 +32,7 @@
 #include "main/glheader.h"
 #include "main/macros.h"
 #include "main/enums.h"
-#include "shader/program.h"
+#include "program/program.h"
 
 #include "intel_batchbuffer.h"
 
@@ -50,6 +50,7 @@ static void release_tmps( struct brw_clip_compile *c )
 void brw_clip_tri_alloc_regs( struct brw_clip_compile *c, 
 			      GLuint nr_verts )
 {
+   struct intel_context *intel = &c->func.brw->intel;
    GLuint i = 0,j;
 
    /* Register usage is static, precompute here:
@@ -73,12 +74,12 @@ void brw_clip_tri_alloc_regs( struct brw_clip_compile *c,
       i += c->nr_regs;
    }
 
-   if (c->nr_attrs & 1) {
+   if (c->vue_map.num_slots % 2) {
+      /* The VUE has an odd number of slots so the last register is only half
+       * used.  Fill the second half with zero.
+       */
       for (j = 0; j < 3; j++) {
-	 GLuint delta = c->nr_attrs*16 + 32;
-
-         if (BRW_IS_IGDNG(c->func.brw))
-             delta = c->nr_attrs * 16 + 32 * 3;
+	 GLuint delta = brw_vue_slot_to_offset(c->vue_map.num_slots);
 
 	 brw_MOV(&c->func, byte_offset(c->reg.vertex[j], delta), brw_imm_f(0));
       }
@@ -118,7 +119,7 @@ void brw_clip_tri_alloc_regs( struct brw_clip_compile *c,
       i++;
    }
 
-   if (c->need_ff_sync) {
+   if (intel->needs_ff_sync) {
       c->reg.ff_sync = retype(brw_vec1_grf(i, 0), BRW_REGISTER_TYPE_UD);
       i++;
    }
@@ -136,7 +137,6 @@ void brw_clip_tri_init_vertices( struct brw_clip_compile *c )
 {
    struct brw_compile *p = &c->func;
    struct brw_reg tmp0 = c->reg.loopcount; /* handy temporary */
-   struct brw_instruction *is_rev;
 
    /* Initial list of indices for incoming vertexes:
     */
@@ -150,21 +150,21 @@ void brw_clip_tri_init_vertices( struct brw_clip_compile *c )
    /* XXX: Is there an easier way to do this?  Need to reverse every
     * second tristrip element:  Can ignore sometimes?
     */
-   is_rev = brw_IF(p, BRW_EXECUTE_1);
+   brw_IF(p, BRW_EXECUTE_1);
    {   
       brw_MOV(p, get_element(c->reg.inlist, 0),  brw_address(c->reg.vertex[1]) );
       brw_MOV(p, get_element(c->reg.inlist, 1),  brw_address(c->reg.vertex[0]) );
       if (c->need_direction)
 	 brw_MOV(p, c->reg.dir, brw_imm_f(-1));
    }
-   is_rev = brw_ELSE(p, is_rev);
+   brw_ELSE(p);
    {
       brw_MOV(p, get_element(c->reg.inlist, 0),  brw_address(c->reg.vertex[0]) );
       brw_MOV(p, get_element(c->reg.inlist, 1),  brw_address(c->reg.vertex[1]) );
       if (c->need_direction)
 	 brw_MOV(p, c->reg.dir, brw_imm_f(1));
    }
-   brw_ENDIF(p, is_rev);
+   brw_ENDIF(p);
 
    brw_MOV(p, get_element(c->reg.inlist, 2),  brw_address(c->reg.vertex[2]) );
    brw_MOV(p, brw_vec8_grf(c->reg.outlist.nr, 0), brw_imm_f(0));
@@ -176,7 +176,6 @@ void brw_clip_tri_init_vertices( struct brw_clip_compile *c )
 void brw_clip_tri_flat_shade( struct brw_clip_compile *c )
 {
    struct brw_compile *p = &c->func;
-   struct brw_instruction *is_poly;
    struct brw_reg tmp0 = c->reg.loopcount; /* handy temporary */
 
    brw_AND(p, tmp0, get_element_ud(c->reg.R0, 2), brw_imm_ud(PRIM_MASK)); 
@@ -186,23 +185,37 @@ void brw_clip_tri_flat_shade( struct brw_clip_compile *c )
 	   tmp0,
 	   brw_imm_ud(_3DPRIM_POLYGON));
 
-   is_poly = brw_IF(p, BRW_EXECUTE_1);
+   brw_IF(p, BRW_EXECUTE_1);
    {
       brw_clip_copy_colors(c, 1, 0);
       brw_clip_copy_colors(c, 2, 0);
    }
-   is_poly = brw_ELSE(p, is_poly);
+   brw_ELSE(p);
    {
       if (c->key.pv_first) {
-         brw_clip_copy_colors(c, 1, 0);
-         brw_clip_copy_colors(c, 2, 0);
+	 brw_CMP(p,
+		 vec1(brw_null_reg()),
+		 BRW_CONDITIONAL_EQ,
+		 tmp0,
+		 brw_imm_ud(_3DPRIM_TRIFAN));
+	 brw_IF(p, BRW_EXECUTE_1);
+	 {
+	    brw_clip_copy_colors(c, 0, 1);
+	    brw_clip_copy_colors(c, 2, 1);
+	 }
+	 brw_ELSE(p);
+	 {
+	    brw_clip_copy_colors(c, 1, 0);
+	    brw_clip_copy_colors(c, 2, 0);
+	 }
+	 brw_ENDIF(p);
       }
       else {
          brw_clip_copy_colors(c, 0, 2);
          brw_clip_copy_colors(c, 1, 2);
       }
    }
-   brw_ENDIF(p, is_poly);
+   brw_ENDIF(p);
 }
 
 
@@ -219,11 +232,8 @@ void brw_clip_tri( struct brw_clip_compile *c )
    struct brw_indirect inlist_ptr = brw_indirect(4, 0);
    struct brw_indirect outlist_ptr = brw_indirect(5, 0);
    struct brw_indirect freelist_ptr = brw_indirect(6, 0);
-   struct brw_instruction *plane_loop;
-   struct brw_instruction *plane_active;
-   struct brw_instruction *vertex_loop;
-   struct brw_instruction *next_test;
-   struct brw_instruction *prev_test;
+   GLuint hpos_offset = brw_vert_result_to_offset(&c->vue_map,
+                                                  VERT_RESULT_HPOS);
    
    brw_MOV(p, get_addr_reg(vtxPrev),     brw_address(c->reg.vertex[2]) );
    brw_MOV(p, get_addr_reg(plane_ptr),   brw_clip_plane0_address(c));
@@ -232,14 +242,14 @@ void brw_clip_tri( struct brw_clip_compile *c )
 
    brw_MOV(p, get_addr_reg(freelist_ptr), brw_address(c->reg.vertex[3]) );
 
-   plane_loop = brw_DO(p, BRW_EXECUTE_1);
+   brw_DO(p, BRW_EXECUTE_1);
    {
       /* if (planemask & 1)
        */
       brw_set_conditionalmod(p, BRW_CONDITIONAL_NZ);
       brw_AND(p, vec1(brw_null_reg()), c->reg.planemask, brw_imm_ud(1));
       
-      plane_active = brw_IF(p, BRW_EXECUTE_1);
+      brw_IF(p, BRW_EXECUTE_1);
       {
 	 /* vtxOut = freelist_ptr++ 
 	  */
@@ -254,7 +264,7 @@ void brw_clip_tri( struct brw_clip_compile *c )
 	 brw_MOV(p, c->reg.loopcount, c->reg.nr_verts);
 	 brw_MOV(p, c->reg.nr_verts, brw_imm_ud(0));
 
-	 vertex_loop = brw_DO(p, BRW_EXECUTE_1);
+	 brw_DO(p, BRW_EXECUTE_1);
 	 {
 	    /* vtx = *input_ptr;
 	     */
@@ -262,14 +272,14 @@ void brw_clip_tri( struct brw_clip_compile *c )
 
 	    /* IS_NEGATIVE(prev) */
 	    brw_set_conditionalmod(p, BRW_CONDITIONAL_L);
-	    brw_DP4(p, vec4(c->reg.dpPrev), deref_4f(vtxPrev, c->offset[VERT_RESULT_HPOS]), c->reg.plane_equation);
-	    prev_test = brw_IF(p, BRW_EXECUTE_1);
+	    brw_DP4(p, vec4(c->reg.dpPrev), deref_4f(vtxPrev, hpos_offset), c->reg.plane_equation);
+	    brw_IF(p, BRW_EXECUTE_1);
 	    {
 	       /* IS_POSITIVE(next)
 		*/
 	       brw_set_conditionalmod(p, BRW_CONDITIONAL_GE);
-	       brw_DP4(p, vec4(c->reg.dp), deref_4f(vtx, c->offset[VERT_RESULT_HPOS]), c->reg.plane_equation);
-	       next_test = brw_IF(p, BRW_EXECUTE_1);
+	       brw_DP4(p, vec4(c->reg.dp), deref_4f(vtx, hpos_offset), c->reg.plane_equation);
+	       brw_IF(p, BRW_EXECUTE_1);
 	       {
 
 		  /* Coming back in.
@@ -284,7 +294,7 @@ void brw_clip_tri( struct brw_clip_compile *c )
 		  brw_MOV(p, get_addr_reg(vtxOut), get_addr_reg(vtxPrev) );
 		  brw_set_predicate_control(p, BRW_PREDICATE_NONE);
 
-		  brw_clip_interp_vertex(c, vtxOut, vtxPrev, vtx, c->reg.t, GL_FALSE);
+		  brw_clip_interp_vertex(c, vtxOut, vtxPrev, vtx, c->reg.t, false);
 
 		  /* *outlist_ptr++ = vtxOut;
 		   * nr_verts++; 
@@ -295,10 +305,10 @@ void brw_clip_tri( struct brw_clip_compile *c )
 		  brw_ADD(p, c->reg.nr_verts, c->reg.nr_verts, brw_imm_ud(1));
 		  brw_MOV(p, get_addr_reg(vtxOut), brw_imm_uw(0) );
 	       }
-	       brw_ENDIF(p, next_test);
+	       brw_ENDIF(p);
 	       
 	    }
-	    prev_test = brw_ELSE(p, prev_test);
+	    brw_ELSE(p);
 	    {
 	       /* *outlist_ptr++ = vtxPrev;
 		* nr_verts++;
@@ -310,8 +320,8 @@ void brw_clip_tri( struct brw_clip_compile *c )
 	       /* IS_NEGATIVE(next)
 		*/
 	       brw_set_conditionalmod(p, BRW_CONDITIONAL_L);
-	       brw_DP4(p, vec4(c->reg.dp), deref_4f(vtx, c->offset[VERT_RESULT_HPOS]), c->reg.plane_equation);
-	       next_test = brw_IF(p, BRW_EXECUTE_1);
+	       brw_DP4(p, vec4(c->reg.dp), deref_4f(vtx, hpos_offset), c->reg.plane_equation);
+	       brw_IF(p, BRW_EXECUTE_1);
 	       {
 		  /* Going out of bounds.  Avoid division by zero as we
 		   * know dp != dpPrev from DIFFERENT_SIGNS, above.
@@ -326,7 +336,7 @@ void brw_clip_tri( struct brw_clip_compile *c )
 		  brw_MOV(p, get_addr_reg(vtxOut), get_addr_reg(vtx) );
 		  brw_set_predicate_control(p, BRW_PREDICATE_NONE);
 
-		  brw_clip_interp_vertex(c, vtxOut, vtx, vtxPrev, c->reg.t, GL_TRUE);		  
+		  brw_clip_interp_vertex(c, vtxOut, vtx, vtxPrev, c->reg.t, true);
 
 		  /* *outlist_ptr++ = vtxOut;
 		   * nr_verts++; 
@@ -337,9 +347,9 @@ void brw_clip_tri( struct brw_clip_compile *c )
 		  brw_ADD(p, c->reg.nr_verts, c->reg.nr_verts, brw_imm_ud(1));
 		  brw_MOV(p, get_addr_reg(vtxOut), brw_imm_uw(0) );
 	       } 	       
-	       brw_ENDIF(p, next_test);
+	       brw_ENDIF(p);
 	    }
-	    brw_ENDIF(p, prev_test);
+	    brw_ENDIF(p);
 	    
 	    /* vtxPrev = vtx;
 	     * inlist_ptr++;
@@ -352,7 +362,7 @@ void brw_clip_tri( struct brw_clip_compile *c )
 	    brw_set_conditionalmod(p, BRW_CONDITIONAL_NZ);
 	    brw_ADD(p, c->reg.loopcount, c->reg.loopcount, brw_imm_d(-1));
 	 } 
-	 brw_WHILE(p, vertex_loop);
+	 brw_WHILE(p);
 
 	 /* vtxPrev = *(outlist_ptr-1)  OR: outlist[nr_verts-1]
 	  * inlist = outlist
@@ -365,7 +375,7 @@ void brw_clip_tri( struct brw_clip_compile *c )
 	 brw_MOV(p, get_addr_reg(inlist_ptr), brw_address(c->reg.inlist));
 	 brw_MOV(p, get_addr_reg(outlist_ptr), brw_address(c->reg.outlist));
       }
-      brw_ENDIF(p, plane_active);
+      brw_ENDIF(p);
       
       /* plane_ptr++;
        */
@@ -384,7 +394,7 @@ void brw_clip_tri( struct brw_clip_compile *c )
       brw_set_conditionalmod(p, BRW_CONDITIONAL_NZ);
       brw_SHR(p, c->reg.planemask, c->reg.planemask, brw_imm_ud(1));
    }
-   brw_WHILE(p, plane_loop);
+   brw_WHILE(p);
 }
 
 
@@ -392,7 +402,6 @@ void brw_clip_tri( struct brw_clip_compile *c )
 void brw_clip_tri_emit_polygon(struct brw_clip_compile *c)
 {
    struct brw_compile *p = &c->func;
-   struct brw_instruction *loop, *if_insn;
 
    /* for (loopcount = nr_verts-2; loopcount > 0; loopcount--)
     */
@@ -402,7 +411,7 @@ void brw_clip_tri_emit_polygon(struct brw_clip_compile *c)
 	   c->reg.nr_verts,
 	   brw_imm_d(-2));
 
-   if_insn = brw_IF(p, BRW_EXECUTE_1);
+   brw_IF(p, BRW_EXECUTE_1);
    {
       struct brw_indirect v0 = brw_indirect(0, 0);
       struct brw_indirect vptr = brw_indirect(1, 0);
@@ -410,14 +419,17 @@ void brw_clip_tri_emit_polygon(struct brw_clip_compile *c)
       brw_MOV(p, get_addr_reg(vptr), brw_address(c->reg.inlist));
       brw_MOV(p, get_addr_reg(v0), deref_1uw(vptr, 0));
 
-      brw_clip_emit_vue(c, v0, 1, 0, ((_3DPRIM_TRIFAN << 2) | R02_PRIM_START));
+      brw_clip_emit_vue(c, v0, 1, 0,
+                        ((_3DPRIM_TRIFAN << URB_WRITE_PRIM_TYPE_SHIFT)
+                         | URB_WRITE_PRIM_START));
       
       brw_ADD(p, get_addr_reg(vptr), get_addr_reg(vptr), brw_imm_uw(2));
       brw_MOV(p, get_addr_reg(v0), deref_1uw(vptr, 0));
 
-      loop = brw_DO(p, BRW_EXECUTE_1);
+      brw_DO(p, BRW_EXECUTE_1);
       {
-	 brw_clip_emit_vue(c, v0, 1, 0, (_3DPRIM_TRIFAN << 2));
+	 brw_clip_emit_vue(c, v0, 1, 0,
+                           (_3DPRIM_TRIFAN << URB_WRITE_PRIM_TYPE_SHIFT));
   
 	 brw_ADD(p, get_addr_reg(vptr), get_addr_reg(vptr), brw_imm_uw(2));
 	 brw_MOV(p, get_addr_reg(v0), deref_1uw(vptr, 0));
@@ -425,11 +437,13 @@ void brw_clip_tri_emit_polygon(struct brw_clip_compile *c)
 	 brw_set_conditionalmod(p, BRW_CONDITIONAL_NZ);
 	 brw_ADD(p, c->reg.loopcount, c->reg.loopcount, brw_imm_d(-1));
       }
-      brw_WHILE(p, loop);
+      brw_WHILE(p);
 
-      brw_clip_emit_vue(c, v0, 0, 1, ((_3DPRIM_TRIFAN << 2) | R02_PRIM_END));
+      brw_clip_emit_vue(c, v0, 0, 1,
+                        ((_3DPRIM_TRIFAN << URB_WRITE_PRIM_TYPE_SHIFT)
+                         | URB_WRITE_PRIM_END));
    }
-   brw_ENDIF(p, if_insn);
+   brw_ENDIF(p);
 }
 
 static void do_clip_tri( struct brw_clip_compile *c )
@@ -443,14 +457,13 @@ static void do_clip_tri( struct brw_clip_compile *c )
 static void maybe_do_clip_tri( struct brw_clip_compile *c )
 {
    struct brw_compile *p = &c->func;
-   struct brw_instruction *do_clip;
 
    brw_CMP(p, vec1(brw_null_reg()), BRW_CONDITIONAL_NZ, c->reg.planemask, brw_imm_ud(0));
-   do_clip = brw_IF(p, BRW_EXECUTE_1);
+   brw_IF(p, BRW_EXECUTE_1);
    {
       do_clip_tri(c);
    }
-   brw_ENDIF(p, do_clip);
+   brw_ENDIF(p);
 }
 
 static void brw_clip_test( struct brw_clip_compile *c )
@@ -469,15 +482,17 @@ static void brw_clip_test( struct brw_clip_compile *c )
     struct brw_indirect vt2 = brw_indirect(2, 0);
 
     struct brw_compile *p = &c->func;
-    struct brw_instruction *is_outside;
     struct brw_reg tmp0 = c->reg.loopcount; /* handy temporary */
+
+    GLuint hpos_offset = brw_vert_result_to_offset(&c->vue_map,
+                                                   VERT_RESULT_HPOS);
 
     brw_MOV(p, get_addr_reg(vt0), brw_address(c->reg.vertex[0]));
     brw_MOV(p, get_addr_reg(vt1), brw_address(c->reg.vertex[1]));
     brw_MOV(p, get_addr_reg(vt2), brw_address(c->reg.vertex[2]));
-    brw_MOV(p, v0, deref_4f(vt0, c->offset[VERT_RESULT_HPOS]));
-    brw_MOV(p, v1, deref_4f(vt1, c->offset[VERT_RESULT_HPOS]));
-    brw_MOV(p, v2, deref_4f(vt2, c->offset[VERT_RESULT_HPOS]));
+    brw_MOV(p, v0, deref_4f(vt0, hpos_offset));
+    brw_MOV(p, v1, deref_4f(vt1, hpos_offset));
+    brw_MOV(p, v2, deref_4f(vt2, hpos_offset));
     brw_AND(p, c->reg.planemask, c->reg.planemask, brw_imm_ud(~0x3f));
 
     /* test nearz, xmin, ymin plane */
@@ -496,11 +511,11 @@ static void brw_clip_test( struct brw_clip_compile *c )
     brw_OR(p, tmp0, tmp0, get_element(t, 2));
     brw_set_conditionalmod(p, BRW_CONDITIONAL_NZ);
     brw_AND(p, brw_null_reg(), tmp0, brw_imm_ud(0x1));
-    is_outside = brw_IF(p, BRW_EXECUTE_1);
+    brw_IF(p, BRW_EXECUTE_1);
     {
         brw_clip_kill_thread(c);
     }
-    brw_ENDIF(p, is_outside);
+    brw_ENDIF(p);
     brw_set_predicate_control(p, BRW_PREDICATE_NONE);
 
     /* some vertices are inside a plane, some are outside,need to clip */
@@ -537,11 +552,11 @@ static void brw_clip_test( struct brw_clip_compile *c )
     brw_OR(p, tmp0, tmp0, get_element(t, 2));
     brw_set_conditionalmod(p, BRW_CONDITIONAL_NZ);
     brw_AND(p, brw_null_reg(), tmp0, brw_imm_ud(0x1));
-    is_outside = brw_IF(p, BRW_EXECUTE_1);
+    brw_IF(p, BRW_EXECUTE_1);
     {
         brw_clip_kill_thread(c);
     }
-    brw_ENDIF(p, is_outside);
+    brw_ENDIF(p);
     brw_set_predicate_control(p, BRW_PREDICATE_NONE);
 
     /* some vertices are inside a plane, some are outside,need to clip */
@@ -568,8 +583,8 @@ static void brw_clip_test( struct brw_clip_compile *c )
 
 void brw_emit_tri_clip( struct brw_clip_compile *c )
 {
-   struct brw_instruction *neg_rhw;
    struct brw_compile *p = &c->func;
+   struct brw_context *brw = p->brw;
    brw_clip_tri_alloc_regs(c, 3 + c->key.nr_userclip + 6);
    brw_clip_tri_init_vertices(c);
    brw_clip_init_clipmask(c);
@@ -577,15 +592,15 @@ void brw_emit_tri_clip( struct brw_clip_compile *c )
 
    /* if -ve rhw workaround bit is set, 
       do cliptest */
-   if (BRW_IS_965(p->brw)) {
+   if (brw->has_negative_rhw_bug) {
       brw_set_conditionalmod(p, BRW_CONDITIONAL_NZ);
       brw_AND(p, brw_null_reg(), get_element_ud(c->reg.R0, 2), 
               brw_imm_ud(1<<20));
-      neg_rhw = brw_IF(p, BRW_EXECUTE_1); 
+      brw_IF(p, BRW_EXECUTE_1);
       {
          brw_clip_test(c);
       }
-      brw_ENDIF(p, neg_rhw);
+      brw_ENDIF(p);
    }
    /* Can't push into do_clip_tri because with polygon (or quad)
     * flatshading, need to apply the flatshade here because we don't

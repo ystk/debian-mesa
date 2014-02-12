@@ -32,7 +32,12 @@
 #include "brw_context.h"
 #include "brw_wm.h"
 #include "brw_state.h"
+#include "main/formats.h"
+#include "main/fbobject.h"
+#include "main/samplerobj.h"
+#include "program/prog_parameter.h"
 
+#include "glsl/ralloc.h"
 
 /** Return number of src args for given instruction */
 GLuint brw_wm_nr_args( GLuint opcode )
@@ -68,6 +73,7 @@ GLuint brw_wm_is_scalar_result( GLuint opcode )
    case OPCODE_RCP:
    case OPCODE_RSQ:
    case OPCODE_SIN:
+   case OPCODE_DP2:
    case OPCODE_DP3:
    case OPCODE_DP4:
    case OPCODE_DPH:
@@ -111,15 +117,7 @@ brw_wm_non_glsl_emit(struct brw_context *brw, struct brw_wm_compile *c)
    brw_wm_pass2(c);
 
    /* how many general-purpose registers are used */
-   c->prog_data.total_grf = c->max_wm_grf;
-
-   /* Scratch space is used for register spilling */
-   if (c->last_scratch) {
-      c->prog_data.total_scratch = c->last_scratch + 0x40;
-   }
-   else {
-      c->prog_data.total_scratch = 0;
-   }
+   c->prog_data.reg_blocks = brw_register_blocks(c->max_wm_grf);
 
    /* Emit GEN4 code.
     */
@@ -128,34 +126,141 @@ brw_wm_non_glsl_emit(struct brw_context *brw, struct brw_wm_compile *c)
 
 
 /**
+ * Return a bitfield where bit n is set if barycentric interpolation mode n
+ * (see enum brw_wm_barycentric_interp_mode) is needed by the fragment shader.
+ */
+unsigned
+brw_compute_barycentric_interp_modes(bool shade_model_flat,
+                                     const struct gl_fragment_program *fprog)
+{
+   unsigned barycentric_interp_modes = 0;
+   int attr;
+
+   /* Loop through all fragment shader inputs to figure out what interpolation
+    * modes are in use, and set the appropriate bits in
+    * barycentric_interp_modes.
+    */
+   for (attr = 0; attr < FRAG_ATTRIB_MAX; ++attr) {
+      enum glsl_interp_qualifier interp_qualifier =
+         fprog->InterpQualifier[attr];
+      bool is_gl_Color = attr == FRAG_ATTRIB_COL0 || attr == FRAG_ATTRIB_COL1;
+
+      /* Ignore unused inputs. */
+      if (!(fprog->Base.InputsRead & BITFIELD64_BIT(attr)))
+         continue;
+
+      /* Ignore WPOS and FACE, because they don't require interpolation. */
+      if (attr == FRAG_ATTRIB_WPOS || attr == FRAG_ATTRIB_FACE)
+         continue;
+
+      if (interp_qualifier == INTERP_QUALIFIER_NOPERSPECTIVE) {
+         barycentric_interp_modes |=
+            1 << BRW_WM_NONPERSPECTIVE_PIXEL_BARYCENTRIC;
+      } else if (interp_qualifier == INTERP_QUALIFIER_SMOOTH ||
+                 (!(shade_model_flat && is_gl_Color) &&
+                  interp_qualifier == INTERP_QUALIFIER_NONE)) {
+         barycentric_interp_modes |=
+            1 << BRW_WM_PERSPECTIVE_PIXEL_BARYCENTRIC;
+      }
+   }
+
+   return barycentric_interp_modes;
+}
+
+
+void
+brw_wm_payload_setup(struct brw_context *brw,
+		     struct brw_wm_compile *c)
+{
+   struct intel_context *intel = &brw->intel;
+   bool uses_depth = (c->fp->program.Base.InputsRead &
+		      (1 << FRAG_ATTRIB_WPOS)) != 0;
+   unsigned barycentric_interp_modes =
+      brw_compute_barycentric_interp_modes(c->key.flat_shade,
+                                           &c->fp->program);
+   int i;
+
+   if (intel->gen >= 6) {
+      /* R0-1: masks, pixel X/Y coordinates. */
+      c->nr_payload_regs = 2;
+      /* R2: only for 32-pixel dispatch.*/
+
+      /* R3-26: barycentric interpolation coordinates.  These appear in the
+       * same order that they appear in the brw_wm_barycentric_interp_mode
+       * enum.  Each set of coordinates occupies 2 registers if dispatch width
+       * == 8 and 4 registers if dispatch width == 16.  Coordinates only
+       * appear if they were enabled using the "Barycentric Interpolation
+       * Mode" bits in WM_STATE.
+       */
+      for (i = 0; i < BRW_WM_BARYCENTRIC_INTERP_MODE_COUNT; ++i) {
+         if (barycentric_interp_modes & (1 << i)) {
+            c->barycentric_coord_reg[i] = c->nr_payload_regs;
+            c->nr_payload_regs += 2;
+            if (c->dispatch_width == 16) {
+               c->nr_payload_regs += 2;
+            }
+         }
+      }
+
+      /* R27: interpolated depth if uses source depth */
+      if (uses_depth) {
+	 c->source_depth_reg = c->nr_payload_regs;
+	 c->nr_payload_regs++;
+	 if (c->dispatch_width == 16) {
+	    /* R28: interpolated depth if not 8-wide. */
+	    c->nr_payload_regs++;
+	 }
+      }
+      /* R29: interpolated W set if GEN6_WM_USES_SOURCE_W.
+       */
+      if (uses_depth) {
+	 c->source_w_reg = c->nr_payload_regs;
+	 c->nr_payload_regs++;
+	 if (c->dispatch_width == 16) {
+	    /* R30: interpolated W if not 8-wide. */
+	    c->nr_payload_regs++;
+	 }
+      }
+      /* R31: MSAA position offsets. */
+      /* R32-: bary for 32-pixel. */
+      /* R58-59: interp W for 32-pixel. */
+
+      if (c->fp->program.Base.OutputsWritten &
+	  BITFIELD64_BIT(FRAG_RESULT_DEPTH)) {
+	 c->source_depth_to_render_target = true;
+	 c->computes_depth = true;
+      }
+   } else {
+      brw_wm_lookup_iz(intel, c);
+   }
+}
+
+/**
  * All Mesa program -> GPU code generation goes through this function.
  * Depending on the instructions used (i.e. flow control instructions)
  * we'll use one of two code generators.
  */
-static void do_wm_prog( struct brw_context *brw,
-			struct brw_fragment_program *fp, 
-			struct brw_wm_prog_key *key)
+bool do_wm_prog(struct brw_context *brw,
+		struct gl_shader_program *prog,
+		struct brw_fragment_program *fp,
+		struct brw_wm_prog_key *key)
 {
+   struct intel_context *intel = &brw->intel;
    struct brw_wm_compile *c;
    const GLuint *program;
    GLuint program_size;
 
    c = brw->wm.compile_data;
    if (c == NULL) {
-      brw->wm.compile_data = calloc(1, sizeof(*brw->wm.compile_data));
+      brw->wm.compile_data = rzalloc(NULL, struct brw_wm_compile);
       c = brw->wm.compile_data;
       if (c == NULL) {
          /* Ouch - big out of memory problem.  Can't continue
           * without triggering a segfault, no way to signal,
           * so just return.
           */
-         return;
+         return false;
       }
-      c->instruction = _mesa_calloc(BRW_WM_MAX_INSN * sizeof(*c->instruction));
-      c->prog_instructions = _mesa_calloc(BRW_WM_MAX_INSN *
-					  sizeof(*c->prog_instructions));
-      c->vreg = _mesa_calloc(BRW_WM_MAX_VREG * sizeof(*c->vreg));
-      c->refs = _mesa_calloc(BRW_WM_MAX_REF * sizeof(*c->refs));
    } else {
       void *instruction = c->instruction;
       void *prog_instructions = c->prog_instructions;
@@ -172,59 +277,160 @@ static void do_wm_prog( struct brw_context *brw,
    c->fp = fp;
    c->env_param = brw->intel.ctx.FragmentProgram.Parameters;
 
-   brw_init_compile(brw, &c->func);
+   brw_init_compile(brw, &c->func, c);
 
-   /* temporary sanity check assertion */
-   ASSERT(fp->isGLSL == brw_wm_is_glsl(&c->fp->program));
+   if (prog && prog->_LinkedShaders[MESA_SHADER_FRAGMENT]) {
+      if (!brw_wm_fs_emit(brw, c, prog))
+	 return false;
+   } else {
+      if (!c->instruction) {
+	 c->instruction = rzalloc_array(c, struct brw_wm_instruction, BRW_WM_MAX_INSN);
+	 c->prog_instructions = rzalloc_array(c, struct prog_instruction, BRW_WM_MAX_INSN);
+	 c->vreg = rzalloc_array(c, struct brw_wm_value, BRW_WM_MAX_VREG);
+	 c->refs = rzalloc_array(c, struct brw_wm_ref, BRW_WM_MAX_REF);
+      }
 
-   /*
-    * Shader which use GLSL features such as flow control are handled
-    * differently from "simple" shaders.
-    */
-   if (fp->isGLSL) {
-      c->dispatch_width = 8;
-      brw_wm_glsl_emit(brw, c);
-   }
-   else {
+      /* Fallback for fixed function and ARB_fp shaders. */
       c->dispatch_width = 16;
+      brw_wm_payload_setup(brw, c);
       brw_wm_non_glsl_emit(brw, c);
+      c->prog_data.dispatch_width = 16;
    }
 
-   if (INTEL_DEBUG & DEBUG_WM)
+   /* Scratch space is used for register spilling */
+   if (c->last_scratch) {
+      c->prog_data.total_scratch = brw_get_scratch_size(c->last_scratch);
+
+      brw_get_scratch_bo(intel, &brw->wm.scratch_bo,
+			 c->prog_data.total_scratch * brw->max_wm_threads);
+   }
+
+   if (unlikely(INTEL_DEBUG & DEBUG_WM))
       fprintf(stderr, "\n");
 
    /* get the program
     */
    program = brw_get_program(&c->func, &program_size);
 
-   dri_bo_unreference(brw->wm.prog_bo);
-   brw->wm.prog_bo = brw_upload_cache( &brw->cache, BRW_WM_PROG,
-				       &c->key, sizeof(c->key),
-				       NULL, 0,
-				       program, program_size,
-				       &c->prog_data,
-				       &brw->wm.prog_data );
+   brw_upload_cache(&brw->cache, BRW_WM_PROG,
+		    &c->key, sizeof(c->key),
+		    program, program_size,
+		    &c->prog_data, sizeof(c->prog_data),
+		    &brw->wm.prog_offset, &brw->wm.prog_data);
+
+   return true;
 }
 
+void
+brw_populate_sampler_prog_key_data(struct gl_context *ctx,
+				   struct brw_sampler_prog_key_data *key,
+				   int i)
+{
+   const struct gl_texture_unit *unit = &ctx->Texture.Unit[i];
 
+   if (unit->_ReallyEnabled) {
+      const struct gl_texture_object *t = unit->_Current;
+      const struct gl_texture_image *img = t->Image[0][t->BaseLevel];
+      struct gl_sampler_object *sampler = _mesa_get_samplerobj(ctx, i);
+      int swizzles[SWIZZLE_NIL + 1] = {
+	 SWIZZLE_X,
+	 SWIZZLE_Y,
+	 SWIZZLE_Z,
+	 SWIZZLE_W,
+	 SWIZZLE_ZERO,
+	 SWIZZLE_ONE,
+	 SWIZZLE_NIL
+      };
+
+      if (img->_BaseFormat == GL_DEPTH_COMPONENT ||
+	  img->_BaseFormat == GL_DEPTH_STENCIL) {
+	 if (sampler->CompareMode == GL_COMPARE_R_TO_TEXTURE_ARB)
+	    key->compare_funcs[i] = sampler->CompareFunc;
+
+	 /* We handle GL_DEPTH_TEXTURE_MODE here instead of as surface format
+	  * overrides because shadow comparison always returns the result of
+	  * the comparison in all channels anyway.
+	  */
+	 switch (sampler->DepthMode) {
+	 case GL_ALPHA:
+	    swizzles[0] = SWIZZLE_ZERO;
+	    swizzles[1] = SWIZZLE_ZERO;
+	    swizzles[2] = SWIZZLE_ZERO;
+	    swizzles[3] = SWIZZLE_X;
+	    break;
+	 case GL_LUMINANCE:
+	    swizzles[0] = SWIZZLE_X;
+	    swizzles[1] = SWIZZLE_X;
+	    swizzles[2] = SWIZZLE_X;
+	    swizzles[3] = SWIZZLE_ONE;
+	    break;
+	 case GL_INTENSITY:
+	    swizzles[0] = SWIZZLE_X;
+	    swizzles[1] = SWIZZLE_X;
+	    swizzles[2] = SWIZZLE_X;
+	    swizzles[3] = SWIZZLE_X;
+	    break;
+	 case GL_RED:
+	    swizzles[0] = SWIZZLE_X;
+	    swizzles[1] = SWIZZLE_ZERO;
+	    swizzles[2] = SWIZZLE_ZERO;
+	    swizzles[3] = SWIZZLE_ONE;
+	    break;
+	 }
+      }
+
+      if (img->InternalFormat == GL_YCBCR_MESA) {
+	 key->yuvtex_mask |= 1 << i;
+	 if (img->TexFormat == MESA_FORMAT_YCBCR)
+	     key->yuvtex_swap_mask |= 1 << i;
+      }
+
+      key->swizzles[i] =
+	 MAKE_SWIZZLE4(swizzles[GET_SWZ(t->_Swizzle, 0)],
+		       swizzles[GET_SWZ(t->_Swizzle, 1)],
+		       swizzles[GET_SWZ(t->_Swizzle, 2)],
+		       swizzles[GET_SWZ(t->_Swizzle, 3)]);
+
+      if (sampler->MinFilter != GL_NEAREST &&
+	  sampler->MagFilter != GL_NEAREST) {
+	 if (sampler->WrapS == GL_CLAMP)
+	    key->gl_clamp_mask[0] |= 1 << i;
+	 if (sampler->WrapT == GL_CLAMP)
+	    key->gl_clamp_mask[1] |= 1 << i;
+	 if (sampler->WrapR == GL_CLAMP)
+	    key->gl_clamp_mask[2] |= 1 << i;
+      }
+   }
+   else {
+      key->swizzles[i] = SWIZZLE_NOOP;
+   }
+}
 
 static void brw_wm_populate_key( struct brw_context *brw,
 				 struct brw_wm_prog_key *key )
 {
-   GLcontext *ctx = &brw->intel.ctx;
+   struct gl_context *ctx = &brw->intel.ctx;
    /* BRW_NEW_FRAGMENT_PROGRAM */
    const struct brw_fragment_program *fp = 
       (struct brw_fragment_program *)brw->fragment_program;
-   GLboolean uses_depth = (fp->program.Base.InputsRead & (1 << FRAG_ATTRIB_WPOS)) != 0;
+   const struct gl_program *prog = (struct gl_program *) brw->fragment_program;
    GLuint lookup = 0;
    GLuint line_aa;
    GLuint i;
+
+   /* As a temporary measure we assume that all programs use dFdy() (and hence
+    * need to be compiled differently depending on whether we're rendering to
+    * an FBO).  FIXME: set this bool correctly based on the contents of the
+    * program.
+    */
+   bool program_uses_dfdy = true;
 
    memset(key, 0, sizeof(*key));
 
    /* Build the index for table lookup
     */
    /* _NEW_COLOR */
+   key->alpha_test = ctx->Color.AlphaEnabled;
    if (fp->program.UsesKill ||
        ctx->Color.AlphaEnabled)
       lookup |= IZ_PS_KILL_ALPHATEST_BIT;
@@ -274,12 +480,10 @@ static void brw_wm_populate_key( struct brw_context *brw,
 	 }
       }
    }
-	 
-   brw_wm_lookup_iz(line_aa,
-		    lookup,
-		    uses_depth,
-		    key);
 
+   key->iz_lookup = lookup;
+   key->line_aa = line_aa;
+   key->stats_wm = brw->intel.stats_wm;
 
    /* BRW_NEW_WM_INPUT_DIMENSIONS */
    key->proj_attrib_mask = brw->wm.input_size_masks[4-1];
@@ -287,31 +491,14 @@ static void brw_wm_populate_key( struct brw_context *brw,
    /* _NEW_LIGHT */
    key->flat_shade = (ctx->Light.ShadeModel == GL_FLAT);
 
-   /* _NEW_HINT */
-   key->linear_color = (ctx->Hint.PerspectiveCorrection == GL_FASTEST);
+   /* _NEW_FRAG_CLAMP | _NEW_BUFFERS */
+   key->clamp_fragment_color = ctx->Color._ClampFragmentColor;
 
    /* _NEW_TEXTURE */
    for (i = 0; i < BRW_MAX_TEX_UNIT; i++) {
-      const struct gl_texture_unit *unit = &ctx->Texture.Unit[i];
-
-      if (unit->_ReallyEnabled) {
-         const struct gl_texture_object *t = unit->_Current;
-         const struct gl_texture_image *img = t->Image[0][t->BaseLevel];
-	 if (img->InternalFormat == GL_YCBCR_MESA) {
-	    key->yuvtex_mask |= 1 << i;
-	    if (img->TexFormat == MESA_FORMAT_YCBCR)
-		key->yuvtex_swap_mask |= 1 << i;
-	 }
-
-         key->tex_swizzles[i] = t->_Swizzle;
-      }
-      else {
-         key->tex_swizzles[i] = SWIZZLE_NOOP;
-      }
+      if (prog->TexturesUsed[i])
+	 brw_populate_sampler_prog_key_data(ctx, &key->tex, i);
    }
-
-   /* Shadow */
-   key->shadowtex_mask = fp->program.Base.ShadowSamplers;
 
    /* _NEW_BUFFERS */
    /*
@@ -335,14 +522,15 @@ static void brw_wm_populate_key( struct brw_context *brw,
     * drawable height in order to invert the Y axis.
     */
    if (fp->program.Base.InputsRead & FRAG_BIT_WPOS) {
-      if (brw->intel.driDrawable != NULL) {
-         key->origin_x = brw->intel.driDrawable->x;
-         key->origin_y = brw->intel.driDrawable->y;
-         key->drawable_height = brw->intel.driDrawable->h;
-      }
+      key->drawable_height = ctx->DrawBuffer->Height;
    }
 
-   key->nr_color_regions = brw->state.nr_color_regions;
+   if ((fp->program.Base.InputsRead & FRAG_BIT_WPOS) || program_uses_dfdy) {
+      key->render_to_fbo = _mesa_is_user_fbo(ctx->DrawBuffer);
+   }
+
+   /* _NEW_BUFFERS */
+   key->nr_color_regions = ctx->DrawBuffer->_NumColorDrawBuffers;
 
    /* CACHE_NEW_VS_PROG */
    key->vp_outputs_written = brw->vs.prog_data->outputs_written;
@@ -352,23 +540,25 @@ static void brw_wm_populate_key( struct brw_context *brw,
 }
 
 
-static void brw_prepare_wm_prog(struct brw_context *brw)
+static void
+brw_upload_wm_prog(struct brw_context *brw)
 {
+   struct intel_context *intel = &brw->intel;
+   struct gl_context *ctx = &intel->ctx;
    struct brw_wm_prog_key key;
    struct brw_fragment_program *fp = (struct brw_fragment_program *)
       brw->fragment_program;
-     
+
    brw_wm_populate_key(brw, &key);
 
-   /* Make an early check for the key.
-    */
-   dri_bo_unreference(brw->wm.prog_bo);
-   brw->wm.prog_bo = brw_search_cache(&brw->cache, BRW_WM_PROG,
-				      &key, sizeof(key),
-				      NULL, 0,
-				      &brw->wm.prog_data);
-   if (brw->wm.prog_bo == NULL)
-      do_wm_prog(brw, fp, &key);
+   if (!brw_search_cache(&brw->cache, BRW_WM_PROG,
+			 &key, sizeof(key),
+			 &brw->wm.prog_offset, &brw->wm.prog_data)) {
+      bool success = do_wm_prog(brw, ctx->Shader._CurrentFragmentProgram, fp,
+				&key);
+      (void) success;
+      assert(success);
+   }
 }
 
 
@@ -376,11 +566,11 @@ const struct brw_tracked_state brw_wm_prog = {
    .dirty = {
       .mesa  = (_NEW_COLOR |
 		_NEW_DEPTH |
-                _NEW_HINT |
 		_NEW_STENCIL |
 		_NEW_POLYGON |
 		_NEW_LINE |
 		_NEW_LIGHT |
+		_NEW_FRAG_CLAMP |
 		_NEW_BUFFERS |
 		_NEW_TEXTURE),
       .brw   = (BRW_NEW_FRAGMENT_PROGRAM |
@@ -388,6 +578,6 @@ const struct brw_tracked_state brw_wm_prog = {
 		BRW_NEW_REDUCED_PRIMITIVE),
       .cache = CACHE_NEW_VS_PROG,
    },
-   .prepare = brw_prepare_wm_prog
+   .emit = brw_upload_wm_prog
 };
 

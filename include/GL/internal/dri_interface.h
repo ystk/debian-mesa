@@ -41,7 +41,13 @@
 #define DRI_INTERFACE_H
 
 /* For archs with no drm.h */
-#if !defined(__APPLE__) && !defined(__CYGWIN__) && !defined(__GNU__)
+#if defined(__APPLE__) || defined(__CYGWIN__) || defined(__GNU__)
+#ifndef __NOT_HAVE_DRM_H
+#define __NOT_HAVE_DRM_H
+#endif
+#endif
+
+#ifndef __NOT_HAVE_DRM_H
 #include <drm.h>
 #else
 typedef unsigned int drm_context_t;
@@ -68,7 +74,6 @@ typedef struct __DRIcoreExtensionRec		__DRIcoreExtension;
 typedef struct __DRIextensionRec		__DRIextension;
 typedef struct __DRIcopySubBufferExtensionRec	__DRIcopySubBufferExtension;
 typedef struct __DRIswapControlExtensionRec	__DRIswapControlExtension;
-typedef struct __DRIallocateExtensionRec	__DRIallocateExtension;
 typedef struct __DRIframeTrackingExtensionRec	__DRIframeTrackingExtension;
 typedef struct __DRImediaStreamCounterExtensionRec	__DRImediaStreamCounterExtension;
 typedef struct __DRItexOffsetExtensionRec	__DRItexOffsetExtension;
@@ -79,6 +84,7 @@ typedef struct __DRIbufferRec			__DRIbuffer;
 typedef struct __DRIdri2ExtensionRec		__DRIdri2Extension;
 typedef struct __DRIdri2LoaderExtensionRec	__DRIdri2LoaderExtension;
 typedef struct __DRI2flushExtensionRec	__DRI2flushExtension;
+typedef struct __DRI2throttleExtensionRec	__DRI2throttleExtension;
 
 /*@}*/
 
@@ -141,23 +147,6 @@ struct __DRIswapControlExtensionRec {
     __DRIextension base;
     void (*setSwapInterval)(__DRIdrawable *drawable, unsigned int inteval);
     unsigned int (*getSwapInterval)(__DRIdrawable *drawable);
-};
-
-/**
- * Used by drivers that implement the GLX_MESA_allocate_memory.
- */
-#define __DRI_ALLOCATE "DRI_Allocate"
-#define __DRI_ALLOCATE_VERSION 1
-struct __DRIallocateExtensionRec {
-    __DRIextension base;
-
-    void *(*allocateMemory)(__DRIscreen *screen, GLsizei size,
-			    GLfloat readfreq, GLfloat writefreq,
-			    GLfloat priority);
-   
-    void (*freeMemory)(__DRIscreen *screen, GLvoid *pointer);
-   
-    GLuint (*memoryOffset)(__DRIscreen *screen, const GLvoid *pointer);
 };
 
 /**
@@ -230,6 +219,13 @@ struct __DRItexOffsetExtensionRec {
 };
 
 
+/* Valid values for format in the setTexBuffer2 function below.  These
+ * values match the GLX tokens for compatibility reasons, but we
+ * define them here since the DRI interface can't depend on GLX. */
+#define __DRI_TEXTURE_FORMAT_NONE        0x20D8
+#define __DRI_TEXTURE_FORMAT_RGB         0x20D9
+#define __DRI_TEXTURE_FORMAT_RGBA        0x20DA
+
 #define __DRI_TEX_BUFFER "DRI_TexBuffer"
 #define __DRI_TEX_BUFFER_VERSION 2
 struct __DRItexBufferExtensionRec {
@@ -256,18 +252,58 @@ struct __DRItexBufferExtensionRec {
 			  GLint target,
 			  GLint format,
 			  __DRIdrawable *pDraw);
+    /**
+     * Method to release texture buffer in case some special platform
+     * need this.
+     *
+     * For GLX_EXT_texture_from_pixmap with AIGLX.
+     */
+    void (*releaseTexBuffer)(__DRIcontext *pDRICtx,
+			GLint target,
+			__DRIdrawable *pDraw);
 };
 
 /**
  * Used by drivers that implement DRI2
  */
 #define __DRI2_FLUSH "DRI2_Flush"
-#define __DRI2_FLUSH_VERSION 1
+#define __DRI2_FLUSH_VERSION 3
 struct __DRI2flushExtensionRec {
     __DRIextension base;
     void (*flush)(__DRIdrawable *drawable);
+
+    /**
+     * Ask the driver to call getBuffers/getBuffersWithFormat before
+     * it starts rendering again.
+     *
+     * \param drawable the drawable to invalidate
+     *
+     * \since 3
+     */
+    void (*invalidate)(__DRIdrawable *drawable);
 };
 
+
+/**
+ * Extension that the driver uses to request
+ * throttle callbacks.
+ */
+
+#define __DRI2_THROTTLE "DRI2_Throttle"
+#define __DRI2_THROTTLE_VERSION 1
+
+enum __DRI2throttleReason {
+   __DRI2_THROTTLE_SWAPBUFFER,
+   __DRI2_THROTTLE_COPYSUBBUFFER,
+   __DRI2_THROTTLE_FLUSHFRONT
+};
+
+struct __DRI2throttleExtensionRec {
+   __DRIextension base;
+   void (*throttle)(__DRIcontext *ctx,
+		    __DRIdrawable *drawable,
+		    enum __DRI2throttleReason reason);
+};
 
 /**
  * XML document describing the configuration options supported by the
@@ -393,15 +429,35 @@ struct __DRIswrastLoaderExtensionRec {
      * Put image to drawable
      */
     void (*putImage)(__DRIdrawable *drawable, int op,
-		     int x, int y, int width, int height, char *data,
-		     void *loaderPrivate);
+		     int x, int y, int width, int height,
+		     char *data, void *loaderPrivate);
 
     /**
-     * Get image from drawable
+     * Get image from readable
      */
-    void (*getImage)(__DRIdrawable *drawable,
-		     int x, int y, int width, int height, char *data,
-		     void *loaderPrivate);
+    void (*getImage)(__DRIdrawable *readable,
+		     int x, int y, int width, int height,
+		     char *data, void *loaderPrivate);
+};
+
+/**
+ * Invalidate loader extension.  The presence of this extension
+ * indicates to the DRI driver that the loader will call invalidate in
+ * the __DRI2_FLUSH extension, whenever the needs to query for new
+ * buffers.  This means that the DRI driver can drop the polling in
+ * glViewport().
+ *
+ * The extension doesn't provide any functionality, it's only use to
+ * indicate to the driver that it can use the new semantics.  A DRI
+ * driver can use this to switch between the different semantics or
+ * just refuse to initialize if this extension isn't present.
+ */
+#define __DRI_USE_INVALIDATE "DRI_UseInvalidate"
+#define __DRI_USE_INVALIDATE_VERSION 1
+
+typedef struct __DRIuseInvalidateExtensionRec __DRIuseInvalidateExtension;
+struct __DRIuseInvalidateExtensionRec {
+   __DRIextension base;
 };
 
 /**
@@ -465,6 +521,7 @@ struct __DRIswrastLoaderExtensionRec {
 #define __DRI_ATTRIB_BIND_TO_MIPMAP_TEXTURE	45
 #define __DRI_ATTRIB_BIND_TO_TEXTURE_TARGETS	46
 #define __DRI_ATTRIB_YINVERTED			47
+#define __DRI_ATTRIB_FRAMEBUFFER_SRGB_CAPABLE	48
 
 /* __DRI_ATTRIB_RENDER_TYPE */
 #define __DRI_ATTRIB_RGBA_BIT			0x01	
@@ -622,7 +679,7 @@ struct __DRIlegacyExtensionRec {
  * conjunction with the core extension.
  */
 #define __DRI_SWRAST "DRI_SWRast"
-#define __DRI_SWRAST_VERSION 1
+#define __DRI_SWRAST_VERSION 3
 
 struct __DRIswrastExtensionRec {
     __DRIextension base;
@@ -635,6 +692,29 @@ struct __DRIswrastExtensionRec {
     __DRIdrawable *(*createNewDrawable)(__DRIscreen *screen,
 					const __DRIconfig *config,
 					void *loaderPrivate);
+
+   /* Since version 2 */
+   __DRIcontext *(*createNewContextForAPI)(__DRIscreen *screen,
+                                           int api,
+                                           const __DRIconfig *config,
+                                           __DRIcontext *shared,
+                                           void *data);
+
+   /**
+    * Create a context for a particular API with a set of attributes
+    *
+    * \since version 3
+    *
+    * \sa __DRIdri2ExtensionRec::createContextAttribs
+    */
+   __DRIcontext *(*createContextAttribs)(__DRIscreen *screen,
+					 int api,
+					 const __DRIconfig *config,
+					 __DRIcontext *shared,
+					 unsigned num_attribs,
+					 const uint32_t *attribs,
+					 unsigned *error,
+					 void *loaderPrivate);
 };
 
 /**
@@ -650,6 +730,10 @@ struct __DRIswrastExtensionRec {
 #define __DRI_BUFFER_FAKE_FRONT_LEFT	7
 #define __DRI_BUFFER_FAKE_FRONT_RIGHT	8
 #define __DRI_BUFFER_DEPTH_STENCIL	9  /**< Only available with DRI2 1.1 */
+#define __DRI_BUFFER_HIZ		10
+
+/* Inofficial and for internal use. Increase when adding a new buffer token. */
+#define __DRI_BUFFER_COUNT		11
 
 struct __DRIbufferRec {
     unsigned int attachment;
@@ -713,7 +797,45 @@ struct __DRIdri2LoaderExtensionRec {
  * constructors for DRI2.
  */
 #define __DRI_DRI2 "DRI_DRI2"
-#define __DRI_DRI2_VERSION 1
+#define __DRI_DRI2_VERSION 3
+
+#define __DRI_API_OPENGL	0	/**< OpenGL compatibility profile */
+#define __DRI_API_GLES		1
+#define __DRI_API_GLES2		2
+#define __DRI_API_OPENGL_CORE	3	/**< OpenGL 3.2+ core profile */
+
+#define __DRI_CTX_ATTRIB_MAJOR_VERSION		0
+#define __DRI_CTX_ATTRIB_MINOR_VERSION		1
+#define __DRI_CTX_ATTRIB_FLAGS			2
+
+#define __DRI_CTX_FLAG_DEBUG			0x00000001
+#define __DRI_CTX_FLAG_FORWARD_COMPATIBLE	0x00000002
+
+/**
+ * \name Reasons that __DRIdri2Extension::createContextAttribs might fail
+ */
+/*@{*/
+/** Success! */
+#define __DRI_CTX_ERROR_SUCCESS			0
+
+/** Memory allocation failure */
+#define __DRI_CTX_ERROR_NO_MEMORY		1
+
+/** Client requested an API (e.g., OpenGL ES 2.0) that the driver can't do. */
+#define __DRI_CTX_ERROR_BAD_API			2
+
+/** Client requested an API version that the driver can't do. */
+#define __DRI_CTX_ERROR_BAD_VERSION		3
+
+/** Client requested a flag or combination of flags the driver can't do. */
+#define __DRI_CTX_ERROR_BAD_FLAG		4
+
+/** Client requested an attribute the driver doesn't understand. */
+#define __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE	5
+
+/** Client requested a flag the driver doesn't understand. */
+#define __DRI_CTX_ERROR_UNKNOWN_FLAG		6
+/*@}*/
 
 struct __DRIdri2ExtensionRec {
     __DRIextension base;
@@ -732,6 +854,133 @@ struct __DRIdri2ExtensionRec {
 				      __DRIcontext *shared,
 				      void *loaderPrivate);
 
+   /* Since version 2 */
+   unsigned int (*getAPIMask)(__DRIscreen *screen);
+
+   __DRIcontext *(*createNewContextForAPI)(__DRIscreen *screen,
+					   int api,
+					   const __DRIconfig *config,
+					   __DRIcontext *shared,
+					   void *data);
+
+   __DRIbuffer *(*allocateBuffer)(__DRIscreen *screen,
+				  unsigned int attachment,
+				  unsigned int format,
+				  int width,
+				  int height);
+   void (*releaseBuffer)(__DRIscreen *screen,
+			 __DRIbuffer *buffer);
+
+   /**
+    * Create a context for a particular API with a set of attributes
+    *
+    * \since version 3
+    *
+    * \sa __DRIswrastExtensionRec::createContextAttribs
+    */
+   __DRIcontext *(*createContextAttribs)(__DRIscreen *screen,
+					 int api,
+					 const __DRIconfig *config,
+					 __DRIcontext *shared,
+					 unsigned num_attribs,
+					 const uint32_t *attribs,
+					 unsigned *error,
+					 void *loaderPrivate);
 };
 
+
+/**
+ * This extension provides functionality to enable various EGLImage
+ * extensions.
+ */
+#define __DRI_IMAGE "DRI_IMAGE"
+#define __DRI_IMAGE_VERSION 1
+
+/**
+ * These formats correspond to the similarly named MESA_FORMAT_*
+ * tokens, except in the native endian of the CPU.  For example, on
+ * little endian __DRI_IMAGE_FORMAT_XRGB8888 corresponds to
+ * MESA_FORMAT_XRGB8888, but MESA_FORMAT_XRGB8888_REV on big endian.
+ */
+#define __DRI_IMAGE_FORMAT_RGB565       0x1001
+#define __DRI_IMAGE_FORMAT_XRGB8888     0x1002
+#define __DRI_IMAGE_FORMAT_ARGB8888     0x1003
+#define __DRI_IMAGE_FORMAT_ABGR8888     0x1004
+
+#define __DRI_IMAGE_USE_SHARE		0x0001
+#define __DRI_IMAGE_USE_SCANOUT		0x0002
+#define __DRI_IMAGE_USE_CURSOR		0x0004
+
+/**
+ * queryImage attributes
+ */
+
+#define __DRI_IMAGE_ATTRIB_STRIDE	0x2000
+#define __DRI_IMAGE_ATTRIB_HANDLE	0x2001
+#define __DRI_IMAGE_ATTRIB_NAME		0x2002
+
+typedef struct __DRIimageRec          __DRIimage;
+typedef struct __DRIimageExtensionRec __DRIimageExtension;
+struct __DRIimageExtensionRec {
+    __DRIextension base;
+
+    __DRIimage *(*createImageFromName)(__DRIscreen *screen,
+				       int width, int height, int format,
+				       int name, int pitch,
+				       void *loaderPrivate);
+
+    __DRIimage *(*createImageFromRenderbuffer)(__DRIcontext *context,
+					       int renderbuffer,
+					       void *loaderPrivate);
+
+    void (*destroyImage)(__DRIimage *image);
+
+    __DRIimage *(*createImage)(__DRIscreen *screen,
+			       int width, int height, int format,
+			       unsigned int use,
+			       void *loaderPrivate);
+
+   GLboolean (*queryImage)(__DRIimage *image, int attrib, int *value);
+
+   /**
+    * The new __DRIimage will share the content with the old one, see dup(2).
+    */
+   __DRIimage *(*dupImage)(__DRIimage *image, void *loaderPrivate);
+};
+
+
+/**
+ * This extension must be implemented by the loader and passed to the
+ * driver at screen creation time.  The EGLImage entry points in the
+ * various client APIs take opaque EGLImage handles and use this
+ * extension to map them to a __DRIimage.  At version 1, this
+ * extensions allows mapping EGLImage pointers to __DRIimage pointers,
+ * but future versions could support other EGLImage-like, opaque types
+ * with new lookup functions.
+ */
+#define __DRI_IMAGE_LOOKUP "DRI_IMAGE_LOOKUP"
+#define __DRI_IMAGE_LOOKUP_VERSION 1
+
+typedef struct __DRIimageLookupExtensionRec __DRIimageLookupExtension;
+struct __DRIimageLookupExtensionRec {
+    __DRIextension base;
+
+    __DRIimage *(*lookupEGLImage)(__DRIscreen *screen, void *image,
+				  void *loaderPrivate);
+};
+
+/**
+ * This extension allows for common DRI2 options
+ */
+#define __DRI2_CONFIG_QUERY "DRI_CONFIG_QUERY"
+#define __DRI2_CONFIG_QUERY_VERSION 1
+
+typedef struct __DRI2configQueryExtensionRec __DRI2configQueryExtension;
+struct __DRI2configQueryExtensionRec {
+   __DRIextension base;
+
+   int (*configQueryb)(__DRIscreen *screen, const char *var, GLboolean *val);
+   int (*configQueryi)(__DRIscreen *screen, const char *var, GLint *val);
+   int (*configQueryf)(__DRIscreen *screen, const char *var, GLfloat *val);
+};
 #endif

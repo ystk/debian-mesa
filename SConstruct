@@ -3,14 +3,14 @@
 #
 # For example, invoke scons as 
 #
-#   scons debug=1 dri=0 machine=x86
+#   scons build=debug llvm=yes machine=x86
 #
 # to set configuration variables. Or you can write those options to a file
 # named config.py:
 #
 #   # config.py
-#   debug=1
-#   dri=0
+#   build='debug'
+#   llvm=True
 #   machine='x86'
 # 
 # Invoke
@@ -23,34 +23,15 @@
 import os
 import os.path
 import sys
+import SCons.Util
 
 import common
 
 #######################################################################
 # Configuration options
 
-default_statetrackers = 'mesa'
-
-if common.default_platform in ('linux', 'freebsd', 'darwin'):
-	default_drivers = 'softpipe,failover,svga,i915,trace,identity,llvmpipe'
-	default_winsys = 'xlib'
-elif common.default_platform in ('winddk',):
-	default_drivers = 'softpipe,svga,i915,trace,identity'
-	default_winsys = 'all'
-else:
-	default_drivers = 'all'
-	default_winsys = 'all'
-
 opts = Variables('config.py')
 common.AddOptions(opts)
-opts.Add(ListVariable('statetrackers', 'state trackers to build', default_statetrackers,
-                     ['mesa', 'python', 'xorg']))
-opts.Add(ListVariable('drivers', 'pipe drivers to build', default_drivers,
-                     ['softpipe', 'failover', 'svga', 'i915', 'cell', 'trace', 'r300', 'identity', 'llvmpipe']))
-opts.Add(ListVariable('winsys', 'winsys drivers to build', default_winsys,
-                     ['xlib', 'vmware', 'intel', 'gdi', 'radeon']))
-
-opts.Add(EnumVariable('MSVS_VERSION', 'MS Visual C++ version', None, allowed_values=('7.1', '8.0', '9.0')))
 
 env = Environment(
 	options = opts,
@@ -59,102 +40,97 @@ env = Environment(
 	ENV = os.environ,
 )
 
+# XXX: This creates a many problems as it saves...
+#opts.Save('config.py', env)
+
+# Backwards compatability with old target configuration variable
+try:
+    targets = ARGUMENTS['targets']
+except KeyError:
+    pass
+else:
+    targets = targets.split(',')
+    print 'scons: warning: targets option is deprecated; pass the targets on their own such as'
+    print
+    print '  scons %s' % ' '.join(targets)
+    print 
+    COMMAND_LINE_TARGETS.append(targets)
+
+
 Help(opts.GenerateHelpText(env))
 
-# replicate options values in local variables
-debug = env['debug']
-dri = env['dri']
-llvm = env['llvm']
-machine = env['machine']
-platform = env['platform']
-
-# derived options
-x86 = machine == 'x86'
-ppc = machine == 'ppc'
-gcc = platform in ('linux', 'freebsd', 'darwin')
-msvc = platform in ('windows', 'winddk')
-
-Export([
-	'debug', 
-	'x86', 
-	'ppc', 
-	'dri', 
-	'llvm',
-	'platform',
-	'gcc',
-	'msvc',
-])
-
+# fail early for a common error on windows
+if env['gles']:
+    try:
+        import libxml2
+    except ImportError:
+        raise SCons.Errors.UserError, "GLES requires libxml2-python to build"
 
 #######################################################################
 # Environment setup
 
 # Includes
-env.Append(CPPPATH = [
+env.Prepend(CPPPATH = [
 	'#/include',
+])
+env.Append(CPPPATH = [
 	'#/src/gallium/include',
 	'#/src/gallium/auxiliary',
 	'#/src/gallium/drivers',
+	'#/src/gallium/winsys',
 ])
 
-
-# Posix
-if platform in ('posix', 'linux', 'freebsd', 'darwin'):
-	env.Append(CPPDEFINES = [
-		'_POSIX_SOURCE',
-		('_POSIX_C_SOURCE', '199309L'), 
-		'_SVID_SOURCE',
-		'_BSD_SOURCE', 
-		'_GNU_SOURCE',
-		
-		'PTHREADS',
-		'HAVE_POSIX_MEMALIGN',
-	])
-	if platform == 'darwin':
-		env.Append(CPPDEFINES = ['_DARWIN_C_SOURCE'])
-	env.Append(CPPPATH = ['/usr/X11R6/include'])
-	env.Append(LIBPATH = ['/usr/X11R6/lib'])
-	env.Append(LIBS = [
-		'm',
-		'pthread',
-		'expat',
-		'dl',
-	])
-
-
-# DRI
-if dri:
-	env.ParseConfig('pkg-config --cflags --libs libdrm')
-	env.Append(CPPDEFINES = [
-		('USE_EXTERNAL_DXTN_LIB', '1'), 
-		'IN_DRI_DRIVER',
-		'GLX_DIRECT_RENDERING',
-		'GLX_INDIRECT_RENDERING',
-	])
-
-# LLVM
-if llvm:
-	# See also http://www.scons.org/wiki/UsingPkgConfig
-	env.ParseConfig('llvm-config --cflags --ldflags --libs backend bitreader engine instrumentation interpreter ipo')
-	env.Append(CPPDEFINES = ['MESA_LLVM'])
-        # Force C++ linkage
-	env['LINK'] = env['CXX']
-
-# libGL
-if platform in ('linux', 'freebsd', 'darwin'):
-	env.Append(LIBS = [
-		'X11',
-		'Xext',
-		'Xxf86vm',
-		'Xdamage',
-		'Xfixes',
-	])
+if env['msvc']:
+    env.Append(CPPPATH = ['#include/c99'])
 
 # for debugging
 #print env.Dump()
 
-Export('env')
 
+#######################################################################
+# Invoke host SConscripts 
+# 
+# For things that are meant to be run on the native host build machine, instead
+# of the target machine.
+#
+
+# Create host environent
+if env['crosscompile'] and not env['embedded']:
+    host_env = Environment(
+        options = opts,
+        # no tool used
+        tools = [],
+        toolpath = ['#scons'],
+        ENV = os.environ,
+    )
+
+    # Override options
+    host_env['platform'] = common.host_platform
+    host_env['machine'] = common.host_machine
+    host_env['toolchain'] = 'default'
+    host_env['llvm'] = False
+
+    host_env.Tool('gallium')
+
+    host_env['hostonly'] = True
+    assert host_env['crosscompile'] == False
+
+    if host_env['msvc']:
+        host_env.Append(CPPPATH = ['#include/c99'])
+
+    target_env = env
+    env = host_env
+    Export('env')
+
+    SConscript(
+        'src/SConscript',
+        variant_dir = host_env['build_dir'],
+        duplicate = 0, # http://www.scons.org/doc/0.97/HTML/scons-user/x2261.html
+    )
+
+    env = target_env
+
+Export('env')
 
 #######################################################################
 # Invoke SConscripts
@@ -164,6 +140,22 @@ Export('env')
 
 SConscript(
 	'src/SConscript',
-	variant_dir = env['build'],
+	variant_dir = env['build_dir'],
 	duplicate = 0 # http://www.scons.org/doc/0.97/HTML/scons-user/x2261.html
 )
+
+
+########################################################################
+# List all aliases
+
+try:
+    from SCons.Node.Alias import default_ans
+except ImportError:
+    pass
+else:
+    aliases = default_ans.keys()
+    aliases.sort()
+    env.Help('\n')
+    env.Help('Recognized targets:\n')
+    for alias in aliases:
+        env.Help('    %s\n' % alias)

@@ -25,6 +25,7 @@
 #include "main/glheader.h"
 #include "main/macros.h"
 #include "main/imports.h"
+#include "main/format_pack.h"
 #include "main/colormac.h"
 
 #include "s_context.h"
@@ -45,7 +46,7 @@
  * \return GL_TRUE if any zoomed pixels visible, GL_FALSE if totally clipped
  */
 static GLboolean
-compute_zoomed_bounds(GLcontext *ctx, GLint imageX, GLint imageY,
+compute_zoomed_bounds(struct gl_context *ctx, GLint imageX, GLint imageY,
                       GLint spanX, GLint spanY, GLint width,
                       GLint *x0, GLint *x1, GLint *y0, GLint *y1)
 {
@@ -105,7 +106,7 @@ compute_zoomed_bounds(GLcontext *ctx, GLint imageX, GLint imageY,
  * return corresponding x coord in the original, unzoomed image.
  * This can use this for unzooming X or Y values.
  */
-static INLINE GLint
+static inline GLint
 unzoom_x(GLfloat zoomX, GLint imageX, GLint zx)
 {
    /*
@@ -127,7 +128,7 @@ unzoom_x(GLfloat zoomX, GLint imageX, GLint zx)
  * index/depth_span().
  */
 static void
-zoom_span( GLcontext *ctx, GLint imgX, GLint imgY, const SWspan *span,
+zoom_span( struct gl_context *ctx, GLint imgX, GLint imgY, const SWspan *span,
            const GLvoid *src, GLenum format )
 {
    SWcontext *swrast = SWRAST_CONTEXT(ctx);
@@ -184,15 +185,6 @@ zoom_span( GLcontext *ctx, GLint imgX, GLint imgY, const SWspan *span,
       zoomed.arrayMask |= SPAN_RGBA;
       zoomed.arrayAttribs |= FRAG_BIT_COL0;  /* we'll produce these values */
       ASSERT(span->arrayMask & SPAN_RGBA);
-   }
-   else if (format == GL_COLOR_INDEX) {
-      /* copy Z info */
-      zoomed.z = span->z;
-      zoomed.zStep = span->zStep;
-      /* we'll generate an array of color indexes */
-      zoomed.interpMask = span->interpMask & ~SPAN_INDEX;
-      zoomed.arrayMask |= SPAN_INDEX;
-      ASSERT(span->arrayMask & SPAN_INDEX);
    }
    else if (format == GL_DEPTH_COMPONENT) {
       /* Copy color info */
@@ -288,16 +280,6 @@ zoom_span( GLcontext *ctx, GLint imgX, GLint imgY, const SWspan *span,
          }
       }
    }
-   else if (format == GL_COLOR_INDEX) {
-      const GLuint *indexes = (const GLuint *) src;
-      GLint i;
-      for (i = 0; i < zoomedWidth; i++) {
-         GLint j = unzoom_x(ctx->Pixel.ZoomX, imgX, x0 + i) - span->x;
-         ASSERT(j >= 0);
-         ASSERT(j < (GLint) span->end);
-         zoomed.array->index[i] = indexes[j];
-      }
-   }
    else if (format == GL_DEPTH_COMPONENT) {
       const GLuint *zValues = (const GLuint *) src;
       GLint i;
@@ -307,8 +289,8 @@ zoom_span( GLcontext *ctx, GLint imgX, GLint imgY, const SWspan *span,
          ASSERT(j < (GLint) span->end);
          zoomed.array->z[i] = zValues[j];
       }
-      /* Now, fall into either the RGB or COLOR_INDEX path below */
-      format = ctx->Visual.rgbMode ? GL_RGBA : GL_COLOR_INDEX;
+      /* Now, fall into the RGB path below */
+      format = GL_RGBA;
    }
 
    /* write the span in rows [r0, r1) */
@@ -318,44 +300,36 @@ zoom_span( GLcontext *ctx, GLint imgX, GLint imgY, const SWspan *span,
        * Also, clipping may change the span end value, so store it as well.
        */
       const GLint end = zoomed.end; /* save */
-      GLuint rgbaSave[MAX_WIDTH][4];
+      void *rgbaSave;
       const GLint pixelSize =
          (zoomed.array->ChanType == GL_UNSIGNED_BYTE) ? 4 * sizeof(GLubyte) :
          ((zoomed.array->ChanType == GL_UNSIGNED_SHORT) ? 4 * sizeof(GLushort)
           : 4 * sizeof(GLfloat));
+
+      rgbaSave = malloc(zoomed.end * pixelSize);
+      if (!rgbaSave) {
+         return;
+      }
+
       if (y1 - y0 > 1) {
-         MEMCPY(rgbaSave, zoomed.array->rgba, zoomed.end * pixelSize);
+         memcpy(rgbaSave, zoomed.array->rgba, zoomed.end * pixelSize);
       }
       for (zoomed.y = y0; zoomed.y < y1; zoomed.y++) {
          _swrast_write_rgba_span(ctx, &zoomed);
          zoomed.end = end;  /* restore */
          if (y1 - y0 > 1) {
             /* restore the colors */
-            MEMCPY(zoomed.array->rgba, rgbaSave, zoomed.end * pixelSize);
+            memcpy(zoomed.array->rgba, rgbaSave, zoomed.end * pixelSize);
          }
       }
-   }
-   else if (format == GL_COLOR_INDEX) {
-      /* use specular color array for temp storage */
-      GLuint *indexSave = (GLuint *) zoomed.array->attribs[FRAG_ATTRIB_FOGC];
-      const GLint end = zoomed.end; /* save */
-      if (y1 - y0 > 1) {
-         MEMCPY(indexSave, zoomed.array->index, zoomed.end * sizeof(GLuint));
-      }
-      for (zoomed.y = y0; zoomed.y < y1; zoomed.y++) {
-         _swrast_write_index_span(ctx, &zoomed);
-         zoomed.end = end;  /* restore */
-         if (y1 - y0 > 1) {
-            /* restore the colors */
-            MEMCPY(zoomed.array->index, indexSave, zoomed.end * sizeof(GLuint));
-         }
-      }
+
+      free(rgbaSave);
    }
 }
 
 
 void
-_swrast_write_zoomed_rgba_span(GLcontext *ctx, GLint imgX, GLint imgY,
+_swrast_write_zoomed_rgba_span(struct gl_context *ctx, GLint imgX, GLint imgY,
                                const SWspan *span, const GLvoid *rgba)
 {
    zoom_span(ctx, imgX, imgY, span, rgba, GL_RGBA);
@@ -363,7 +337,7 @@ _swrast_write_zoomed_rgba_span(GLcontext *ctx, GLint imgX, GLint imgY,
 
 
 void
-_swrast_write_zoomed_rgb_span(GLcontext *ctx, GLint imgX, GLint imgY,
+_swrast_write_zoomed_rgb_span(struct gl_context *ctx, GLint imgX, GLint imgY,
                               const SWspan *span, const GLvoid *rgb)
 {
    zoom_span(ctx, imgX, imgY, span, rgb, GL_RGB);
@@ -371,16 +345,7 @@ _swrast_write_zoomed_rgb_span(GLcontext *ctx, GLint imgX, GLint imgY,
 
 
 void
-_swrast_write_zoomed_index_span(GLcontext *ctx, GLint imgX, GLint imgY,
-                                const SWspan *span)
-{
-   zoom_span(ctx, imgX, imgY, span,
-             (const GLvoid *) span->array->index, GL_COLOR_INDEX);
-}
-
-
-void
-_swrast_write_zoomed_depth_span(GLcontext *ctx, GLint imgX, GLint imgY,
+_swrast_write_zoomed_depth_span(struct gl_context *ctx, GLint imgX, GLint imgY,
                                 const SWspan *span)
 {
    zoom_span(ctx, imgX, imgY, span,
@@ -393,11 +358,11 @@ _swrast_write_zoomed_depth_span(GLcontext *ctx, GLint imgX, GLint imgY,
  * No per-fragment operations are applied.
  */
 void
-_swrast_write_zoomed_stencil_span(GLcontext *ctx, GLint imgX, GLint imgY,
+_swrast_write_zoomed_stencil_span(struct gl_context *ctx, GLint imgX, GLint imgY,
                                   GLint width, GLint spanX, GLint spanY,
-                                  const GLstencil stencil[])
+                                  const GLubyte stencil[])
 {
-   GLstencil zoomedVals[MAX_WIDTH];
+   GLubyte zoomedVals[MAX_WIDTH];
    GLint x0, x1, y0, y1, y;
    GLint i, zoomedWidth;
 
@@ -426,17 +391,17 @@ _swrast_write_zoomed_stencil_span(GLcontext *ctx, GLint imgX, GLint imgY,
 
 
 /**
- * Zoom/write z values (16 or 32-bit).
+ * Zoom/write 32-bit Z values.
  * No per-fragment operations are applied.
  */
 void
-_swrast_write_zoomed_z_span(GLcontext *ctx, GLint imgX, GLint imgY,
+_swrast_write_zoomed_z_span(struct gl_context *ctx, GLint imgX, GLint imgY,
                             GLint width, GLint spanX, GLint spanY,
-                            const GLvoid *z)
+                            const GLuint *zVals)
 {
-   struct gl_renderbuffer *rb = ctx->DrawBuffer->_DepthBuffer;
-   GLushort zoomedVals16[MAX_WIDTH];
-   GLuint zoomedVals32[MAX_WIDTH];
+   struct gl_renderbuffer *rb =
+      ctx->DrawBuffer->Attachment[BUFFER_DEPTH].Renderbuffer;
+   GLuint zoomedVals[MAX_WIDTH];
    GLint x0, x1, y0, y1, y;
    GLint i, zoomedWidth;
 
@@ -450,28 +415,16 @@ _swrast_write_zoomed_z_span(GLcontext *ctx, GLint imgX, GLint imgY,
    ASSERT(zoomedWidth <= MAX_WIDTH);
 
    /* zoom the span horizontally */
-   if (rb->DataType == GL_UNSIGNED_SHORT) {
-      for (i = 0; i < zoomedWidth; i++) {
-         GLint j = unzoom_x(ctx->Pixel.ZoomX, imgX, x0 + i) - spanX;
-         ASSERT(j >= 0);
-         ASSERT(j < width);
-         zoomedVals16[i] = ((GLushort *) z)[j];
-      }
-      z = zoomedVals16;
-   }
-   else {
-      ASSERT(rb->DataType == GL_UNSIGNED_INT);
-      for (i = 0; i < zoomedWidth; i++) {
-         GLint j = unzoom_x(ctx->Pixel.ZoomX, imgX, x0 + i) - spanX;
-         ASSERT(j >= 0);
-         ASSERT(j < width);
-         zoomedVals32[i] = ((GLuint *) z)[j];
-      }
-      z = zoomedVals32;
+   for (i = 0; i < zoomedWidth; i++) {
+      GLint j = unzoom_x(ctx->Pixel.ZoomX, imgX, x0 + i) - spanX;
+      ASSERT(j >= 0);
+      ASSERT(j < width);
+      zoomedVals[i] = zVals[j];
    }
 
    /* write the zoomed spans */
    for (y = y0; y < y1; y++) {
-      rb->PutRow(ctx, rb, zoomedWidth, x0, y, z, NULL);
+      GLubyte *dst = _swrast_pixel_address(rb, x0, y);
+      _mesa_pack_uint_z_row(rb->Format, zoomedWidth, zoomedVals, dst);
    }
 }

@@ -30,6 +30,13 @@
 
 #include "svga_hw_reg.h"
 
+
+/**
+ * We use a 32-bit mask to keep track of the generic indexes.
+ */
+#define MAX_GENERIC_VARYING 32
+
+
 struct svga_fragment_shader;
 struct svga_vertex_shader;
 struct svga_shader;
@@ -39,33 +46,39 @@ struct tgsi_token;
 
 struct svga_vs_compile_key
 {
-   ubyte need_prescale:1;
-   ubyte allow_psiz:1;
+   unsigned fs_generic_inputs;
    unsigned zero_stride_vertex_elements;
-   ubyte num_zero_stride_vertex_elements:6;
+   unsigned need_prescale:1;
+   unsigned allow_psiz:1;
+   unsigned num_zero_stride_vertex_elements:6;
 };
 
 struct svga_fs_compile_key
 {
-   boolean light_twoside:1;
-   boolean front_cw:1;
-   boolean white_fragments:1;
-   ubyte num_textures;
-   ubyte num_unnormalized_coords;
+   unsigned light_twoside:1;
+   unsigned front_ccw:1;
+   unsigned white_fragments:1;
+   unsigned num_textures:8;
+   unsigned num_unnormalized_coords:8;
+   unsigned sprite_origin_lower_left:1;
    struct {
-      ubyte compare_mode       : 1;
-      ubyte compare_func       : 3;
-      ubyte unnormalized       : 1;
-
-      ubyte width_height_idx   : 7;
-
-      ubyte texture_target;
+      unsigned compare_mode:1;
+      unsigned compare_func:3;
+      unsigned unnormalized:1;
+      unsigned width_height_idx:7;
+      unsigned texture_target:8;
+      unsigned sprite_texgen:1;
+      unsigned swizzle_r:3;
+      unsigned swizzle_g:3;
+      unsigned swizzle_b:3;
+      unsigned swizzle_a:3;
    } tex[PIPE_MAX_SAMPLERS];
 };
 
-union svga_compile_key {
+struct svga_compile_key {
    struct svga_vs_compile_key vkey;
    struct svga_fs_compile_key fkey;
+   int8_t generic_remap_table[MAX_GENERIC_VARYING];
 };
 
 struct svga_shader_result
@@ -74,7 +87,7 @@ struct svga_shader_result
 
    /* Parameters used to generate this compilation result:
     */
-   union svga_compile_key key;
+   struct svga_compile_key key;
 
    /* Compiled shader tokens:
     */
@@ -122,8 +135,7 @@ static INLINE unsigned svga_vs_key_size( const struct svga_vs_compile_key *key )
 
 static INLINE unsigned svga_fs_key_size( const struct svga_fs_compile_key *key )
 {
-   return (const char *)&key->tex[key->num_textures].texture_target -
-      (const char *)key;
+   return (const char *)&key->tex[key->num_textures] - (const char *)key;
 }
 
 struct svga_shader_result *
@@ -136,5 +148,19 @@ svga_translate_vertex_program( const struct svga_vertex_shader *fs,
 
 
 void svga_destroy_shader_result( struct svga_shader_result *result );
+
+unsigned
+svga_get_generic_inputs_mask(const struct tgsi_shader_info *info);
+
+unsigned
+svga_get_generic_outputs_mask(const struct tgsi_shader_info *info);
+
+void
+svga_remap_generics(unsigned generics_mask,
+                    int8_t remap_table[MAX_GENERIC_VARYING]);
+
+int
+svga_remap_generic_index(int8_t remap_table[MAX_GENERIC_VARYING],
+                         int generic_index);
 
 #endif

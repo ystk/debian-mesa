@@ -114,8 +114,8 @@ do {									\
 
 /* Clip a line against the viewport and user clip planes.
  */
-static INLINE void
-TAG(clip_line)( GLcontext *ctx, GLuint v0, GLuint v1, GLubyte mask )
+static inline void
+TAG(clip_line)( struct gl_context *ctx, GLuint v0, GLuint v1, GLubyte mask )
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    struct vertex_buffer *VB = &tnl->vb;
@@ -183,8 +183,8 @@ TAG(clip_line)( GLcontext *ctx, GLuint v0, GLuint v1, GLubyte mask )
 
 /* Clip a triangle against the viewport and user clip planes.
  */
-static INLINE void
-TAG(clip_tri)( GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLubyte mask )
+static inline void
+TAG(clip_tri)( struct gl_context *ctx, GLuint v0, GLuint v1, GLuint v2, GLubyte mask )
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    struct vertex_buffer *VB = &tnl->vb;
@@ -202,12 +202,12 @@ TAG(clip_tri)( GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLubyte mask )
    if (0) {
       /* print pre-clip vertex coords */
       GLuint i, j;
-      _mesa_printf("pre clip:\n");
+      printf("pre clip:\n");
       for (i = 0; i < n; i++) {
          j = inlist[i];
-         _mesa_printf("  %u: %u: %f, %f, %f, %f\n",
-                      i, j,
-                      coord[j][0], coord[j][1], coord[j][2], coord[j][3]);
+         printf("  %u: %u: %f, %f, %f, %f\n",
+		i, j,
+		coord[j][0], coord[j][1], coord[j][2], coord[j][3]);
          assert(!IS_INF_OR_NAN(coord[j][0]));
          assert(!IS_INF_OR_NAN(coord[j][1]));
          assert(!IS_INF_OR_NAN(coord[j][2]));
@@ -247,12 +247,12 @@ TAG(clip_tri)( GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLubyte mask )
    if (0) {
       /* print post-clip vertex coords */
       GLuint i, j;
-      _mesa_printf("post clip:\n");
+      printf("post clip:\n");
       for (i = 0; i < n; i++) {
          j = inlist[i];
-         _mesa_printf("  %u: %u: %f, %f, %f, %f\n",
-                      i, j,
-                      coord[j][0], coord[j][1], coord[j][2], coord[j][3]);
+         printf("  %u: %u: %f, %f, %f, %f\n",
+		i, j,
+		coord[j][0], coord[j][1], coord[j][2], coord[j][3]);
       }
    }
 
@@ -262,8 +262,8 @@ TAG(clip_tri)( GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLubyte mask )
 
 /* Clip a quad against the viewport and user clip planes.
  */
-static INLINE void
-TAG(clip_quad)( GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint v3,
+static inline void
+TAG(clip_quad)( struct gl_context *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint v3,
                 GLubyte mask )
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);

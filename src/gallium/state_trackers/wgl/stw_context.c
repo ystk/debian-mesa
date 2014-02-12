@@ -27,17 +27,17 @@
 
 #include <windows.h>
 
-#include "main/mtypes.h"
-#include "main/context.h"
+#define WGL_WGLEXT_PROTOTYPES
+
+#include <GL/gl.h>
+#include <GL/wglext.h>
+
 #include "pipe/p_compiler.h"
 #include "pipe/p_context.h"
-#include "state_tracker/st_context.h"
-#include "state_tracker/st_public.h"
-
-#ifdef DEBUG
-#include "trace/tr_screen.h"
-#include "trace/tr_context.h"
-#endif
+#include "pipe/p_state.h"
+#include "util/u_memory.h"
+#include "util/u_atomic.h"
+#include "state_tracker/st_api.h"
 
 #include "stw_icd.h"
 #include "stw_device.h"
@@ -49,25 +49,13 @@
 
 
 static INLINE struct stw_context *
-stw_context(GLcontext *glctx)
-{
-   if(!glctx)
-      return NULL;
-   assert(glctx->DriverCtx);
-   return (struct stw_context *)glctx->DriverCtx;
-}
-
-static INLINE struct stw_context *
 stw_current_context(void)
 {
-   /* We must check if multiple threads are being used or GET_CURRENT_CONTEXT 
-    * might return the current context of the thread first seen. */
-   _glapi_check_multithread();
+   struct st_context_iface *st;
 
-   {
-      GET_CURRENT_CONTEXT( glctx );
-      return stw_context(glctx);
-   }
+   st = (stw_dev) ? stw_dev->stapi->get_current(stw_dev->stapi) : NULL;
+
+   return (struct stw_context *) ((st) ? st->st_manager_private : NULL);
 }
 
 BOOL APIENTRY
@@ -118,27 +106,12 @@ DrvShareLists(
    ctx1 = stw_lookup_context_locked( dhglrc1 );
    ctx2 = stw_lookup_context_locked( dhglrc2 );
 
-   if (ctx1 && ctx2) {
-      ret = _mesa_share_state(ctx2->st->ctx, ctx1->st->ctx);
-   }
+   if (ctx1 && ctx2 && ctx2->st->share)
+      ret = ctx2->st->share(ctx2->st, ctx1->st);
 
    pipe_mutex_unlock( stw_dev->ctx_mutex );
    
    return ret;
-}
-
-static void
-stw_viewport(GLcontext * glctx, GLint x, GLint y,
-             GLsizei width, GLsizei height)
-{
-   struct stw_context *ctx = (struct stw_context *)glctx->DriverCtx;
-   struct stw_framebuffer *fb;
-   
-   fb = stw_framebuffer_from_hdc( ctx->hdc );
-   if(fb) {
-      stw_framebuffer_update(fb);
-      stw_framebuffer_release(fb);
-   }
 }
 
 DHGLRC APIENTRY
@@ -153,26 +126,42 @@ DrvCreateLayerContext(
    HDC hdc,
    INT iLayerPlane )
 {
+   return stw_create_context_attribs(hdc, iLayerPlane, 0, 1, 0, 0, WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB);
+}
+
+DHGLRC
+stw_create_context_attribs(
+   HDC hdc,
+   INT iLayerPlane,
+   DHGLRC hShareContext,
+   int majorVersion, int minorVersion,
+   int contextFlags, int profileMask)
+{
    int iPixelFormat;
    const struct stw_pixelformat_info *pfi;
-   GLvisual visual;
+   struct st_context_attribs attribs;
    struct stw_context *ctx = NULL;
-   struct pipe_screen *screen = NULL;
-   struct pipe_context *pipe = NULL;
-   
-   if(!stw_dev)
+   struct stw_context *shareCtx = NULL;
+   enum st_context_error ctx_err = 0;
+
+   if (!stw_dev)
       return 0;
-   
+
    if (iLayerPlane != 0)
       return 0;
 
    iPixelFormat = GetPixelFormat(hdc);
    if(!iPixelFormat)
       return 0;
-   
+
    pfi = stw_pixelformat_get_info( iPixelFormat - 1 );
-   stw_pixelformat_visual(&visual, pfi);
-   
+
+   if (hShareContext != 0) {
+      pipe_mutex_lock( stw_dev->ctx_mutex );
+      shareCtx = stw_lookup_context_locked( hShareContext );
+      pipe_mutex_unlock( stw_dev->ctx_mutex );
+   }
+
    ctx = CALLOC_STRUCT( stw_context );
    if (ctx == NULL)
       goto no_ctx;
@@ -180,34 +169,38 @@ DrvCreateLayerContext(
    ctx->hdc = hdc;
    ctx->iPixelFormat = iPixelFormat;
 
-   screen = stw_dev->screen;
+   memset(&attribs, 0, sizeof(attribs));
+   attribs.visual = pfi->stvis;
+   attribs.major = majorVersion;
+   attribs.minor = minorVersion;
+   if (contextFlags & WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB)
+      attribs.flags |= ST_CONTEXT_FLAG_FORWARD_COMPATIBLE;
+   if (contextFlags & WGL_CONTEXT_DEBUG_BIT_ARB)
+      attribs.flags |= ST_CONTEXT_FLAG_DEBUG;
 
-#ifdef DEBUG
-   /* Unwrap screen */
-   if(stw_dev->trace_running)
-      screen = trace_screen(screen)->screen;
-#endif
+   /* There are no profiles before OpenGL 3.2.  The
+    * WGL_ARB_create_context_profile spec says:
+    *
+    *     "If the requested OpenGL version is less than 3.2,
+    *     WGL_CONTEXT_PROFILE_MASK_ARB is ignored and the functionality of the
+    *     context is determined solely by the requested version."
+    *
+    * The spec also says:
+    *
+    *     "The default value for WGL_CONTEXT_PROFILE_MASK_ARB is
+    *     WGL_CONTEXT_CORE_PROFILE_BIT_ARB."
+    */
+   attribs.profile = ST_PROFILE_DEFAULT;
+   if ((majorVersion > 3 || (majorVersion == 3 && minorVersion >= 2))
+       && ((profileMask & WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB) == 0))
+      attribs.profile = ST_PROFILE_OPENGL_CORE;
 
-   pipe = stw_dev->stw_winsys->create_context( screen );
-   if (pipe == NULL) 
-      goto no_pipe;
-
-#ifdef DEBUG
-   /* Wrap context */
-   if(stw_dev->trace_running)
-      pipe = trace_context_create(stw_dev->screen, pipe);
-#endif
-
-   /* pass to stw_flush_frontbuffer as context_private */
-   assert(!pipe->priv);
-   pipe->priv = hdc;
-
-   ctx->st = st_create_context( pipe, &visual, NULL );
-   if (ctx->st == NULL) 
+   ctx->st = stw_dev->stapi->create_context(stw_dev->stapi,
+         stw_dev->smapi, &attribs, &ctx_err, shareCtx ? shareCtx->st : NULL);
+   if (ctx->st == NULL)
       goto no_st_ctx;
 
-   ctx->st->ctx->DriverCtx = ctx;
-   ctx->st->ctx->Driver.Viewport = stw_viewport;
+   ctx->st->st_manager_private = (void *) ctx;
 
    pipe_mutex_lock( stw_dev->ctx_mutex );
    ctx->dhglrc = handle_table_add(stw_dev->ctx_table, ctx);
@@ -218,11 +211,8 @@ DrvCreateLayerContext(
    return ctx->dhglrc;
 
 no_hglrc:
-   st_destroy_context(ctx->st);
-   goto no_pipe; /* st_context_destroy already destroys pipe */
+   ctx->st->destroy(ctx->st);
 no_st_ctx:
-   pipe->destroy( pipe );
-no_pipe:
    FREE(ctx);
 no_ctx:
    return 0;
@@ -248,9 +238,9 @@ DrvDeleteContext(
       
       /* Unbind current if deleting current context. */
       if (curctx == ctx)
-         st_make_current( NULL, NULL, NULL );
+         stw_dev->stapi->make_current(stw_dev->stapi, NULL, NULL, NULL);
 
-      st_destroy_context(ctx->st);
+      ctx->st->destroy(ctx->st);
       FREE(ctx);
 
       ret = TRUE;
@@ -321,76 +311,104 @@ stw_make_current(
    struct stw_context *curctx = NULL;
    struct stw_context *ctx = NULL;
    struct stw_framebuffer *fb = NULL;
+   BOOL ret = FALSE;
 
    if (!stw_dev)
-      goto fail;
+      return FALSE;
 
    curctx = stw_current_context();
    if (curctx != NULL) {
-      if (curctx->dhglrc != dhglrc)
-	 st_flush(curctx->st, PIPE_FLUSH_RENDER_CACHE, NULL);
-      
-      /* Return if already current. */
-      if (curctx->dhglrc == dhglrc && curctx->hdc == hdc) {
-         ctx = curctx;
-         fb = stw_framebuffer_from_hdc( hdc );
-         goto success;
+      if (curctx->dhglrc == dhglrc) {
+         if (curctx->hdc == hdc) {
+            /* Return if already current. */
+            return TRUE;
+         }
+      } else {
+         curctx->st->flush(curctx->st, ST_FLUSH_FRONT, NULL);
       }
    }
 
-   if (hdc == NULL || dhglrc == 0) {
-      return st_make_current( NULL, NULL, NULL );
-   }
-
-   pipe_mutex_lock( stw_dev->ctx_mutex ); 
-   ctx = stw_lookup_context_locked( dhglrc );
-   pipe_mutex_unlock( stw_dev->ctx_mutex ); 
-   if(!ctx)
-      goto fail;
-
-   fb = stw_framebuffer_from_hdc( hdc );
-   if(!fb) { 
-      /* Applications should call SetPixelFormat before creating a context,
-       * but not all do, and the opengl32 runtime seems to use a default pixel
-       * format in some cases, so we must create a framebuffer for those here
-       */
-      int iPixelFormat = GetPixelFormat(hdc);
-      if(iPixelFormat)
-         fb = stw_framebuffer_create( hdc, iPixelFormat );
-      if(!fb) 
+   if (dhglrc) {
+      pipe_mutex_lock( stw_dev->ctx_mutex );
+      ctx = stw_lookup_context_locked( dhglrc );
+      pipe_mutex_unlock( stw_dev->ctx_mutex );
+      if (!ctx) {
          goto fail;
+      }
+
+      fb = stw_framebuffer_from_hdc( hdc );
+      if (fb) {
+         stw_framebuffer_update(fb);
+      }
+      else {
+         /* Applications should call SetPixelFormat before creating a context,
+          * but not all do, and the opengl32 runtime seems to use a default pixel
+          * format in some cases, so we must create a framebuffer for those here
+          */
+         int iPixelFormat = GetPixelFormat(hdc);
+         if (iPixelFormat)
+            fb = stw_framebuffer_create( hdc, iPixelFormat );
+         if (!fb)
+            goto fail;
+      }
+   
+      if (fb->iPixelFormat != ctx->iPixelFormat) {
+         SetLastError(ERROR_INVALID_PIXEL_FORMAT);
+         goto fail;
+      }
+
+      /* Bind the new framebuffer */
+      ctx->hdc = hdc;
+
+      ret = stw_dev->stapi->make_current(stw_dev->stapi, ctx->st, fb->stfb, fb->stfb);
+      stw_framebuffer_reference(&ctx->current_framebuffer, fb);
+   } else {
+      ret = stw_dev->stapi->make_current(stw_dev->stapi, NULL, NULL, NULL);
    }
    
-   if(fb->iPixelFormat != ctx->iPixelFormat)
-      goto fail;
-
-   /* Lazy allocation of the frame buffer */
-   if(!stw_framebuffer_allocate(fb))
-      goto fail;
-
-   /* Bind the new framebuffer */
-   ctx->hdc = hdc;
-   
-   /* pass to stw_flush_frontbuffer as context_private */
-   ctx->st->pipe->priv = hdc;
-   
-   if(!st_make_current( ctx->st, fb->stfb, fb->stfb ))
-      goto fail;
-
-success:
-   assert(fb);
-   if(fb) {
-      stw_framebuffer_update(fb);
-      stw_framebuffer_release(fb);
-   }
-   
-   return TRUE;
-
 fail:
-   if(fb)
+
+   if (fb) {
       stw_framebuffer_release(fb);
-   st_make_current( NULL, NULL, NULL );
-   return FALSE;
+   }
+
+   /* On failure, make the thread's current rendering context not current
+    * before returning */
+   if (!ret) {
+      stw_dev->stapi->make_current(stw_dev->stapi, NULL, NULL, NULL);
+      ctx = NULL;
+   }
+
+   /* Unreference the previous framebuffer if any. It must be done after
+    * make_current, as it can be referenced inside.
+    */
+   if (curctx && curctx != ctx) {
+      stw_framebuffer_reference(&curctx->current_framebuffer, NULL);
+   }
+
+   return ret;
+}
+
+/**
+ * Flush the current context if it is bound to the framebuffer.
+ */
+void
+stw_flush_current_locked( struct stw_framebuffer *fb )
+{
+   struct stw_context *ctx = stw_current_context();
+
+   if (ctx && ctx->current_framebuffer == fb) {
+      ctx->st->flush(ctx->st, ST_FLUSH_FRONT, NULL);
+   }
+}
+
+/**
+ * Notify the current context that the framebuffer has become invalid.
+ */
+void
+stw_notify_current_locked( struct stw_framebuffer *fb )
+{
+   p_atomic_inc(&fb->stfb->stamp);
 }
 
 /**

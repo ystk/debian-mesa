@@ -1,6 +1,7 @@
 /**************************************************************************
  * 
  * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2010 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -25,15 +26,29 @@
  * 
  **************************************************************************/
 
-/* Author:
- *    Keith Whitwell
+/* Authors:
+ *    Keith Whitwell, Qicheng Christopher Li, Brian Paul
  */
 
 #ifndef LP_QUERY_H
 #define LP_QUERY_H
 
+#include <limits.h>
+#include "os/os_thread.h"
+#include "lp_limits.h"
+
+
 struct llvmpipe_context;
+
+
+struct llvmpipe_query {
+   uint64_t count[LP_MAX_THREADS];  /**< a counter for each thread */
+   struct lp_fence *fence;      /* fence from last scene this was binned in */
+};
+
+
 extern void llvmpipe_init_query_funcs(struct llvmpipe_context * );
 
+extern boolean llvmpipe_check_render_cond(struct llvmpipe_context *);
 
 #endif /* LP_QUERY_H */

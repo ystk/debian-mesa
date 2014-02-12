@@ -36,15 +36,8 @@
 #include <unistd.h>
 #include <errno.h>
 #include "main/imports.h"
-#include "dri_util.h"
+#include "utils.h"
 #include "xmlconfig.h"
-
-/*
- * OS dependent ways of getting the name of the running program
- */
-#if (defined(__unix__) || defined(unix)) && !defined(USG)
-#include <sys/param.h>
-#endif
 
 #undef GET_PROGRAM_NAME
 
@@ -63,16 +56,37 @@ extern char *program_invocation_name, *program_invocation_short_name;
 #elif defined(__NetBSD__) && defined(__NetBSD_Version) && (__NetBSD_Version >= 106000100)
 #    include <stdlib.h>
 #    define GET_PROGRAM_NAME() getprogname()
+#elif defined(__APPLE__)
+#    include <stdlib.h>
+#    define GET_PROGRAM_NAME() getprogname()
 #elif defined(__sun)
 /* Solaris has getexecname() which returns the full path - return just
    the basename to match BSD getprogname() */
 #    include <stdlib.h>
 #    include <libgen.h>
-#    define GET_PROGRAM_NAME() basename(getexecname())
+
+static const char *__getProgramName () {
+    static const char *progname;
+
+    if (progname == NULL) {
+	const char *e = getexecname();
+	if (e != NULL) {
+	    /* Have to make a copy since getexecname can return a readonly
+	       string, but basename expects to be able to modify its arg. */
+	    char *n = strdup(e);
+	    if (n != NULL) {
+		progname = basename(n);
+	    }
+	}
+    }
+    return progname;
+}
+
+#    define GET_PROGRAM_NAME() __getProgramName()
 #endif
 
 #if !defined(GET_PROGRAM_NAME)
-#    if defined(OpenBSD) || defined(NetBSD) || defined(__UCLIBC__)
+#    if defined(__OpenBSD__) || defined(NetBSD) || defined(__UCLIBC__) || defined(ANDROID)
 /* This is a hack. It's said to work on OpenBSD, NetBSD and GNU.
  * Rogelio M.Serrano Jr. reported it's also working with UCLIBC. It's
  * used as a last resort, if there is no documented facility available. */
@@ -213,7 +227,7 @@ static GLint strToI (const XML_Char *string, const XML_Char **tail, int base) {
  *
  * Works similar to strtod. Leading space is NOT skipped. The input
  * number may have an optional sign. '.' is interpreted as decimal
- * point and may occor at most once. Optionally the number may end in
+ * point and may occur at most once. Optionally the number may end in
  * [eE]<exponent>, where <exponent> is an integer as recognized by
  * strToI. In that case the result is number * 10^exponent. After
  * returning tail points to the first character that is not part of
@@ -406,6 +420,28 @@ static GLboolean checkValue (const driOptionValue *v, const driOptionInfo *info)
     return GL_FALSE;
 }
 
+/**
+ * Print message to \c stderr if the \c LIBGL_DEBUG environment variable
+ * is set. 
+ * 
+ * Is called from the drivers.
+ * 
+ * \param f \c printf like format string.
+ */
+static void
+__driUtilMessage(const char *f, ...)
+{
+    va_list args;
+
+    if (getenv("LIBGL_DEBUG")) {
+        fprintf(stderr, "libGL: ");
+        va_start(args, f);
+        vfprintf(stderr, f, args);
+        va_end(args);
+        fprintf(stderr, "\n");
+    }
+}
+
 /** \brief Output a warning message. */
 #define XML_WARNING1(msg) do {\
     __driUtilMessage ("Warning in %s line %d, column %d: "msg, data->name, \
@@ -553,7 +589,7 @@ static void parseOptInfoAttr (struct OptInfoData *data, const XML_Char **attr) {
     } else
 	defaultVal = attrVal[OA_DEFAULT];
     if (!parseValue (&cache->values[opt], cache->info[opt].type, defaultVal))
-	XML_FATAL ("illegal default value: %s.", defaultVal);
+	XML_FATAL ("illegal default value for %s: %s.", cache->info[opt].name, defaultVal);
 
     if (attrVal[OA_VALID]) {
 	if (cache->info[opt].type == DRI_BOOL)
@@ -735,7 +771,7 @@ static void parseDeviceAttr (struct OptConfData *data, const XML_Char **attr) {
     for (i = 0; attr[i]; i += 2) {
 	if (!strcmp (attr[i], "driver")) driver = attr[i+1];
 	else if (!strcmp (attr[i], "screen")) screen = attr[i+1];
-	else XML_WARNING("unkown device attribute: %s.", attr[i]);
+	else XML_WARNING("unknown device attribute: %s.", attr[i]);
     }
     if (driver && strcmp (driver, data->driverName))
 	data->ignoringDevice = data->inDevice;
@@ -751,11 +787,11 @@ static void parseDeviceAttr (struct OptConfData *data, const XML_Char **attr) {
 /** \brief Parse attributes of an application element. */
 static void parseAppAttr (struct OptConfData *data, const XML_Char **attr) {
     GLuint i;
-    const XML_Char *name = NULL, *exec = NULL;
+    const XML_Char *exec = NULL;
     for (i = 0; attr[i]; i += 2) {
-	if (!strcmp (attr[i], "name")) name = attr[i+1];
+	if (!strcmp (attr[i], "name")) /* not needed here */;
 	else if (!strcmp (attr[i], "executable")) exec = attr[i+1];
-	else XML_WARNING("unkown application attribute: %s.", attr[i]);
+	else XML_WARNING("unknown application attribute: %s.", attr[i]);
     }
     if (exec && strcmp (exec, data->execName))
 	data->ignoringApp = data->inApp;
@@ -768,7 +804,7 @@ static void parseOptConfAttr (struct OptConfData *data, const XML_Char **attr) {
     for (i = 0; attr[i]; i += 2) {
 	if (!strcmp (attr[i], "name")) name = attr[i+1];
 	else if (!strcmp (attr[i], "value")) value = attr[i+1];
-	else XML_WARNING("unkown option attribute: %s.", attr[i]);
+	else XML_WARNING("unknown option attribute: %s.", attr[i]);
     }
     if (!name) XML_WARNING1 ("name attribute missing in option.");
     if (!value) XML_WARNING1 ("value attribute missing in option.");

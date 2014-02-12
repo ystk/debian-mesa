@@ -29,6 +29,15 @@
 #ifndef ST_CB_FBO_H
 #define ST_CB_FBO_H
 
+#include "main/compiler.h"
+#include "main/glheader.h"
+#include "main/mtypes.h"
+
+#include "pipe/p_compiler.h"
+#include "pipe/p_format.h"
+
+struct dd_function_table;
+struct pipe_context;
 
 /**
  * Derived renderbuffer class.  Just need to add a pointer to the
@@ -37,10 +46,12 @@
 struct st_renderbuffer
 {
    struct gl_renderbuffer Base;
-   struct pipe_texture *texture;
+   struct pipe_resource *texture;
    struct pipe_surface *surface; /* temporary view into texture */
    enum pipe_format format;  /** preferred format, or PIPE_FORMAT_NONE */
    GLboolean defined;        /**< defined contents? */
+
+   struct pipe_transfer *transfer; /**< only used when mapping the resource */
 
    /**
     * Used only when hardware accumulation buffers are not supported.
@@ -48,13 +59,9 @@ struct st_renderbuffer
    boolean software;
    size_t stride;
    void *data;
-   
+
    struct st_texture_object *rtt;  /**< GL render to texture's texture */
    int rtt_level, rtt_face, rtt_slice;
-
-   /** Render to texture state */
-   struct pipe_texture *texture_save;
-   struct pipe_surface *surface_save;
 };
 
 
@@ -70,6 +77,10 @@ st_new_renderbuffer_fb(enum pipe_format format, int samples, boolean sw);
 
 extern void
 st_init_fbo_functions(struct dd_function_table *functions);
+
+extern GLboolean
+st_is_depth_stencil_combined(const struct gl_renderbuffer_attachment *depth,
+                             const struct gl_renderbuffer_attachment *stencil);
 
 
 #endif /* ST_CB_FBO_H */

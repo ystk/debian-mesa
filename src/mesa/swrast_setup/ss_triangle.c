@@ -35,11 +35,10 @@
 #include "ss_triangle.h"
 #include "ss_context.h"
 
-#define SS_RGBA_BIT         0x1
-#define SS_OFFSET_BIT	    0x2
-#define SS_TWOSIDE_BIT	    0x4
-#define SS_UNFILLED_BIT	    0x8
-#define SS_MAX_TRIFUNC      0x10
+#define SS_OFFSET_BIT	    0x1
+#define SS_TWOSIDE_BIT	    0x2
+#define SS_UNFILLED_BIT	    0x4
+#define SS_MAX_TRIFUNC      0x8
 
 static tnl_triangle_func tri_tab[SS_MAX_TRIFUNC];
 static tnl_quad_func     quad_tab[SS_MAX_TRIFUNC];
@@ -48,7 +47,7 @@ static tnl_quad_func     quad_tab[SS_MAX_TRIFUNC];
 /*
  * Render a triangle respecting edge flags.
  */
-typedef void (* swsetup_edge_render_prim_tri)(GLcontext *ctx,
+typedef void (* swsetup_edge_render_prim_tri)(struct gl_context *ctx,
                                               const GLubyte *ef,
                                               GLuint e0,
                                               GLuint e1,
@@ -61,7 +60,7 @@ typedef void (* swsetup_edge_render_prim_tri)(GLcontext *ctx,
  * Render a triangle using lines and respecting edge flags.
  */
 static void
-_swsetup_edge_render_line_tri(GLcontext *ctx,
+_swsetup_edge_render_line_tri(struct gl_context *ctx,
                               const GLubyte *ef,
                               GLuint e0,
                               GLuint e1,
@@ -87,7 +86,7 @@ _swsetup_edge_render_line_tri(GLcontext *ctx,
  * Render a triangle using points and respecting edge flags.
  */
 static void
-_swsetup_edge_render_point_tri(GLcontext *ctx,
+_swsetup_edge_render_point_tri(struct gl_context *ctx,
                                const GLubyte *ef,
                                GLuint e0,
                                GLuint e1,
@@ -106,7 +105,7 @@ _swsetup_edge_render_point_tri(GLcontext *ctx,
 /*
  * Render a triangle respecting cull and shade model.
  */
-static void _swsetup_render_tri(GLcontext *ctx,
+static void _swsetup_render_tri(struct gl_context *ctx,
                                 GLuint e0,
                                 GLuint e1,
                                 GLuint e2,
@@ -134,23 +133,18 @@ static void _swsetup_render_tri(GLcontext *ctx,
    if (ctx->Light.ShadeModel == GL_FLAT) {
       GLchan c[2][4];
       GLfloat s[2][4];
-      GLfloat i[2];
 
       /* save colors/indexes for v0, v1 vertices */
       COPY_CHAN4(c[0], v0->color);
       COPY_CHAN4(c[1], v1->color);
       COPY_4V(s[0], v0->attrib[FRAG_ATTRIB_COL1]);
       COPY_4V(s[1], v1->attrib[FRAG_ATTRIB_COL1]);
-      i[0] = v0->attrib[FRAG_ATTRIB_CI][0];
-      i[1] = v1->attrib[FRAG_ATTRIB_CI][0];
 
       /* copy v2 color/indexes to v0, v1 indexes */
       COPY_CHAN4(v0->color, v2->color);
       COPY_CHAN4(v1->color, v2->color);
       COPY_4V(v0->attrib[FRAG_ATTRIB_COL1], v2->attrib[FRAG_ATTRIB_COL1]);
       COPY_4V(v1->attrib[FRAG_ATTRIB_COL1], v2->attrib[FRAG_ATTRIB_COL1]);
-      v0->attrib[FRAG_ATTRIB_CI][0] = v2->attrib[FRAG_ATTRIB_CI][0];
-      v1->attrib[FRAG_ATTRIB_CI][0] = v2->attrib[FRAG_ATTRIB_CI][0];
 
       render(ctx, ef, e0, e1, e2, v0, v1, v2);
 
@@ -158,8 +152,6 @@ static void _swsetup_render_tri(GLcontext *ctx,
       COPY_CHAN4(v1->color, c[1]);
       COPY_4V(v0->attrib[FRAG_ATTRIB_COL1], s[0]);
       COPY_4V(v1->attrib[FRAG_ATTRIB_COL1], s[1]);
-      v0->attrib[FRAG_ATTRIB_CI][0] = i[0];
-      v1->attrib[FRAG_ATTRIB_CI][0] = i[1];
    }
    else {
       render(ctx, ef, e0, e1, e2, v0, v1, v2);
@@ -167,86 +159,45 @@ static void _swsetup_render_tri(GLcontext *ctx,
 }
 
 #define SS_COLOR(a,b) UNCLAMPED_FLOAT_TO_RGBA_CHAN(a,b)
-#define SS_SPEC(a,b) UNCLAMPED_FLOAT_TO_RGB_CHAN(a,b)
+#define SS_SPEC(a,b) COPY_4V(a,b)
 #define SS_IND(a,b) (a = b)
 
 #define IND (0)
-#define TAG(x) x
-#include "ss_tritmp.h"
-
-#define IND (SS_OFFSET_BIT)
-#define TAG(x) x##_offset
-#include "ss_tritmp.h"
-
-#define IND (SS_TWOSIDE_BIT)
-#define TAG(x) x##_twoside
-#include "ss_tritmp.h"
-
-#define IND (SS_OFFSET_BIT|SS_TWOSIDE_BIT)
-#define TAG(x) x##_offset_twoside
-#include "ss_tritmp.h"
-
-#define IND (SS_UNFILLED_BIT)
-#define TAG(x) x##_unfilled
-#include "ss_tritmp.h"
-
-#define IND (SS_OFFSET_BIT|SS_UNFILLED_BIT)
-#define TAG(x) x##_offset_unfilled
-#include "ss_tritmp.h"
-
-#define IND (SS_TWOSIDE_BIT|SS_UNFILLED_BIT)
-#define TAG(x) x##_twoside_unfilled
-#include "ss_tritmp.h"
-
-#define IND (SS_OFFSET_BIT|SS_TWOSIDE_BIT|SS_UNFILLED_BIT)
-#define TAG(x) x##_offset_twoside_unfilled
-#include "ss_tritmp.h"
-
-#define IND (0|SS_RGBA_BIT)
 #define TAG(x) x##_rgba
 #include "ss_tritmp.h"
 
-#define IND (SS_OFFSET_BIT|SS_RGBA_BIT)
+#define IND (SS_OFFSET_BIT)
 #define TAG(x) x##_offset_rgba
 #include "ss_tritmp.h"
 
-#define IND (SS_TWOSIDE_BIT|SS_RGBA_BIT)
+#define IND (SS_TWOSIDE_BIT)
 #define TAG(x) x##_twoside_rgba
 #include "ss_tritmp.h"
 
-#define IND (SS_OFFSET_BIT|SS_TWOSIDE_BIT|SS_RGBA_BIT)
+#define IND (SS_OFFSET_BIT|SS_TWOSIDE_BIT)
 #define TAG(x) x##_offset_twoside_rgba
 #include "ss_tritmp.h"
 
-#define IND (SS_UNFILLED_BIT|SS_RGBA_BIT)
+#define IND (SS_UNFILLED_BIT)
 #define TAG(x) x##_unfilled_rgba
 #include "ss_tritmp.h"
 
-#define IND (SS_OFFSET_BIT|SS_UNFILLED_BIT|SS_RGBA_BIT)
+#define IND (SS_OFFSET_BIT|SS_UNFILLED_BIT)
 #define TAG(x) x##_offset_unfilled_rgba
 #include "ss_tritmp.h"
 
-#define IND (SS_TWOSIDE_BIT|SS_UNFILLED_BIT|SS_RGBA_BIT)
+#define IND (SS_TWOSIDE_BIT|SS_UNFILLED_BIT)
 #define TAG(x) x##_twoside_unfilled_rgba
 #include "ss_tritmp.h"
 
-#define IND (SS_OFFSET_BIT|SS_TWOSIDE_BIT|SS_UNFILLED_BIT|SS_RGBA_BIT)
+#define IND (SS_OFFSET_BIT|SS_TWOSIDE_BIT|SS_UNFILLED_BIT)
 #define TAG(x) x##_offset_twoside_unfilled_rgba
 #include "ss_tritmp.h"
 
 
-void _swsetup_trifuncs_init( GLcontext *ctx )
+void _swsetup_trifuncs_init( struct gl_context *ctx )
 {
    (void) ctx;
-
-   init();
-   init_offset();
-   init_twoside();
-   init_offset_twoside();
-   init_unfilled();
-   init_offset_unfilled();
-   init_twoside_unfilled();
-   init_offset_twoside_unfilled();
 
    init_rgba();
    init_offset_rgba();
@@ -259,7 +210,7 @@ void _swsetup_trifuncs_init( GLcontext *ctx )
 }
 
 
-static void swsetup_points( GLcontext *ctx, GLuint first, GLuint last )
+static void swsetup_points( struct gl_context *ctx, GLuint first, GLuint last )
 {
    struct vertex_buffer *VB = &TNL_CONTEXT(ctx)->vb;
    SWvertex *verts = SWSETUP_CONTEXT(ctx)->verts;
@@ -277,7 +228,7 @@ static void swsetup_points( GLcontext *ctx, GLuint first, GLuint last )
    }
 }
 
-static void swsetup_line( GLcontext *ctx, GLuint v0, GLuint v1 )
+static void swsetup_line( struct gl_context *ctx, GLuint v0, GLuint v1 )
 {
    SWvertex *verts = SWSETUP_CONTEXT(ctx)->verts;
    _swrast_Line( ctx, &verts[v0], &verts[v1] );
@@ -285,7 +236,7 @@ static void swsetup_line( GLcontext *ctx, GLuint v0, GLuint v1 )
 
 
 
-void _swsetup_choose_trifuncs( GLcontext *ctx )
+void _swsetup_choose_trifuncs( struct gl_context *ctx )
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    GLuint ind = 0;
@@ -306,9 +257,6 @@ void _swsetup_choose_trifuncs( GLcontext *ctx )
        ctx->Polygon.BackMode != GL_FILL ||
        (ctx->Stencil.Enabled && ctx->Stencil._TestTwoSide))
       ind |= SS_UNFILLED_BIT;
-
-   if (ctx->Visual.rgbMode)
-      ind |= SS_RGBA_BIT;
 
    tnl->Driver.Render.Triangle = tri_tab[ind];
    tnl->Driver.Render.Quad = quad_tab[ind];

@@ -28,6 +28,8 @@
 #include "main/mtypes.h"
 #include "main/enums.h"
 #include "main/macros.h"
+#include "main/colormac.h"
+#include "main/samplerobj.h"
 
 #include "intel_mipmap_tree.h"
 #include "intel_tex.h"
@@ -37,8 +39,7 @@
 
 
 static GLuint
-translate_texture_format(gl_format mesa_format, GLuint internal_format,
-			 GLenum DepthMode)
+translate_texture_format(gl_format mesa_format, GLenum DepthMode)
 {
    switch (mesa_format) {
    case MESA_FORMAT_L8:
@@ -59,6 +60,8 @@ translate_texture_format(gl_format mesa_format, GLuint internal_format,
       return MAPSURF_32BIT | MT_32BIT_ARGB8888;
    case MESA_FORMAT_XRGB8888:
       return MAPSURF_32BIT | MT_32BIT_XRGB8888;
+   case MESA_FORMAT_RGBA8888_REV:
+      return MAPSURF_32BIT | MT_32BIT_ABGR8888;
    case MESA_FORMAT_YCBCR_REV:
       return (MAPSURF_422 | MT_422_YCRCB_NORMAL);
    case MESA_FORMAT_YCBCR:
@@ -81,6 +84,7 @@ translate_texture_format(gl_format mesa_format, GLuint internal_format,
    case MESA_FORMAT_RGBA_DXT5:
       return (MAPSURF_COMPRESSED | MT_COMPRESS_DXT4_5);
    case MESA_FORMAT_S8_Z24:
+   case MESA_FORMAT_X8_Z24:
       if (DepthMode == GL_ALPHA)
 	 return (MAPSURF_32BIT | MT_32BIT_x8A24);
       else if (DepthMode == GL_INTENSITY)
@@ -88,7 +92,8 @@ translate_texture_format(gl_format mesa_format, GLuint internal_format,
       else
 	 return (MAPSURF_32BIT | MT_32BIT_x8L24);
    default:
-      fprintf(stderr, "%s: bad image format %x\n", __FUNCTION__, mesa_format);
+      fprintf(stderr, "%s: bad image format %s\n", __FUNCTION__,
+	      _mesa_get_format_name(mesa_format));
       abort();
       return 0;
    }
@@ -126,15 +131,16 @@ translate_wrap_mode(GLenum wrap)
  * efficient, but this has gotten complex enough that we need
  * something which is understandable and reliable.
  */
-static GLboolean
+static bool
 i915_update_tex_unit(struct intel_context *intel, GLuint unit, GLuint ss3)
 {
-   GLcontext *ctx = &intel->ctx;
+   struct gl_context *ctx = &intel->ctx;
    struct i915_context *i915 = i915_context(ctx);
    struct gl_texture_unit *tUnit = &ctx->Texture.Unit[unit];
    struct gl_texture_object *tObj = tUnit->_Current;
    struct intel_texture_object *intelObj = intel_texture_object(tObj);
    struct gl_texture_image *firstImage;
+   struct gl_sampler_object *sampler = _mesa_get_samplerobj(ctx, unit);
    GLuint *state = i915->state.Tex[unit], format, pitch;
    GLint lodbias, aniso = 0;
    GLubyte border[4];
@@ -145,46 +151,25 @@ i915_update_tex_unit(struct intel_context *intel, GLuint unit, GLuint ss3)
    /*We need to refcount these. */
 
    if (i915->state.tex_buffer[unit] != NULL) {
-       dri_bo_unreference(i915->state.tex_buffer[unit]);
+       drm_intel_bo_unreference(i915->state.tex_buffer[unit]);
        i915->state.tex_buffer[unit] = NULL;
    }
 
-   if (!intelObj->imageOverride && !intel_finalize_mipmap_tree(intel, unit))
-      return GL_FALSE;
+   if (!intel_finalize_mipmap_tree(intel, unit))
+      return false;
 
    /* Get first image here, since intelObj->firstLevel will get set in
     * the intel_finalize_mipmap_tree() call above.
     */
-   firstImage = tObj->Image[0][intelObj->firstLevel];
+   firstImage = tObj->Image[0][tObj->BaseLevel];
 
-   if (intelObj->imageOverride) {
-      i915->state.tex_buffer[unit] = NULL;
-      i915->state.tex_offset[unit] = intelObj->textureOffset;
+   drm_intel_bo_reference(intelObj->mt->region->bo);
+   i915->state.tex_buffer[unit] = intelObj->mt->region->bo;
+   i915->state.tex_offset[unit] = 0; /* Always the origin of the miptree */
 
-      switch (intelObj->depthOverride) {
-      case 32:
-	 format = MAPSURF_32BIT | MT_32BIT_ARGB8888;
-	 break;
-      case 24:
-      default:
-	 format = MAPSURF_32BIT | MT_32BIT_XRGB8888;
-	 break;
-      case 16:
-	 format = MAPSURF_16BIT | MT_16BIT_RGB565;
-	 break;
-      }
-
-      pitch = intelObj->pitchOverride;
-   } else {
-      dri_bo_reference(intelObj->mt->region->buffer);
-      i915->state.tex_buffer[unit] = intelObj->mt->region->buffer;
-      i915->state.tex_offset[unit] = 0; /* Always the origin of the miptree */
-
-      format = translate_texture_format(firstImage->TexFormat,
-					firstImage->InternalFormat,
-					tObj->DepthMode);
-      pitch = intelObj->mt->pitch * intelObj->mt->cpp;
-   }
+   format = translate_texture_format(firstImage->TexFormat,
+				     sampler->DepthMode);
+   pitch = intelObj->mt->region->pitch * intelObj->mt->cpp;
 
    state[I915_TEXREG_MS3] =
       (((firstImage->Height - 1) << MS3_HEIGHT_SHIFT) |
@@ -200,7 +185,7 @@ i915_update_tex_unit(struct intel_context *intel, GLuint unit, GLuint ss3)
     * (lowest resolution) LOD.  Use it to cover both MAX_LEVEL and
     * MAX_LOD.
     */
-   maxlod = MIN2(tObj->MaxLod, tObj->_MaxLevel - tObj->BaseLevel);
+   maxlod = MIN2(sampler->MaxLod, tObj->_MaxLevel - tObj->BaseLevel);
    state[I915_TEXREG_MS4] =
       ((((pitch / 4) - 1) << MS4_PITCH_SHIFT) |
        MS4_CUBE_FACE_ENA_MASK |
@@ -211,7 +196,7 @@ i915_update_tex_unit(struct intel_context *intel, GLuint unit, GLuint ss3)
    {
       GLuint minFilt, mipFilt, magFilt;
 
-      switch (tObj->MinFilter) {
+      switch (sampler->MinFilter) {
       case GL_NEAREST:
          minFilt = FILTER_NEAREST;
          mipFilt = MIPFILTER_NONE;
@@ -237,19 +222,19 @@ i915_update_tex_unit(struct intel_context *intel, GLuint unit, GLuint ss3)
          mipFilt = MIPFILTER_LINEAR;
          break;
       default:
-         return GL_FALSE;
+         return false;
       }
 
-      if (tObj->MaxAnisotropy > 1.0) {
+      if (sampler->MaxAnisotropy > 1.0) {
          minFilt = FILTER_ANISOTROPIC;
          magFilt = FILTER_ANISOTROPIC;
-         if (tObj->MaxAnisotropy > 2.0)
+         if (sampler->MaxAnisotropy > 2.0)
             aniso = SS2_MAX_ANISO_4;
          else
             aniso = SS2_MAX_ANISO_2;
       }
       else {
-         switch (tObj->MagFilter) {
+         switch (sampler->MagFilter) {
          case GL_NEAREST:
             magFilt = FILTER_NEAREST;
             break;
@@ -257,11 +242,11 @@ i915_update_tex_unit(struct intel_context *intel, GLuint unit, GLuint ss3)
             magFilt = FILTER_LINEAR;
             break;
          default:
-            return GL_FALSE;
+            return false;
          }
       }
 
-      lodbias = (int) ((tUnit->LodBias + tObj->LodBias) * 16.0);
+      lodbias = (int) ((tUnit->LodBias + sampler->LodBias) * 16.0);
       if (lodbias < -256)
           lodbias = -256;
       if (lodbias > 255)
@@ -277,14 +262,14 @@ i915_update_tex_unit(struct intel_context *intel, GLuint unit, GLuint ss3)
 
       /* Shadow:
        */
-      if (tObj->CompareMode == GL_COMPARE_R_TO_TEXTURE_ARB &&
+      if (sampler->CompareMode == GL_COMPARE_R_TO_TEXTURE_ARB &&
           tObj->Target != GL_TEXTURE_3D) {
          if (tObj->Target == GL_TEXTURE_1D) 
-            return GL_FALSE;
+            return false;
 
          state[I915_TEXREG_SS2] |=
             (SS2_SHADOW_ENABLE |
-             intel_translate_shadow_compare_func(tObj->CompareFunc));
+             intel_translate_shadow_compare_func(sampler->CompareFunc));
 
          minFilt = FILTER_4X4_FLAT;
          magFilt = FILTER_4X4_FLAT;
@@ -297,9 +282,10 @@ i915_update_tex_unit(struct intel_context *intel, GLuint unit, GLuint ss3)
    }
 
    {
-      GLenum ws = tObj->WrapS;
-      GLenum wt = tObj->WrapT;
-      GLenum wr = tObj->WrapR;
+      GLenum ws = sampler->WrapS;
+      GLenum wt = sampler->WrapT;
+      GLenum wr = sampler->WrapR;
+      float minlod;
 
       /* We program 1D textures as 2D textures, so the 2D texcoord could
        * result in sampling border values if we don't set the T wrap to
@@ -316,14 +302,14 @@ i915_update_tex_unit(struct intel_context *intel, GLuint unit, GLuint ss3)
        * clamp_to_border.
        */
       if (tObj->Target == GL_TEXTURE_3D &&
-          (tObj->MinFilter != GL_NEAREST ||
-           tObj->MagFilter != GL_NEAREST) &&
+          (sampler->MinFilter != GL_NEAREST ||
+           sampler->MagFilter != GL_NEAREST) &&
           (ws == GL_CLAMP ||
            wt == GL_CLAMP ||
            wr == GL_CLAMP ||
            ws == GL_CLAMP_TO_BORDER ||
            wt == GL_CLAMP_TO_BORDER || wr == GL_CLAMP_TO_BORDER))
-         return GL_FALSE;
+         return false;
 
       /* Only support TEXCOORDMODE_CLAMP_EDGE and TEXCOORDMODE_CUBE (not 
        * used) when using cube map texture coordinates
@@ -331,7 +317,29 @@ i915_update_tex_unit(struct intel_context *intel, GLuint unit, GLuint ss3)
       if (tObj->Target == GL_TEXTURE_CUBE_MAP_ARB &&
           (((ws != GL_CLAMP) && (ws != GL_CLAMP_TO_EDGE)) ||
            ((wt != GL_CLAMP) && (wt != GL_CLAMP_TO_EDGE))))
-          return GL_FALSE;
+          return false;
+
+      /*
+       * According to 3DSTATE_MAP_STATE at page of 104 in Bspec
+       * Vol3d 3D Instructions:
+       *   [DevGDG and DevAlv]: Must be a power of 2 for cube maps.
+       *   [DevLPT, DevCST and DevBLB]: If not a power of 2, cube maps
+       *      must have all faces enabled.
+       *
+       * But, as I tested on pineview(DevBLB derived), the rendering is
+       * bad(you will find the color isn't samplered right in some
+       * fragments). After checking, it seems that the texture layout is
+       * wrong: making the width and height align of 4(although this
+       * doesn't make much sense) will fix this issue and also broke some
+       * others. Well, Bspec mentioned nothing about the layout alignment
+       * and layout for NPOT cube map.  I guess the Bspec just assume it's
+       * a POT cube map.
+       *
+       * Thus, I guess we need do this for other platforms as well.
+       */
+      if (tObj->Target == GL_TEXTURE_CUBE_MAP_ARB &&
+          !is_power_of_two(firstImage->Height))
+         return false;
 
       state[I915_TEXREG_SS3] = ss3;     /* SS3_NORMALIZED_COORDS */
 
@@ -340,36 +348,37 @@ i915_update_tex_unit(struct intel_context *intel, GLuint unit, GLuint ss3)
           (translate_wrap_mode(wt) << SS3_TCY_ADDR_MODE_SHIFT) |
           (translate_wrap_mode(wr) << SS3_TCZ_ADDR_MODE_SHIFT));
 
+      minlod = MIN2(sampler->MinLod, tObj->_MaxLevel - tObj->BaseLevel);
       state[I915_TEXREG_SS3] |= (unit << SS3_TEXTUREMAP_INDEX_SHIFT);
-      state[I915_TEXREG_SS3] |= (U_FIXED(CLAMP(tObj->MinLod, 0.0, 11.0), 4) <<
+      state[I915_TEXREG_SS3] |= (U_FIXED(CLAMP(minlod, 0.0, 11.0), 4) <<
 				 SS3_MIN_LOD_SHIFT);
 
    }
 
    /* convert border color from float to ubyte */
-   CLAMPED_FLOAT_TO_UBYTE(border[0], tObj->BorderColor[0]);
-   CLAMPED_FLOAT_TO_UBYTE(border[1], tObj->BorderColor[1]);
-   CLAMPED_FLOAT_TO_UBYTE(border[2], tObj->BorderColor[2]);
-   CLAMPED_FLOAT_TO_UBYTE(border[3], tObj->BorderColor[3]);
+   CLAMPED_FLOAT_TO_UBYTE(border[0], sampler->BorderColor.f[0]);
+   CLAMPED_FLOAT_TO_UBYTE(border[1], sampler->BorderColor.f[1]);
+   CLAMPED_FLOAT_TO_UBYTE(border[2], sampler->BorderColor.f[2]);
+   CLAMPED_FLOAT_TO_UBYTE(border[3], sampler->BorderColor.f[3]);
 
    if (firstImage->_BaseFormat == GL_DEPTH_COMPONENT) {
       /* GL specs that border color for depth textures is taken from the
        * R channel, while the hardware uses A.  Spam R into all the channels
        * for safety.
        */
-      state[I915_TEXREG_SS4] = INTEL_PACKCOLOR8888(border[0],
-						   border[0],
-						   border[0],
-						   border[0]);
+      state[I915_TEXREG_SS4] = PACK_COLOR_8888(border[0],
+					       border[0],
+					       border[0],
+					       border[0]);
    } else {
-      state[I915_TEXREG_SS4] = INTEL_PACKCOLOR8888(border[0],
-						   border[1],
-						   border[2],
-						   border[3]);
+      state[I915_TEXREG_SS4] = PACK_COLOR_8888(border[3],
+					       border[0],
+					       border[1],
+					       border[2]);
    }
 
 
-   I915_ACTIVESTATE(i915, I915_UPLOAD_TEX(unit), GL_TRUE);
+   I915_ACTIVESTATE(i915, I915_UPLOAD_TEX(unit), true);
    /* memcmp was already disabled, but definitely won't work as the
     * region might now change and that wouldn't be detected:
     */
@@ -385,7 +394,7 @@ i915_update_tex_unit(struct intel_context *intel, GLuint unit, GLuint ss3)
    DBG(TEXTURE, "state[I915_TEXREG_MS4] = 0x%x\n", state[I915_TEXREG_MS4]);
 #endif
 
-   return GL_TRUE;
+   return true;
 }
 
 
@@ -394,7 +403,7 @@ i915_update_tex_unit(struct intel_context *intel, GLuint unit, GLuint ss3)
 void
 i915UpdateTextureState(struct intel_context *intel)
 {
-   GLboolean ok = GL_TRUE;
+   bool ok = true;
    GLuint i;
 
    for (i = 0; i < I915_TEX_UNITS && ok; i++) {
@@ -411,17 +420,17 @@ i915UpdateTextureState(struct intel_context *intel)
       case 0:{
             struct i915_context *i915 = i915_context(&intel->ctx);
             if (i915->state.active & I915_UPLOAD_TEX(i))
-               I915_ACTIVESTATE(i915, I915_UPLOAD_TEX(i), GL_FALSE);
+               I915_ACTIVESTATE(i915, I915_UPLOAD_TEX(i), false);
 
 	    if (i915->state.tex_buffer[i] != NULL) {
-	       dri_bo_unreference(i915->state.tex_buffer[i]);
+	       drm_intel_bo_unreference(i915->state.tex_buffer[i]);
 	       i915->state.tex_buffer[i] = NULL;
 	    }
 
             break;
          }
       default:
-         ok = GL_FALSE;
+         ok = false;
          break;
       }
    }

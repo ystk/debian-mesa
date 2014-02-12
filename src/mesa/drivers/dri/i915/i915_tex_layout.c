@@ -67,7 +67,8 @@ static GLint bottom_offsets[6] = {
 
 
 /**
- * Cube texture map layout for i830M-GM915.
+ * Cube texture map layout for i830M-GM915 and
+ * non-compressed cube texture map on GM945.
  *
  * Hardware layout looks like:
  *
@@ -111,9 +112,7 @@ static GLint bottom_offsets[6] = {
  *
  */
 static void
-i915_miptree_layout_cube(struct intel_context *intel,
-			 struct intel_mipmap_tree * mt,
-			 uint32_t tiling)
+i915_miptree_layout_cube(struct intel_mipmap_tree * mt)
 {
    const GLuint dim = mt->width0;
    GLuint face;
@@ -123,15 +122,14 @@ i915_miptree_layout_cube(struct intel_context *intel,
    assert(lvlWidth == lvlHeight); /* cubemap images are square */
 
    /* double pitch for cube layouts */
-   mt->pitch = intel_miptree_pitch_align (intel, mt, tiling, dim * 2);
+   mt->total_width = dim * 2;
    mt->total_height = dim * 4;
 
    for (level = mt->first_level; level <= mt->last_level; level++) {
-      intel_miptree_set_level_info(mt, level, 6,
+      intel_miptree_set_level_info(mt, level,
 				   0, 0,
-				   /*OLD: mt->pitch, mt->total_height,*/
 				   lvlWidth, lvlHeight,
-				   1);
+				   6);
       lvlWidth /= 2;
       lvlHeight /= 2;
    }
@@ -145,8 +143,8 @@ i915_miptree_layout_cube(struct intel_context *intel,
 	 intel_miptree_set_image_offset(mt, level, face, x, y);
 
 	 if (d == 0)
-	    _mesa_printf("cube mipmap %d/%d (%d..%d) is 0x0\n",
-			 face, level, mt->first_level, mt->last_level);
+	    printf("cube mipmap %d/%d (%d..%d) is 0x0\n",
+		   face, level, mt->first_level, mt->last_level);
 
 	 d >>= 1;
 	 x += step_offsets[face][0] * d;
@@ -156,9 +154,7 @@ i915_miptree_layout_cube(struct intel_context *intel,
 }
 
 static void
-i915_miptree_layout_3d(struct intel_context *intel,
-		       struct intel_mipmap_tree * mt,
-		       uint32_t tiling)
+i915_miptree_layout_3d(struct intel_mipmap_tree * mt)
 {
    GLuint width = mt->width0;
    GLuint height = mt->height0;
@@ -167,11 +163,11 @@ i915_miptree_layout_3d(struct intel_context *intel,
    GLint level;
 
    /* Calculate the size of a single slice. */
-   mt->pitch = intel_miptree_pitch_align (intel, mt, tiling, mt->width0);
+   mt->total_width = mt->width0;
 
    /* XXX: hardware expects/requires 9 levels at minimum. */
    for (level = mt->first_level; level <= MAX2(8, mt->last_level); level++) {
-      intel_miptree_set_level_info(mt, level, depth, 0, mt->total_height,
+      intel_miptree_set_level_info(mt, level, 0, mt->total_height,
 				   width, height, depth);
 
       stack_height += MAX2(2, height);
@@ -201,27 +197,25 @@ i915_miptree_layout_3d(struct intel_context *intel,
 }
 
 static void
-i915_miptree_layout_2d(struct intel_context *intel,
-		       struct intel_mipmap_tree * mt,
-		       uint32_t tiling)
+i915_miptree_layout_2d(struct intel_mipmap_tree * mt)
 {
    GLuint width = mt->width0;
    GLuint height = mt->height0;
    GLuint img_height;
    GLint level;
 
-   mt->pitch = intel_miptree_pitch_align (intel, mt, tiling, mt->width0);
+   mt->total_width = mt->width0;
    mt->total_height = 0;
 
    for (level = mt->first_level; level <= mt->last_level; level++) {
-      intel_miptree_set_level_info(mt, level, 1,
+      intel_miptree_set_level_info(mt, level,
 				   0, mt->total_height,
 				   width, height, 1);
 
       if (mt->compressed)
-	 img_height = MAX2(1, height / 4);
+	 img_height = ALIGN(height, 4) / 4;
       else
-	 img_height = (MAX2(2, height) + 1) & ~1;
+	 img_height = ALIGN(height, 2);
 
       mt->total_height += img_height;
 
@@ -230,37 +224,33 @@ i915_miptree_layout_2d(struct intel_context *intel,
    }
 }
 
-GLboolean
-i915_miptree_layout(struct intel_context *intel, struct intel_mipmap_tree * mt,
-		    uint32_t tiling)
+void
+i915_miptree_layout(struct intel_mipmap_tree * mt)
 {
    switch (mt->target) {
    case GL_TEXTURE_CUBE_MAP:
-      i915_miptree_layout_cube(intel, mt, tiling);
+      i915_miptree_layout_cube(mt);
       break;
    case GL_TEXTURE_3D:
-      i915_miptree_layout_3d(intel, mt, tiling);
+      i915_miptree_layout_3d(mt);
       break;
    case GL_TEXTURE_1D:
    case GL_TEXTURE_2D:
    case GL_TEXTURE_RECTANGLE_ARB:
-      i915_miptree_layout_2d(intel, mt, tiling);
+      i915_miptree_layout_2d(mt);
       break;
    default:
       _mesa_problem(NULL, "Unexpected tex target in i915_miptree_layout()");
       break;
    }
 
-   DBG("%s: %dx%dx%d - sz 0x%x\n", __FUNCTION__,
-       mt->pitch,
-       mt->total_height, mt->cpp, mt->pitch * mt->total_height * mt->cpp);
-
-   return GL_TRUE;
+   DBG("%s: %dx%dx%d\n", __FUNCTION__,
+       mt->total_width, mt->total_height, mt->cpp);
 }
 
 
 /**
- * Cube texture map layout for GM945 and later.
+ * Compressed cube texture map layout for GM945 and later.
  *
  * The hardware layout looks like the 830-915 layout, except for the small
  * sizes.  A zoomed in view of the layout for 945 is:
@@ -320,9 +310,7 @@ i915_miptree_layout(struct intel_context *intel, struct intel_mipmap_tree * mt,
  */
 
 static void
-i945_miptree_layout_cube(struct intel_context *intel,
-			 struct intel_mipmap_tree * mt,
-			 uint32_t tiling)
+i945_miptree_layout_cube(struct intel_mipmap_tree * mt)
 {
    const GLuint dim = mt->width0;
    GLuint face;
@@ -336,9 +324,9 @@ i945_miptree_layout_cube(struct intel_context *intel,
     * or the final row of 4x4, 2x2 and 1x1 faces below this.
     */
    if (dim > 32)
-      mt->pitch = intel_miptree_pitch_align (intel, mt, tiling, dim * 2);
+      mt->total_width = dim * 2;
    else
-      mt->pitch = intel_miptree_pitch_align (intel, mt, tiling, 14 * 8);
+      mt->total_width = 14 * 8;
 
    if (dim >= 4)
       mt->total_height = dim * 4 + 4;
@@ -347,9 +335,9 @@ i945_miptree_layout_cube(struct intel_context *intel,
 
    /* Set all the levels to effectively occupy the whole rectangular region. */
    for (level = mt->first_level; level <= mt->last_level; level++) {
-      intel_miptree_set_level_info(mt, level, 6,
+      intel_miptree_set_level_info(mt, level,
 				   0, 0,
-				   lvlWidth, lvlHeight, 1);
+				   lvlWidth, lvlHeight, 6);
       lvlWidth /= 2;
       lvlHeight /= 2;
    }
@@ -412,9 +400,7 @@ i945_miptree_layout_cube(struct intel_context *intel,
 }
 
 static void
-i945_miptree_layout_3d(struct intel_context *intel,
-		       struct intel_mipmap_tree * mt,
-		       uint32_t tiling)
+i945_miptree_layout_3d(struct intel_mipmap_tree * mt)
 {
    GLuint width = mt->width0;
    GLuint height = mt->height0;
@@ -423,11 +409,11 @@ i945_miptree_layout_3d(struct intel_context *intel,
    GLuint pack_y_pitch;
    GLuint level;
 
-   mt->pitch = intel_miptree_pitch_align (intel, mt, tiling, mt->width0);
+   mt->total_width = mt->width0;
    mt->total_height = 0;
 
    pack_y_pitch = MAX2(mt->height0, 2);
-   pack_x_pitch = mt->pitch;
+   pack_x_pitch = mt->total_width;
    pack_x_nr = 1;
 
    for (level = mt->first_level; level <= mt->last_level; level++) {
@@ -435,7 +421,7 @@ i945_miptree_layout_3d(struct intel_context *intel,
       GLint y = 0;
       GLint q, j;
 
-      intel_miptree_set_level_info(mt, level, depth,
+      intel_miptree_set_level_info(mt, level,
 				   0, mt->total_height,
 				   width, height, depth);
 
@@ -454,7 +440,7 @@ i945_miptree_layout_3d(struct intel_context *intel,
       if (pack_x_pitch > 4) {
 	 pack_x_pitch >>= 1;
 	 pack_x_nr <<= 1;
-	 assert(pack_x_pitch * pack_x_nr <= mt->pitch);
+	 assert(pack_x_pitch * pack_x_nr <= mt->total_width);
       }
 
       if (pack_y_pitch > 2) {
@@ -467,33 +453,29 @@ i945_miptree_layout_3d(struct intel_context *intel,
    }
 }
 
-GLboolean
-i945_miptree_layout(struct intel_context *intel, struct intel_mipmap_tree * mt,
-		    uint32_t tiling)
+void
+i945_miptree_layout(struct intel_mipmap_tree * mt)
 {
    switch (mt->target) {
    case GL_TEXTURE_CUBE_MAP:
       if (mt->compressed)
-	 i945_miptree_layout_cube(intel, mt, tiling);
+	 i945_miptree_layout_cube(mt);
       else
-	 i915_miptree_layout_cube(intel, mt, tiling);
+	 i915_miptree_layout_cube(mt);
       break;
    case GL_TEXTURE_3D:
-      i945_miptree_layout_3d(intel, mt, tiling);
+      i945_miptree_layout_3d(mt);
       break;
    case GL_TEXTURE_1D:
    case GL_TEXTURE_2D:
    case GL_TEXTURE_RECTANGLE_ARB:
-      i945_miptree_layout_2d(intel, mt, tiling);
+      i945_miptree_layout_2d(mt);
       break;
    default:
       _mesa_problem(NULL, "Unexpected tex target in i945_miptree_layout()");
       break;
    }
 
-   DBG("%s: %dx%dx%d - sz 0x%x\n", __FUNCTION__,
-       mt->pitch,
-       mt->total_height, mt->cpp, mt->pitch * mt->total_height * mt->cpp);
-
-   return GL_TRUE;
+   DBG("%s: %dx%dx%d\n", __FUNCTION__,
+       mt->total_width, mt->total_height, mt->cpp);
 }

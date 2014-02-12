@@ -27,40 +27,54 @@
 #define TEXGEN_H
 
 
-#include "main/mtypes.h"
+#include "compiler.h"
+#include "glheader.h"
+#include "mfeatures.h"
+
+struct _glapi_table;
 
 
 #if FEATURE_texgen
-
-#define _MESA_INIT_TEXGEN_FUNCTIONS(driver, impl) \
-   do {                                           \
-      (driver)->TexGen = impl ## TexGen;          \
-   } while (0)
 
 extern void GLAPIENTRY
 _mesa_TexGenfv( GLenum coord, GLenum pname, const GLfloat *params );
 
 extern void GLAPIENTRY
+_mesa_TexGenf( GLenum coord, GLenum pname, GLfloat param );
+
+extern void GLAPIENTRY
 _mesa_TexGeni( GLenum coord, GLenum pname, GLint param );
+
+extern void GLAPIENTRY
+_mesa_GetTexGenfv( GLenum coord, GLenum pname, GLfloat *params );
 
 extern void
 _mesa_init_texgen_dispatch(struct _glapi_table *disp);
 
-#else /* FEATURE_texgen */
 
-#define _MESA_INIT_TEXGEN_FUNCTIONS(driver, impl) do { } while (0)
+extern void GLAPIENTRY
+_es_GetTexGenfv(GLenum coord, GLenum pname, GLfloat *params);
+
+extern void GLAPIENTRY
+_es_TexGenf(GLenum coord, GLenum pname, GLfloat param);
+
+extern void GLAPIENTRY
+_es_TexGenfv(GLenum coord, GLenum pname, const GLfloat *params);
+
+
+#else /* FEATURE_texgen */
 
 static void
 _mesa_TexGenfv( GLenum coord, GLenum pname, const GLfloat *params )
 {
 }
 
-static void INLINE
+static void inline
 _mesa_TexGeni( GLenum coord, GLenum pname, GLint param )
 {
 }
 
-static INLINE void
+static inline void
 _mesa_init_texgen_dispatch(struct _glapi_table *disp)
 {
 }

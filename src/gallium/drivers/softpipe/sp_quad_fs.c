@@ -50,8 +50,8 @@
 struct quad_shade_stage
 {
    struct quad_stage stage;  /**< base class */
-   struct tgsi_exec_machine *machine;
-   struct tgsi_exec_vector *inputs, *outputs;
+
+   /* no other fields at this time */
 };
 
 
@@ -65,16 +65,17 @@ quad_shade_stage(struct quad_stage *qs)
 
 /**
  * Execute fragment shader for the four fragments in the quad.
+ * \return TRUE if quad is alive, FALSE if all four pixels are killed
  */
 static INLINE boolean
 shade_quad(struct quad_stage *qs, struct quad_header *quad)
 {
-   struct quad_shade_stage *qss = quad_shade_stage( qs );
    struct softpipe_context *softpipe = qs->softpipe;
-   struct tgsi_exec_machine *machine = qss->machine;
+   struct tgsi_exec_machine *machine = softpipe->fs_machine;
 
    /* run shader */
-   return softpipe->fs->run( softpipe->fs, machine, quad );
+   machine->flatshade_color = softpipe->rasterizer->flatshade ? TRUE : FALSE;
+   return softpipe->fs_variant->run( softpipe->fs_variant, machine, quad );
 }
 
 
@@ -98,38 +99,48 @@ coverage_quad(struct quad_stage *qs, struct quad_header *quad)
 }
 
 
-
+/**
+ * Shade/write an array of quads
+ * Called via quad_stage::run()
+ */
 static void
 shade_quads(struct quad_stage *qs, 
-                 struct quad_header *quads[],
-                 unsigned nr)
+            struct quad_header *quads[],
+            unsigned nr)
 {
-   struct quad_shade_stage *qss = quad_shade_stage( qs );
    struct softpipe_context *softpipe = qs->softpipe;
-   struct tgsi_exec_machine *machine = qss->machine;
+   struct tgsi_exec_machine *machine = softpipe->fs_machine;
+   unsigned i, nr_quads = 0;
 
-   unsigned i, pass = 0;
-   
-   machine->Consts = softpipe->mapped_constants[PIPE_SHADER_FRAGMENT];
+   tgsi_exec_set_constant_buffers(machine, PIPE_MAX_CONSTANT_BUFFERS,
+                         softpipe->mapped_constants[PIPE_SHADER_FRAGMENT],
+                         softpipe->const_buffer_size[PIPE_SHADER_FRAGMENT]);
+
    machine->InterpCoefs = quads[0]->coef;
 
    for (i = 0; i < nr; i++) {
-      if (!shade_quad(qs, quads[i]))
-         continue;
+      /* Only omit this quad from the output list if all the fragments
+       * are killed _AND_ it's not the first quad in the list.
+       * The first quad is special in the (optimized) depth-testing code:
+       * the quads' Z coordinates are step-wise interpolated with respect
+       * to the first quad in the list.
+       * For multi-pass algorithms we need to produce exactly the same
+       * Z values in each pass.  If interpolation starts with different quads
+       * we can get different Z values for the same (x,y).
+       */
+      if (!shade_quad(qs, quads[i]) && i > 0)
+         continue; /* quad totally culled/killed */
 
       if (/*do_coverage*/ 0)
          coverage_quad( qs, quads[i] );
 
-      quads[pass++] = quads[i];
+      quads[nr_quads++] = quads[i];
    }
    
-   if (pass)
-      qs->next->run(qs->next, quads, pass);
+   if (nr_quads)
+      qs->next->run(qs->next, quads, nr_quads);
 }
    
-
-
-
 
 /**
  * Per-primitive (or per-begin?) setup
@@ -137,13 +148,12 @@ shade_quads(struct quad_stage *qs,
 static void
 shade_begin(struct quad_stage *qs)
 {
-   struct quad_shade_stage *qss = quad_shade_stage(qs);
    struct softpipe_context *softpipe = qs->softpipe;
 
-   softpipe->fs->prepare( softpipe->fs, 
-			  qss->machine,
-			  (struct tgsi_sampler **)
-                             softpipe->tgsi.frag_samplers_list );
+   softpipe->fs_variant->prepare( softpipe->fs_variant, 
+                                  softpipe->fs_machine,
+                                  (struct tgsi_sampler **)
+                                  softpipe->tgsi.frag_samplers_list );
 
    qs->next->begin(qs->next);
 }
@@ -152,10 +162,6 @@ shade_begin(struct quad_stage *qs)
 static void
 shade_destroy(struct quad_stage *qs)
 {
-   struct quad_shade_stage *qss = (struct quad_shade_stage *) qs;
-
-   tgsi_exec_machine_destroy(qss->machine);
-
    FREE( qs );
 }
 
@@ -172,16 +178,9 @@ sp_quad_shade_stage( struct softpipe_context *softpipe )
    qss->stage.run = shade_quads;
    qss->stage.destroy = shade_destroy;
 
-   qss->machine = tgsi_exec_machine_create();
-   if (!qss->machine)
-      goto fail;
-
    return &qss->stage;
 
 fail:
-   if (qss && qss->machine)
-      tgsi_exec_machine_destroy(qss->machine);
-
    FREE(qss);
    return NULL;
 }

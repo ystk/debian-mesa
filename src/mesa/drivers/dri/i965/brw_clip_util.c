@@ -33,7 +33,7 @@
 #include "main/glheader.h"
 #include "main/macros.h"
 #include "main/enums.h"
-#include "shader/program.h"
+#include "program/program.h"
 
 #include "intel_batchbuffer.h"
 
@@ -109,13 +109,17 @@ static void brw_clip_project_vertex( struct brw_clip_compile *c,
 {
    struct brw_compile *p = &c->func;
    struct brw_reg tmp = get_tmp(c);
+   GLuint hpos_offset = brw_vert_result_to_offset(&c->vue_map,
+                                                  VERT_RESULT_HPOS);
+   GLuint ndc_offset = brw_vert_result_to_offset(&c->vue_map,
+                                                 BRW_VERT_RESULT_NDC);
 
    /* Fixup position.  Extract from the original vertex and re-project
     * to screen space:
     */
-   brw_MOV(p, tmp, deref_4f(vert_addr, c->offset[VERT_RESULT_HPOS]));
+   brw_MOV(p, tmp, deref_4f(vert_addr, hpos_offset));
    brw_clip_project_position(c, tmp);
-   brw_MOV(p, deref_4f(vert_addr, c->header_position_offset), tmp);
+   brw_MOV(p, deref_4f(vert_addr, ndc_offset), tmp);
 	 
    release_tmp(c, tmp);
 }
@@ -131,36 +135,42 @@ void brw_clip_interp_vertex( struct brw_clip_compile *c,
 			     struct brw_indirect v0_ptr, /* from */
 			     struct brw_indirect v1_ptr, /* to */
 			     struct brw_reg t0,
-			     GLboolean force_edgeflag)
+			     bool force_edgeflag)
 {
    struct brw_compile *p = &c->func;
    struct brw_reg tmp = get_tmp(c);
-   GLuint i;
+   GLuint slot;
 
    /* Just copy the vertex header:
     */
    /*
     * After CLIP stage, only first 256 bits of the VUE are read
-    * back on IGDNG, so needn't change it
+    * back on Ironlake, so needn't change it
     */
    brw_copy_indirect_to_indirect(p, dest_ptr, v0_ptr, 1);
       
    /* Iterate over each attribute (could be done in pairs?)
     */
-   for (i = 0; i < c->nr_attrs; i++) {
-      GLuint delta = i*16 + 32;
+   for (slot = 0; slot < c->vue_map.num_slots; slot++) {
+      int vert_result = c->vue_map.slot_to_vert_result[slot];
+      GLuint delta = brw_vue_slot_to_offset(slot);
 
-      if (BRW_IS_IGDNG(p->brw))
-          delta = i * 16 + 32 * 3;
-
-      if (delta == c->offset[VERT_RESULT_EDGE]) {
+      if (vert_result == VERT_RESULT_EDGE) {
 	 if (force_edgeflag) 
 	    brw_MOV(p, deref_4f(dest_ptr, delta), brw_imm_f(1));
 	 else
 	    brw_MOV(p, deref_4f(dest_ptr, delta), deref_4f(v0_ptr, delta));
-      }
-      else {
-	 /* Interpolate: 
+      } else if (vert_result == VERT_RESULT_PSIZ ||
+                 vert_result == VERT_RESULT_CLIP_DIST0 ||
+                 vert_result == VERT_RESULT_CLIP_DIST1) {
+	 /* PSIZ doesn't need interpolation because it isn't used by the
+          * fragment shader.  CLIP_DIST0 and CLIP_DIST1 don't need
+          * intepolation because on pre-GEN6, these are just placeholder VUE
+          * slots that don't perform any action.
+          */
+      } else if (vert_result < VERT_RESULT_MAX) {
+	 /* This is a true vertex result (and not a special value for the VUE
+	  * header), so interpolate:
 	  *
 	  *        New = attr0 + t*attr1 - t*attr0
 	  */
@@ -181,11 +191,8 @@ void brw_clip_interp_vertex( struct brw_clip_compile *c,
       }
    }
 
-   if (i & 1) {
-      GLuint delta = i*16 + 32;
-
-      if (BRW_IS_IGDNG(p->brw))
-          delta = i * 16 + 32 * 3;
+   if (c->vue_map.num_slots % 2) {
+      GLuint delta = brw_vue_slot_to_offset(c->vue_map.num_slots);
 
       brw_MOV(p, deref_4f(dest_ptr, delta), brw_imm_f(0));
    }
@@ -198,39 +205,21 @@ void brw_clip_interp_vertex( struct brw_clip_compile *c,
    brw_clip_project_vertex(c, dest_ptr );
 }
 
-
-
-
-#define MAX_MRF 16
-
 void brw_clip_emit_vue(struct brw_clip_compile *c, 
 		       struct brw_indirect vert,
-		       GLboolean allocate,
-		       GLboolean eot,
+		       bool allocate,
+		       bool eot,
 		       GLuint header)
 {
    struct brw_compile *p = &c->func;
-   GLuint start = c->last_mrf;
 
    brw_clip_ff_sync(c);
 
    assert(!(allocate && eot));
-   
-   /* Cycle through mrf regs - probably futile as we have to wait for
-    * the allocation response anyway.  Also, the order this function
-    * is invoked doesn't correspond to the order the instructions will
-    * be executed, so it won't have any effect in many cases.
-    */
-#if 0
-   if (start + c->nr_regs + 1 >= MAX_MRF)
-      start = 0;
 
-   c->last_mrf = start + c->nr_regs + 1;
-#endif
-	
    /* Copy the vertex from vertn into m1..mN+1:
     */
-   brw_copy_from_indirect(p, brw_message_reg(start+1), vert, c->nr_regs);
+   brw_copy_from_indirect(p, brw_message_reg(1), vert, c->nr_regs);
 
    /* Overwrite PrimType and PrimStart in the message header, for
     * each vertex in turn:
@@ -246,7 +235,7 @@ void brw_clip_emit_vue(struct brw_clip_compile *c,
     */
    brw_urb_WRITE(p, 
 		 allocate ? c->reg.R0 : retype(brw_null_reg(), BRW_REGISTER_TYPE_UD),
-		 start,
+		 0,
 		 c->reg.R0,
 		 allocate,
 		 1,		/* used */
@@ -310,25 +299,41 @@ void brw_clip_copy_colors( struct brw_clip_compile *c,
 {
    struct brw_compile *p = &c->func;
 
-   if (c->offset[VERT_RESULT_COL0])
+   if (brw_clip_have_vert_result(c, VERT_RESULT_COL0))
       brw_MOV(p, 
-	      byte_offset(c->reg.vertex[to], c->offset[VERT_RESULT_COL0]),
-	      byte_offset(c->reg.vertex[from], c->offset[VERT_RESULT_COL0]));
+	      byte_offset(c->reg.vertex[to],
+                          brw_vert_result_to_offset(&c->vue_map,
+                                                    VERT_RESULT_COL0)),
+	      byte_offset(c->reg.vertex[from],
+                          brw_vert_result_to_offset(&c->vue_map,
+                                                    VERT_RESULT_COL0)));
 
-   if (c->offset[VERT_RESULT_COL1])
+   if (brw_clip_have_vert_result(c, VERT_RESULT_COL1))
       brw_MOV(p, 
-	      byte_offset(c->reg.vertex[to], c->offset[VERT_RESULT_COL1]),
-	      byte_offset(c->reg.vertex[from], c->offset[VERT_RESULT_COL1]));
+	      byte_offset(c->reg.vertex[to],
+                          brw_vert_result_to_offset(&c->vue_map,
+                                                    VERT_RESULT_COL1)),
+	      byte_offset(c->reg.vertex[from],
+                          brw_vert_result_to_offset(&c->vue_map,
+                                                    VERT_RESULT_COL1)));
 
-   if (c->offset[VERT_RESULT_BFC0])
+   if (brw_clip_have_vert_result(c, VERT_RESULT_BFC0))
       brw_MOV(p, 
-	      byte_offset(c->reg.vertex[to], c->offset[VERT_RESULT_BFC0]),
-	      byte_offset(c->reg.vertex[from], c->offset[VERT_RESULT_BFC0]));
+	      byte_offset(c->reg.vertex[to],
+                          brw_vert_result_to_offset(&c->vue_map,
+                                                    VERT_RESULT_BFC0)),
+	      byte_offset(c->reg.vertex[from],
+                          brw_vert_result_to_offset(&c->vue_map,
+                                                    VERT_RESULT_BFC0)));
 
-   if (c->offset[VERT_RESULT_BFC1])
+   if (brw_clip_have_vert_result(c, VERT_RESULT_BFC1))
       brw_MOV(p, 
-	      byte_offset(c->reg.vertex[to], c->offset[VERT_RESULT_BFC1]),
-	      byte_offset(c->reg.vertex[from], c->offset[VERT_RESULT_BFC1]));
+	      byte_offset(c->reg.vertex[to],
+                          brw_vert_result_to_offset(&c->vue_map,
+                                                    VERT_RESULT_BFC1)),
+	      byte_offset(c->reg.vertex[from],
+                          brw_vert_result_to_offset(&c->vue_map,
+                                                    VERT_RESULT_BFC1)));
 }
 
 
@@ -358,36 +363,34 @@ void brw_clip_init_clipmask( struct brw_clip_compile *c )
 
 void brw_clip_ff_sync(struct brw_clip_compile *c)
 {
-    if (c->need_ff_sync) {
+    struct intel_context *intel = &c->func.brw->intel;
+
+    if (intel->needs_ff_sync) {
         struct brw_compile *p = &c->func;
-        struct brw_instruction *need_ff_sync;
 
         brw_set_conditionalmod(p, BRW_CONDITIONAL_Z);
         brw_AND(p, brw_null_reg(), c->reg.ff_sync, brw_imm_ud(0x1));
-        need_ff_sync = brw_IF(p, BRW_EXECUTE_1);
+        brw_IF(p, BRW_EXECUTE_1);
         {
             brw_OR(p, c->reg.ff_sync, c->reg.ff_sync, brw_imm_ud(0x1));
-            brw_ff_sync(p, 
-                    c->reg.R0,
-                    0,
-                    c->reg.R0,
-                    1,	
-                    1,		/* used */
-                    1,  	/* msg length */
-                    1,		/* response length */
-                    0,		/* eot */
-                    1,		/* write compelete */
-                    0,		/* urb offset */
-                    BRW_URB_SWIZZLE_NONE);
+            brw_ff_sync(p,
+			c->reg.R0,
+			0,
+			c->reg.R0,
+			1, /* allocate */
+			1, /* response length */
+			0 /* eot */);
         }
-        brw_ENDIF(p, need_ff_sync);
+        brw_ENDIF(p);
         brw_set_predicate_control(p, BRW_PREDICATE_NONE);
     }
 }
 
 void brw_clip_init_ff_sync(struct brw_clip_compile *c)
 {
-    if (c->need_ff_sync) {
+    struct intel_context *intel = &c->func.brw->intel;
+
+    if (intel->needs_ff_sync) {
 	struct brw_compile *p = &c->func;
         
         brw_MOV(p, c->reg.ff_sync, brw_imm_ud(0));

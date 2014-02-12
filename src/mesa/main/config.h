@@ -61,8 +61,11 @@
 /** Maximum number of lights */
 #define MAX_LIGHTS 8
 
-/** Maximum user-defined clipping planes */
-#define MAX_CLIP_PLANES 6
+/**
+ * Maximum number of user-defined clipping planes supported by any driver in
+ * Mesa.  This is used to size arrays.
+ */
+#define MAX_CLIP_PLANES 8
 
 /** Maximum pixel map lookup table size */
 #define MAX_PIXEL_MAP_TABLE 256
@@ -97,17 +100,20 @@
 /** Max texture palette / color table size */
 #define MAX_COLOR_TABLE_SIZE 256
 
+/** Max memory to allow for a single texture image (in megabytes) */
+#define MAX_TEXTURE_MBYTES 1024
+
 /** Number of 1D/2D texture mipmap levels */
-#define MAX_TEXTURE_LEVELS 13
+#define MAX_TEXTURE_LEVELS 15
 
 /** Number of 3D texture mipmap levels */
-#define MAX_3D_TEXTURE_LEVELS 9
+#define MAX_3D_TEXTURE_LEVELS 15
 
 /** Number of cube texture mipmap levels - GL_ARB_texture_cube_map */
-#define MAX_CUBE_TEXTURE_LEVELS 13
+#define MAX_CUBE_TEXTURE_LEVELS 15
 
 /** Maximum rectangular texture size - GL_NV_texture_rectangle */
-#define MAX_TEXTURE_RECT_SIZE 4096
+#define MAX_TEXTURE_RECT_SIZE 16384
 
 /** Maximum number of layers in a 1D or 2D array texture - GL_MESA_texture_array */
 #define MAX_ARRAY_TEXTURE_LAYERS 64
@@ -140,11 +146,28 @@
  */
 
 #ifndef MAX_WIDTH
-#   define MAX_WIDTH 4096
+#   define MAX_WIDTH 16384
 #endif
 /** Maximum viewport/image height */
 #ifndef MAX_HEIGHT
-#   define MAX_HEIGHT 4096
+#   define MAX_HEIGHT 16384
+#endif
+
+/* XXX: hack to prevent stack overflow on windows until all temporary arrays
+ * [MAX_WIDTH] are allocated from the heap */
+#ifdef WIN32
+#undef MAX_TEXTURE_LEVELS
+#undef MAX_3D_TEXTURE_LEVELS
+#undef MAX_CUBE_TEXTURE_LEVELS
+#undef MAX_TEXTURE_RECT_SIZE
+#undef MAX_WIDTH
+#undef MAX_HEIGHT
+#define MAX_TEXTURE_LEVELS 13
+#define MAX_3D_TEXTURE_LEVELS 9
+#define MAX_CUBE_TEXTURE_LEVELS 13
+#define MAX_TEXTURE_RECT_SIZE 4096
+#define MAX_WIDTH 4096
+#define MAX_HEIGHT 4096
 #endif
 
 /** Maxmimum size for CVA.  May be overridden by the drivers.  */
@@ -168,7 +191,7 @@
 #define MAX_TEXTURE_MAX_ANISOTROPY 16.0
 
 /** For GL_EXT_texture_lod_bias (typically MAX_TEXTURE_LEVELS - 1) */
-#define MAX_TEXTURE_LOD_BIAS 12.0
+#define MAX_TEXTURE_LOD_BIAS 14.0
 
 /** For any program target/extension */
 /*@{*/
@@ -177,14 +200,14 @@
 /**
  * Per-program constants (power of two)
  *
- * \c MAX_PROGRAM_LOCAL_PARAMS and \c MAX_UNIFORMS are just the assmebly shader
+ * \c MAX_PROGRAM_LOCAL_PARAMS and \c MAX_UNIFORMS are just the assembly shader
  * and GLSL shader names for the same thing.  They should \b always have the
  * same value.  Each refers to the number of vec4 values supplied as
  * per-program parameters.
  */
 /*@{*/
-#define MAX_PROGRAM_LOCAL_PARAMS       1024
-#define MAX_UNIFORMS                   1024
+#define MAX_PROGRAM_LOCAL_PARAMS       4096
+#define MAX_UNIFORMS                   4096
 /*@}*/
 
 /**
@@ -243,13 +266,14 @@
 /*@{*/
 #define MAX_VERTEX_GENERIC_ATTRIBS 16
 #define MAX_VERTEX_TEXTURE_IMAGE_UNITS MAX_TEXTURE_IMAGE_UNITS
-#define MAX_COMBINED_TEXTURE_IMAGE_UNITS MAX_TEXTURE_IMAGE_UNITS
+#define MAX_COMBINED_TEXTURE_IMAGE_UNITS (MAX_VERTEX_TEXTURE_IMAGE_UNITS + \
+					  MAX_TEXTURE_IMAGE_UNITS)
 /*@}*/
 
 
 /** For GL_ARB_draw_buffers */
 /*@{*/
-#define MAX_DRAW_BUFFERS 4
+#define MAX_DRAW_BUFFERS 8
 /*@}*/
 
 
@@ -260,6 +284,20 @@
 
 /** For GL_ATI_envmap_bump - support bump mapping on first 8 units */
 #define SUPPORTED_ATI_BUMP_UNITS 0xff
+
+/** For GL_EXT_transform_feedback */
+#define MAX_FEEDBACK_ATTRIBS 32
+
+/** For GL_ARB_geometry_shader4 */
+/*@{*/
+#define MAX_GEOMETRY_TEXTURE_IMAGE_UNITS             8
+#define MAX_GEOMETRY_VARYING_COMPONENTS              32
+#define MAX_VERTEX_VARYING_COMPONENTS                32
+#define MAX_GEOMETRY_UNIFORM_COMPONENTS              512
+#define MAX_GEOMETRY_OUTPUT_VERTICES                 256
+#define MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS         1024
+/*@}*/
+
 
 /**
  * \name Mesa-specific parameters
@@ -294,7 +332,7 @@
 
 
 /**
- * Bits per color channel:  8, 16 or 32
+ * For swrast, bits per color channel:  8, 16 or 32
  */
 #ifndef CHAN_BITS
 #define CHAN_BITS 8

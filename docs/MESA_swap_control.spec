@@ -43,7 +43,7 @@ Issues
 
 New Procedures and Functions
 
-    int glXSwapIntervalMESA(int interval)
+    int glXSwapIntervalMESA(unsigned int interval)
     int glXGetSwapIntervalMESA(void)
 
 New Tokens
@@ -88,8 +88,8 @@ Additions to the GLX 1.3 Specification
     this is typically the time required to display both the even and odd 
     fields of a frame of video data.
 
-    If <interval> is set to a value of 0, buffer swaps are not synchron-
-    ized to a video frame.  The <interval> value is silently clamped to
+    If <interval> is set to a value of 0, buffer swaps are not synchro-
+    nized to a video frame.  The <interval> value is silently clamped to
     the maximum implementation-dependent value supported before being
     stored.
 
@@ -103,11 +103,8 @@ Additions to the GLX 1.3 Specification
 
 Errors
 
-    glXSwapIntervalMESA returns GLX_BAD_VALUE if parameter <interval> is
-    less than zero.
-
     glXSwapIntervalMESA returns GLX_BAD_CONTEXT if there is no current
-    GLXContext.
+    GLXContext or if the current context is not a direct rendering context.
 
 GLX Protocol
 

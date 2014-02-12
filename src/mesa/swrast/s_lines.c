@@ -30,6 +30,7 @@
 #include "s_aaline.h"
 #include "s_context.h"
 #include "s_feedback.h"
+#include "s_fragprog.h"
 #include "s_lines.h"
 #include "s_span.h"
 
@@ -38,7 +39,7 @@
  * Init the mask[] array to implement a line stipple.
  */
 static void
-compute_stipple_mask( GLcontext *ctx, GLuint len, GLubyte mask[] )
+compute_stipple_mask( struct gl_context *ctx, GLuint len, GLubyte mask[] )
 {
    SWcontext *swrast = SWRAST_CONTEXT(ctx);
    GLuint i;
@@ -60,7 +61,7 @@ compute_stipple_mask( GLcontext *ctx, GLuint len, GLubyte mask[] )
  * To draw a wide line we can simply redraw the span N times, side by side.
  */
 static void
-draw_wide_line( GLcontext *ctx, SWspan *span, GLboolean xMajor )
+draw_wide_line( struct gl_context *ctx, SWspan *span, GLboolean xMajor )
 {
    const GLint width = (GLint) CLAMP(ctx->Line.Width,
                                      ctx->Const.MinLineWidth,
@@ -87,10 +88,7 @@ draw_wide_line( GLcontext *ctx, SWspan *span, GLboolean xMajor )
             for (i = 0; i < span->end; i++)
                y[i]++;
          }
-         if (ctx->Visual.rgbMode)
-            _swrast_write_rgba_span(ctx, span);
-         else
-            _swrast_write_index_span(ctx, span);
+	 _swrast_write_rgba_span(ctx, span);
       }
    }
    else {
@@ -106,10 +104,7 @@ draw_wide_line( GLcontext *ctx, SWspan *span, GLboolean xMajor )
             for (i = 0; i < span->end; i++)
                x[i]++;
          }
-         if (ctx->Visual.rgbMode)
-            _swrast_write_rgba_span(ctx, span);
-         else
-            _swrast_write_index_span(ctx, span);
+	 _swrast_write_rgba_span(ctx, span);
       }
    }
 }
@@ -120,35 +115,10 @@ draw_wide_line( GLcontext *ctx, SWspan *span, GLboolean xMajor )
 /*****                    Rasterization                           *****/
 /**********************************************************************/
 
-/* Simple color index line (no stipple, width=1, no Z, no fog, no tex)*/
-#define NAME simple_no_z_ci_line
-#define INTERP_INDEX
-#define RENDER_SPAN(span) _swrast_write_index_span(ctx, &span)
-#include "s_linetemp.h"
-
 /* Simple RGBA index line (no stipple, width=1, no Z, no fog, no tex)*/
 #define NAME simple_no_z_rgba_line
 #define INTERP_RGBA
 #define RENDER_SPAN(span) _swrast_write_rgba_span(ctx, &span);
-#include "s_linetemp.h"
-
-
-/* Z, fog, wide, stipple color index line */
-#define NAME ci_line
-#define INTERP_INDEX
-#define INTERP_Z
-#define INTERP_ATTRIBS /* for fog */
-#define RENDER_SPAN(span)					\
-   if (ctx->Line.StippleFlag) {					\
-      span.arrayMask |= SPAN_MASK;				\
-      compute_stipple_mask(ctx, span.end, span.array->mask);    \
-   }								\
-   if (ctx->Line.Width > 1.0) {					\
-      draw_wide_line(ctx, &span, (GLboolean)(dx > dy));		\
-   }								\
-   else {							\
-      _swrast_write_index_span(ctx, &span);			\
-   }
 #include "s_linetemp.h"
 
 
@@ -191,7 +161,7 @@ draw_wide_line( GLcontext *ctx, SWspan *span, GLboolean xMajor )
 
 
 void
-_swrast_add_spec_terms_line(GLcontext *ctx,
+_swrast_add_spec_terms_line(struct gl_context *ctx,
                             const SWvertex *v0, const SWvertex *v1)
 {
    SWvertex *ncv0 = (SWvertex *)v0;
@@ -233,7 +203,7 @@ static const char *lineFuncName = NULL;
 #define USE(lineFunc)                   \
 do {                                    \
     lineFuncName = #lineFunc;           \
-    /*_mesa_printf("%s\n", lineFuncName);*/   \
+    /*printf("%s\n", lineFuncName);*/   \
     swrast->Line = lineFunc;            \
 } while (0)
 
@@ -253,10 +223,9 @@ do {                                    \
  * tests to this code.
  */
 void
-_swrast_choose_line( GLcontext *ctx )
+_swrast_choose_line( struct gl_context *ctx )
 {
    SWcontext *swrast = SWRAST_CONTEXT(ctx);
-   const GLboolean rgbmode = ctx->Visual.rgbMode;
    GLboolean specular = (ctx->Fog.ColorSumEnabled ||
                          (ctx->Light.Enabled &&
                           ctx->Light.Model.ColorControl == GL_SEPARATE_SPECULAR_COLOR));
@@ -268,7 +237,7 @@ _swrast_choose_line( GLcontext *ctx )
          ASSERT(swrast->Line);
       }
       else if (ctx->Texture._EnabledCoordUnits
-               || ctx->FragmentProgram._Current
+               || _swrast_use_fragment_program(ctx)
                || swrast->_FogEnabled
                || specular) {
          USE(general_line);
@@ -277,23 +246,17 @@ _swrast_choose_line( GLcontext *ctx )
                || ctx->Line.Width != 1.0
                || ctx->Line.StippleFlag) {
          /* no texture, but Z, fog, width>1, stipple, etc. */
-         if (rgbmode)
 #if CHAN_BITS == 32
-            USE(general_line);
+         USE(general_line);
 #else
-            USE(rgba_line);
+         USE(rgba_line);
 #endif
-         else
-            USE(ci_line);
       }
       else {
          ASSERT(!ctx->Depth.Test);
          ASSERT(ctx->Line.Width == 1.0);
          /* simple lines */
-         if (rgbmode)
-            USE(simple_no_z_rgba_line);
-         else
-            USE(simple_no_z_ci_line);
+         USE(simple_no_z_rgba_line);
       }
    }
    else if (ctx->RenderMode == GL_FEEDBACK) {

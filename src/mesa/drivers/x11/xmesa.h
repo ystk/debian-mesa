@@ -72,20 +72,10 @@ and create a window, you must do the following to use the X/Mesa interface:
 extern "C" {
 #endif
 
-#ifdef XFree86Server
-#include "xmesa_xf86.h"
-#else
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include "xmesa_x.h"
-#endif
 #include "GL/gl.h"
-
-#ifdef AMIWIN
-#include <pragmas/xlib_pragmas.h>
-extern struct Library *XLibBase;
-#endif
-
 
 #define XMESA_MAJOR_VERSION 6
 #define XMESA_MINOR_VERSION 3
@@ -180,19 +170,6 @@ extern XMesaContext XMesaCreateContext( XMesaVisual v,
 extern void XMesaDestroyContext( XMesaContext c );
 
 
-#ifdef XFree86Server
-/*
- * These are the extra routines required for integration with XFree86.
- * None of these routines should be user visible. -KEM
- */
-extern GLboolean XMesaForceCurrent( XMesaContext c );
-
-extern GLboolean XMesaLoseCurrent( XMesaContext c );
-
-extern GLboolean XMesaCopyContext( XMesaContext src,
-				   XMesaContext dst,
-				   GLuint mask );
-#endif /* XFree86Server */
 
 
 /*
@@ -287,7 +264,7 @@ extern void XMesaCopySubBuffer( XMesaBuffer b,
 
 
 /*
- * Return a pointer to the the Pixmap or XImage being used as the back
+ * Return a pointer to the Pixmap or XImage being used as the back
  * color buffer of an XMesaBuffer.  This function is a way to get "under
  * the hood" of X/Mesa so one can manipulate the back buffer directly.
  * Input:  b - the XMesaBuffer
@@ -341,7 +318,7 @@ extern const char *XMesaGetString( XMesaContext c, int name );
  *
  * New in Mesa 2.3.
  */
-extern void XMesaGarbageCollect( void );
+extern void XMesaGarbageCollect( XMesaDisplay* dpy );
 
 
 

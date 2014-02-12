@@ -28,44 +28,46 @@
 #ifndef INTEL_FBO_H
 #define INTEL_FBO_H
 
+#include <stdbool.h>
+#include <assert.h>
 #include "main/formats.h"
+#include "intel_context.h"
 #include "intel_screen.h"
 
 struct intel_context;
-
-/**
- * Intel framebuffer, derived from gl_framebuffer.
- */
-struct intel_framebuffer
-{
-   struct gl_framebuffer Base;
-
-   struct intel_renderbuffer *color_rb[2];
-
-   /* VBI
-    */
-   GLuint vbl_waited;
-
-   int64_t swap_ust;
-   int64_t swap_missed_ust;
-
-   GLuint swap_count;
-   GLuint swap_missed_count;
-};
-
+struct intel_mipmap_tree;
+struct intel_texture_image;
 
 /**
  * Intel renderbuffer, derived from gl_renderbuffer.
  */
 struct intel_renderbuffer
 {
-   struct gl_renderbuffer Base;
-   struct intel_region *region;
+   struct swrast_renderbuffer Base;
+   struct intel_mipmap_tree *mt; /**< The renderbuffer storage. */
+   drm_intel_bo *map_bo;
 
-   GLuint vbl_pending;   /**< vblank sequence number of pending flip */
+   /* Current texture image this renderbuffer is attached to. */
+   struct gl_texture_image *tex_image;
 
-   uint8_t *span_cache;
-   unsigned long span_cache_offset;
+   /**
+    * \name Miptree view
+    * \{
+    *
+    * Multiple renderbuffers may simultaneously wrap a single texture and each
+    * provide a different view into that texture. The fields below indicate
+    * which miptree slice is wrapped by this renderbuffer.  The fields' values
+    * are consistent with the 'level' and 'layer' parameters of
+    * glFramebufferTextureLayer().
+    *
+    * For renderbuffers not created with glFramebufferTexture*(), mt_level and
+    * mt_layer are 0.
+    */
+   unsigned int mt_level;
+   unsigned int mt_layer;
+   /** \} */
+
+   GLuint draw_x, draw_y; /**< Offset of drawing within the region */
 };
 
 
@@ -85,7 +87,7 @@ static INLINE struct intel_renderbuffer *
 intel_renderbuffer(struct gl_renderbuffer *rb)
 {
    struct intel_renderbuffer *irb = (struct intel_renderbuffer *) rb;
-   if (irb && irb->Base.ClassID == INTEL_RB_CLASS) {
+   if (irb && irb->Base.Base.ClassID == INTEL_RB_CLASS) {
       /*_mesa_warning(NULL, "Returning non-intel Rb\n");*/
       return irb;
    }
@@ -95,44 +97,99 @@ intel_renderbuffer(struct gl_renderbuffer *rb)
 
 
 /**
- * Return a framebuffer's renderbuffer, named by a BUFFER_x index.
+ * \brief Return the framebuffer attachment specified by attIndex.
+ *
+ * If the framebuffer lacks the specified attachment, then return null.
+ *
+ * If the attached renderbuffer is a wrapper, then return wrapped
+ * renderbuffer.
  */
 static INLINE struct intel_renderbuffer *
-intel_get_renderbuffer(struct gl_framebuffer *fb, int attIndex)
+intel_get_renderbuffer(struct gl_framebuffer *fb, gl_buffer_index attIndex)
 {
-   if (attIndex >= 0)
-      return intel_renderbuffer(fb->Attachment[attIndex].Renderbuffer);
-   else
+   struct gl_renderbuffer *rb;
+
+   assert((unsigned)attIndex < ARRAY_SIZE(fb->Attachment));
+
+   rb = fb->Attachment[attIndex].Renderbuffer;
+   if (!rb)
       return NULL;
+
+   return intel_renderbuffer(rb);
 }
 
 
-extern void
-intel_renderbuffer_set_region(struct intel_renderbuffer *irb,
-			      struct intel_region *region);
+static INLINE gl_format
+intel_rb_format(const struct intel_renderbuffer *rb)
+{
+   return rb->Base.Base.Format;
+}
 
+
+bool
+intel_framebuffer_has_hiz(struct gl_framebuffer *fb);
 
 extern struct intel_renderbuffer *
 intel_create_renderbuffer(gl_format format);
 
+struct gl_renderbuffer*
+intel_create_wrapped_renderbuffer(struct gl_context * ctx,
+				  int width, int height,
+				  gl_format format);
+
+GLboolean
+intel_alloc_renderbuffer_storage(struct gl_context * ctx,
+				 struct gl_renderbuffer *rb,
+                                 GLenum internalFormat,
+                                 GLuint width, GLuint height);
 
 extern void
 intel_fbo_init(struct intel_context *intel);
 
 
 extern void
-intel_flip_renderbuffers(struct intel_framebuffer *intel_fb);
+intel_flip_renderbuffers(struct gl_framebuffer *fb);
+
+void
+intel_renderbuffer_set_draw_offset(struct intel_renderbuffer *irb);
+
+uint32_t
+intel_renderbuffer_tile_offsets(struct intel_renderbuffer *irb,
+				uint32_t *tile_x,
+				uint32_t *tile_y);
+
+struct intel_region*
+intel_get_rb_region(struct gl_framebuffer *fb, GLuint attIndex);
+
+void
+intel_renderbuffer_set_needs_hiz_resolve(struct intel_renderbuffer *irb);
+
+void
+intel_renderbuffer_set_needs_depth_resolve(struct intel_renderbuffer *irb);
 
 
-static INLINE struct intel_region *
-intel_get_rb_region(struct gl_framebuffer *fb, GLuint attIndex)
-{
-   struct intel_renderbuffer *irb = intel_get_renderbuffer(fb, attIndex);
-   if (irb)
-      return irb->region;
-   else
-      return NULL;
-}
+/**
+ * \brief Perform a HiZ resolve on the renderbuffer.
+ *
+ * It is safe to call this function on a renderbuffer without HiZ. In that
+ * case, the function is a no-op.
+ *
+ * \return false if no resolve was needed
+ */
+bool
+intel_renderbuffer_resolve_hiz(struct intel_context *intel,
+			       struct intel_renderbuffer *irb);
 
+/**
+ * \brief Perform a depth resolve on the renderbuffer.
+ *
+ * It is safe to call this function on a renderbuffer without HiZ. In that
+ * case, the function is a no-op.
+ *
+ * \return false if no resolve was needed
+ */
+bool
+intel_renderbuffer_resolve_depth(struct intel_context *intel,
+				 struct intel_renderbuffer *irb);
 
 #endif /* INTEL_FBO_H */

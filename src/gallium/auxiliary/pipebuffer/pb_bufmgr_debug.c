@@ -35,7 +35,7 @@
 
 #include "pipe/p_compiler.h"
 #include "util/u_debug.h"
-#include "pipe/p_thread.h"
+#include "os/os_thread.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/u_double_list.h"
@@ -158,11 +158,11 @@ pb_debug_buffer_fill(struct pb_debug_buffer *buf)
 {
    uint8_t *map;
    
-   map = pb_map(buf->buffer, PIPE_BUFFER_USAGE_CPU_WRITE);
+   map = pb_map(buf->buffer, PB_USAGE_CPU_WRITE, NULL);
    assert(map);
    if(map) {
       fill_random_pattern(map, buf->underflow_size);
-      fill_random_pattern(map + buf->underflow_size + buf->base.base.size, 
+      fill_random_pattern(map + buf->underflow_size + buf->base.size,
                           buf->overflow_size);
       pb_unmap(buf->buffer);
    }
@@ -180,8 +180,8 @@ pb_debug_buffer_check(struct pb_debug_buffer *buf)
    uint8_t *map;
    
    map = pb_map(buf->buffer,
-                PIPE_BUFFER_USAGE_CPU_READ |
-                PIPE_BUFFER_USAGE_UNSYNCHRONIZED);
+                PB_USAGE_CPU_READ |
+                PB_USAGE_UNSYNCHRONIZED, NULL);
    assert(map);
    if(map) {
       boolean underflow, overflow;
@@ -196,12 +196,12 @@ pb_debug_buffer_check(struct pb_debug_buffer *buf)
                       buf->underflow_size - max_ofs);
       }
       
-      overflow = !check_random_pattern(map + buf->underflow_size + buf->base.base.size, 
+      overflow = !check_random_pattern(map + buf->underflow_size + buf->base.size,
                                        buf->overflow_size, 
                                        &min_ofs, &max_ofs);
       if(overflow) {
          debug_printf("buffer overflow (size %u plus offset %u to %u%s bytes) detected\n",
-                      buf->base.base.size,
+                      buf->base.size,
                       min_ofs,
                       max_ofs,
                       max_ofs == buf->overflow_size - 1 ? "+" : "");
@@ -216,7 +216,7 @@ pb_debug_buffer_check(struct pb_debug_buffer *buf)
       if(underflow)
          fill_random_pattern(map, buf->underflow_size);
       if(overflow)
-         fill_random_pattern(map + buf->underflow_size + buf->base.base.size, 
+         fill_random_pattern(map + buf->underflow_size + buf->base.size,
                              buf->overflow_size);
 
       pb_unmap(buf->buffer);
@@ -230,7 +230,7 @@ pb_debug_buffer_destroy(struct pb_buffer *_buf)
    struct pb_debug_buffer *buf = pb_debug_buffer(_buf);
    struct pb_debug_manager *mgr = buf->mgr;
    
-   assert(!pipe_is_referenced(&buf->base.base.reference));
+   assert(!pipe_is_referenced(&buf->base.reference));
    
    pb_debug_buffer_check(buf);
 
@@ -247,14 +247,14 @@ pb_debug_buffer_destroy(struct pb_buffer *_buf)
 
 static void *
 pb_debug_buffer_map(struct pb_buffer *_buf, 
-                    unsigned flags)
+                    unsigned flags, void *flush_ctx)
 {
    struct pb_debug_buffer *buf = pb_debug_buffer(_buf);
    void *map;
    
    pb_debug_buffer_check(buf);
 
-   map = pb_map(buf->buffer, flags);
+   map = pb_map(buf->buffer, flags, flush_ctx);
    if(!map)
       return NULL;
    
@@ -339,27 +339,24 @@ pb_debug_buffer_vtbl = {
 
 
 static void
-pb_debug_manager_dump(struct pb_debug_manager *mgr)
+pb_debug_manager_dump_locked(struct pb_debug_manager *mgr)
 {
    struct list_head *curr, *next;
    struct pb_debug_buffer *buf;
 
-   pipe_mutex_lock(mgr->mutex);
-      
    curr = mgr->list.next;
    next = curr->next;
    while(curr != &mgr->list) {
       buf = LIST_ENTRY(struct pb_debug_buffer, curr, head);
 
-      debug_printf("buffer = %p\n", buf);
-      debug_printf("    .size = 0x%x\n", buf->base.base.size);
+      debug_printf("buffer = %p\n", (void *) buf);
+      debug_printf("    .size = 0x%x\n", buf->base.size);
       debug_backtrace_dump(buf->create_backtrace, PB_DEBUG_CREATE_BACKTRACE);
       
       curr = next; 
       next = curr->next;
    }
 
-   pipe_mutex_unlock(mgr->mutex);
 }
 
 
@@ -382,8 +379,8 @@ pb_debug_manager_create_buffer(struct pb_manager *_mgr,
    
    real_size = mgr->underflow_size + size + mgr->overflow_size;
    real_desc = *desc;
-   real_desc.usage |= PIPE_BUFFER_USAGE_CPU_WRITE;
-   real_desc.usage |= PIPE_BUFFER_USAGE_CPU_READ;
+   real_desc.usage |= PB_USAGE_CPU_WRITE;
+   real_desc.usage |= PB_USAGE_CPU_READ;
 
    buf->buffer = mgr->provider->create_buffer(mgr->provider, 
                                               real_size, 
@@ -394,27 +391,27 @@ pb_debug_manager_create_buffer(struct pb_manager *_mgr,
       pipe_mutex_lock(mgr->mutex);
       debug_printf("%s: failed to create buffer\n", __FUNCTION__);
       if(!LIST_IS_EMPTY(&mgr->list))
-         pb_debug_manager_dump(mgr);
+         pb_debug_manager_dump_locked(mgr);
       pipe_mutex_unlock(mgr->mutex);
 #endif
       return NULL;
    }
    
-   assert(pipe_is_referenced(&buf->buffer->base.reference));
-   assert(pb_check_alignment(real_desc.alignment, buf->buffer->base.alignment));
-   assert(pb_check_usage(real_desc.usage, buf->buffer->base.usage));
-   assert(buf->buffer->base.size >= real_size);
+   assert(pipe_is_referenced(&buf->buffer->reference));
+   assert(pb_check_alignment(real_desc.alignment, buf->buffer->alignment));
+   assert(pb_check_usage(real_desc.usage, buf->buffer->usage));
+   assert(buf->buffer->size >= real_size);
    
-   pipe_reference_init(&buf->base.base.reference, 1);
-   buf->base.base.alignment = desc->alignment;
-   buf->base.base.usage = desc->usage;
-   buf->base.base.size = size;
+   pipe_reference_init(&buf->base.reference, 1);
+   buf->base.alignment = desc->alignment;
+   buf->base.usage = desc->usage;
+   buf->base.size = size;
    
    buf->base.vtbl = &pb_debug_buffer_vtbl;
    buf->mgr = mgr;
 
    buf->underflow_size = mgr->underflow_size;
-   buf->overflow_size = buf->buffer->base.size - buf->underflow_size - size;
+   buf->overflow_size = buf->buffer->size - buf->underflow_size - size;
    
    debug_backtrace_capture(buf->create_backtrace, 1, PB_DEBUG_CREATE_BACKTRACE);
 
@@ -448,7 +445,7 @@ pb_debug_manager_destroy(struct pb_manager *_mgr)
    pipe_mutex_lock(mgr->mutex);
    if(!LIST_IS_EMPTY(&mgr->list)) {
       debug_printf("%s: unfreed buffers\n", __FUNCTION__);
-      pb_debug_manager_dump(mgr);
+      pb_debug_manager_dump_locked(mgr);
    }
    pipe_mutex_unlock(mgr->mutex);
    

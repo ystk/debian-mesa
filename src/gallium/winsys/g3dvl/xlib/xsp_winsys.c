@@ -1,8 +1,8 @@
 /**************************************************************************
- * 
+ *
  * Copyright 2009 Younes Manton.
  * All Rights Reserved.
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
@@ -10,11 +10,11 @@
  * distribute, sub license, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice (including the
  * next paragraph) shall be included in all copies or substantial portions
  * of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
@@ -22,311 +22,180 @@
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- * 
+ *
  **************************************************************************/
 
-#include <vl_winsys.h>
-#include <X11/Xutil.h>
-#include <pipe/internal/p_winsys_screen.h>
-#include <pipe/p_state.h>
-#include <pipe/p_inlines.h>
-#include <util/u_memory.h>
-#include <util/u_math.h>
-#include <softpipe/sp_winsys.h>
-#include <softpipe/sp_video_context.h>
-#include <softpipe/sp_texture.h>
+#include "pipe/p_state.h"
 
-/* pipe_winsys implementation */
+#include "util/u_memory.h"
+#include "util/u_format.h"
+#include "util/u_inlines.h"
 
-struct xsp_pipe_winsys
+#include <X11/Xlibint.h>
+
+#include "state_tracker/xlib_sw_winsys.h"
+#include "softpipe/sp_public.h"
+
+#include "vl_winsys.h"
+
+struct vl_xsp_screen
 {
-   struct pipe_winsys base;
+   struct vl_screen base;
    Display *display;
    int screen;
-   XImage *fbimage;
+   Visual visual;
+   struct xlib_drawable xdraw;
+   struct pipe_surface *drawable_surface;
 };
 
-struct xsp_context
+struct pipe_surface*
+vl_drawable_surface_get(struct vl_context *vctx, Drawable drawable)
 {
-   Drawable drawable;
+   struct vl_screen *vscreen = vctx->vscreen;
+   struct vl_xsp_screen *xsp_screen = (struct vl_xsp_screen*)vscreen;
+   Window root;
+   int x, y;
+   unsigned int width, height;
+   unsigned int border_width;
+   unsigned int depth;
+   struct pipe_resource templat, *drawable_tex;
+   struct pipe_surface surf_template, *drawable_surface = NULL;
 
-   void (*pipe_destroy)(struct pipe_video_context *vpipe);
-};
+   assert(vscreen);
+   assert(drawable != None);
 
-struct xsp_buffer
-{
-   struct pipe_buffer base;
-   boolean is_user_buffer;
-   void *data;
-   void *mapped_data;
-};
+   if (XGetGeometry(xsp_screen->display, drawable, &root, &x, &y, &width, &height, &border_width, &depth) == BadDrawable)
+      return NULL;
 
-static struct pipe_buffer* xsp_buffer_create(struct pipe_winsys *pws, unsigned alignment, unsigned usage, unsigned size)
-{
-   struct xsp_buffer *buffer;
+   xsp_screen->xdraw.drawable = drawable;
 
-   assert(pws);
+   if (xsp_screen->drawable_surface) {
+      if (xsp_screen->drawable_surface->width == width &&
+          xsp_screen->drawable_surface->height == height) {
+         pipe_surface_reference(&drawable_surface, xsp_screen->drawable_surface);
+         return drawable_surface;
+      }
+      else
+         pipe_surface_reference(&xsp_screen->drawable_surface, NULL);
+   }
 
-   buffer = calloc(1, sizeof(struct xsp_buffer));
-   pipe_reference_init(&buffer->base.reference, 1);
-   buffer->base.alignment = alignment;
-   buffer->base.usage = usage;
-   buffer->base.size = size;
-   buffer->data = align_malloc(size, alignment);
+   memset(&templat, 0, sizeof(struct pipe_resource));
+   templat.target = PIPE_TEXTURE_2D;
+   /* XXX: Need to figure out drawable's format */
+   templat.format = PIPE_FORMAT_B8G8R8X8_UNORM;
+   templat.last_level = 0;
+   templat.width0 = width;
+   templat.height0 = height;
+   templat.depth0 = 1;
+   templat.usage = PIPE_USAGE_DEFAULT;
+   templat.bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_DISPLAY_TARGET;
+   templat.flags = 0;
 
-   return (struct pipe_buffer*)buffer;
+   drawable_tex = vscreen->pscreen->resource_create(vscreen->pscreen, &templat);
+   if (!drawable_tex)
+      return NULL;
+
+   memset(&surf_template, 0, sizeof(surf_template));
+   surf_template.format = templat.format;
+   surf_template.usage = PIPE_BIND_RENDER_TARGET;
+   xsp_screen->drawable_surface = vctx->pipe->create_surface(vctx->pipe, drawable_tex,
+                                                             &surf_template);
+   pipe_resource_reference(&drawable_tex, NULL);
+
+   if (!xsp_screen->drawable_surface)
+      return NULL;
+
+   pipe_surface_reference(&drawable_surface, xsp_screen->drawable_surface);
+
+   xsp_screen->xdraw.depth = 24/*util_format_get_blocksizebits(templat.format) /
+                             util_format_get_blockwidth(templat.format)*/;
+
+   return drawable_surface;
 }
 
-static struct pipe_buffer* xsp_user_buffer_create(struct pipe_winsys *pws, void *data, unsigned size)
+void*
+vl_contextprivate_get(struct vl_context *vctx, struct pipe_surface *drawable_surface)
 {
-   struct xsp_buffer *buffer;
+   struct vl_xsp_screen *xsp_screen = (struct vl_xsp_screen*)vctx->vscreen;
 
-   assert(pws);
+   assert(vctx);
+   assert(drawable_surface);
+   assert(xsp_screen->drawable_surface == drawable_surface);
 
-   buffer = calloc(1, sizeof(struct xsp_buffer));
-   pipe_reference_init(&buffer->base.reference, 1);
-   buffer->base.size = size;
-   buffer->is_user_buffer = TRUE;
-   buffer->data = data;
-
-   return (struct pipe_buffer*)buffer;
+   return &xsp_screen->xdraw;
 }
 
-static void* xsp_buffer_map(struct pipe_winsys *pws, struct pipe_buffer *buffer, unsigned flags)
-{
-   struct xsp_buffer *xsp_buf = (struct xsp_buffer*)buffer;
-
-   assert(pws);
-   assert(buffer);
-
-   xsp_buf->mapped_data = xsp_buf->data;
-
-   return xsp_buf->mapped_data;
-}
-
-static void xsp_buffer_unmap(struct pipe_winsys *pws, struct pipe_buffer *buffer)
-{
-   struct xsp_buffer *xsp_buf = (struct xsp_buffer*)buffer;
-
-   assert(pws);
-   assert(buffer);
-
-   xsp_buf->mapped_data = NULL;
-}
-
-static void xsp_buffer_destroy(struct pipe_buffer *buffer)
-{
-   struct xsp_buffer *xsp_buf = (struct xsp_buffer*)buffer;
-
-   assert(buffer);
-
-   if (!xsp_buf->is_user_buffer)
-      align_free(xsp_buf->data);
-
-   free(xsp_buf);
-}
-
-static struct pipe_buffer* xsp_surface_buffer_create
-(
-   struct pipe_winsys *pws,
-   unsigned width,
-   unsigned height,
-   enum pipe_format format,
-   unsigned usage,
-   unsigned tex_usage,
-   unsigned *stride
-)
-{
-   const unsigned int ALIGNMENT = 1;
-   struct pipe_format_block block;
-   unsigned nblocksx, nblocksy;
-
-   pf_get_block(format, &block);
-   nblocksx = pf_get_nblocksx(&block, width);
-   nblocksy = pf_get_nblocksy(&block, height);
-   *stride = align(nblocksx * block.size, ALIGNMENT);
-
-   return pws->buffer_create(pws, ALIGNMENT, usage,
-                             *stride * nblocksy);
-}
-
-static void xsp_fence_reference(struct pipe_winsys *pws, struct pipe_fence_handle **ptr, struct pipe_fence_handle *fence)
-{
-   assert(pws);
-   assert(ptr);
-   assert(fence);
-}
-
-static int xsp_fence_signalled(struct pipe_winsys *pws, struct pipe_fence_handle *fence, unsigned flag)
-{
-   assert(pws);
-   assert(fence);
-
-   return 0;
-}
-
-static int xsp_fence_finish(struct pipe_winsys *pws, struct pipe_fence_handle *fence, unsigned flag)
-{
-   assert(pws);
-   assert(fence);
-
-   return 0;
-}
-
-static void xsp_flush_frontbuffer(struct pipe_winsys *pws, struct pipe_surface *surface, void *context_private)
-{
-   struct xsp_pipe_winsys *xsp_winsys;
-   struct xsp_context *xsp_context;
-
-   assert(pws);
-   assert(surface);
-   assert(context_private);
-
-   xsp_winsys = (struct xsp_pipe_winsys*)pws;
-   xsp_context = (struct xsp_context*)context_private;
-   xsp_winsys->fbimage->width = surface->width;
-   xsp_winsys->fbimage->height = surface->height;
-   xsp_winsys->fbimage->bytes_per_line = surface->width * (xsp_winsys->fbimage->bits_per_pixel >> 3);
-   xsp_winsys->fbimage->data = (char*)((struct xsp_buffer *)softpipe_texture(surface->texture)->buffer)->data + surface->offset;
-
-   XPutImage
-   (
-      xsp_winsys->display, xsp_context->drawable,
-      XDefaultGC(xsp_winsys->display, xsp_winsys->screen),
-      xsp_winsys->fbimage, 0, 0, 0, 0,
-      surface->width, surface->height
-   );
-   XFlush(xsp_winsys->display);
-}
-
-static const char* xsp_get_name(struct pipe_winsys *pws)
-{
-   assert(pws);
-   return "X11 SoftPipe";
-}
-
-static void xsp_destroy(struct pipe_winsys *pws)
-{
-   struct xsp_pipe_winsys *xsp_winsys = (struct xsp_pipe_winsys*)pws;
-
-   assert(pws);
-
-   /* XDestroyImage() wants to free the data as well */
-   xsp_winsys->fbimage->data = NULL;
-
-   XDestroyImage(xsp_winsys->fbimage);
-   FREE(xsp_winsys);
-}
-
-/* Called through pipe_video_context::destroy() */
-static void xsp_pipe_destroy(struct pipe_video_context *vpipe)
-{
-   struct xsp_context *xsp_context;
-
-   assert(vpipe);
-
-   xsp_context = vpipe->priv;
-
-   /* Call the original destroy */
-   xsp_context->pipe_destroy(vpipe);
-
-   FREE(xsp_context);
-}
-
-/* Show starts here */
-
-Drawable
-vl_video_bind_drawable(struct pipe_video_context *vpipe, Drawable drawable)
-{
-   struct xsp_context *xsp_context;
-   Drawable old_drawable;
-
-   assert(vpipe);
-
-   xsp_context = vpipe->priv;
-   old_drawable = xsp_context->drawable;
-   xsp_context->drawable = drawable;
-
-   return old_drawable;
-}
-
-struct pipe_screen*
+struct vl_screen*
 vl_screen_create(Display *display, int screen)
 {
-   struct xsp_pipe_winsys *xsp_winsys;
+   struct vl_xsp_screen *xsp_screen;
+   struct sw_winsys *winsys;
 
    assert(display);
 
-   xsp_winsys = CALLOC_STRUCT(xsp_pipe_winsys);
-   if (!xsp_winsys)
+   xsp_screen = CALLOC_STRUCT(vl_xsp_screen);
+   if (!xsp_screen)
       return NULL;
 
-   xsp_winsys->base.buffer_create = xsp_buffer_create;
-   xsp_winsys->base.user_buffer_create = xsp_user_buffer_create;
-   xsp_winsys->base.buffer_map = xsp_buffer_map;
-   xsp_winsys->base.buffer_unmap = xsp_buffer_unmap;
-   xsp_winsys->base.buffer_destroy = xsp_buffer_destroy;
-   xsp_winsys->base.surface_buffer_create = xsp_surface_buffer_create;
-   xsp_winsys->base.fence_reference = xsp_fence_reference;
-   xsp_winsys->base.fence_signalled = xsp_fence_signalled;
-   xsp_winsys->base.fence_finish = xsp_fence_finish;
-   xsp_winsys->base.flush_frontbuffer = xsp_flush_frontbuffer;
-   xsp_winsys->base.get_name = xsp_get_name;
-   xsp_winsys->base.destroy = xsp_destroy;
-   xsp_winsys->display = display;
-   xsp_winsys->screen = screen;
-   xsp_winsys->fbimage = XCreateImage
-   (
-      display,
-      XDefaultVisual(display, screen),
-      XDefaultDepth(display, screen),
-      ZPixmap,
-      0,
-      NULL,
-      0, /* Don't know the width and height until flush_frontbuffer */
-      0,
-      32,
-      0
-   );
-
-   if (!xsp_winsys->fbimage) {
-      FREE(xsp_winsys);
+   winsys = xlib_create_sw_winsys(display);
+   if (!winsys) {
+      FREE(xsp_screen);
       return NULL;
    }
 
-   XInitImage(xsp_winsys->fbimage);
+   xsp_screen->base.pscreen = softpipe_create_screen(winsys);
+   if (!xsp_screen->base.pscreen) {
+      winsys->destroy(winsys);
+      FREE(xsp_screen);
+      return NULL;
+   }
 
-   return softpipe_create_screen(&xsp_winsys->base);
+   xsp_screen->display = display;
+   xsp_screen->screen = screen;
+   xsp_screen->xdraw.visual = XDefaultVisual(display, screen);
+
+   return &xsp_screen->base;
 }
 
-struct pipe_video_context*
-vl_video_create(Display *display, int screen,
-                struct pipe_screen *p_screen,
-                enum pipe_video_profile profile,
-                enum pipe_video_chroma_format chroma_format,
-                unsigned width, unsigned height)
+void vl_screen_destroy(struct vl_screen *vscreen)
 {
-   struct pipe_video_context *vpipe;
-   struct xsp_context *xsp_context;
+   struct vl_xsp_screen *xsp_screen = (struct vl_xsp_screen*)vscreen;
 
-   assert(p_screen);
-   assert(width && height);
+   assert(vscreen);
 
-   vpipe = sp_video_create(p_screen, profile, chroma_format, width, height);
-   if (!vpipe)
+   pipe_surface_reference(&xsp_screen->drawable_surface, NULL);
+   vscreen->pscreen->destroy(vscreen->pscreen);
+   FREE(vscreen);
+}
+
+struct vl_context*
+vl_video_create(struct vl_screen *vscreen)
+{
+   struct pipe_context *pipe;
+   struct vl_context *vctx;
+
+   assert(vscreen);
+
+   pipe = vscreen->pscreen->context_create(vscreen->pscreen, NULL);
+   if (!pipe)
       return NULL;
 
-   xsp_context = CALLOC_STRUCT(xsp_context);
-   if (!xsp_context) {
-      vpipe->destroy(vpipe);
+   vctx = CALLOC_STRUCT(vl_context);
+   if (!vctx) {
+      pipe->destroy(pipe);
       return NULL;
    }
 
-   /* Override this so we can free our xsp_context when the pipe is freed */
-   xsp_context->pipe_destroy = vpipe->destroy;
-   vpipe->destroy = xsp_pipe_destroy;
+   vctx->pipe = pipe;
+   vctx->vscreen = vscreen;
 
-   vpipe->priv = xsp_context;
+   return vctx;
+}
 
-   return vpipe;
+void vl_video_destroy(struct vl_context *vctx)
+{
+   assert(vctx);
+
+   vctx->pipe->destroy(vctx->pipe);
+   FREE(vctx);
 }

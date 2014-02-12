@@ -36,14 +36,49 @@
 
 #include "brw_context.h"
 #include "brw_eu.h"
-#include "shader/program.h"
+#include "brw_program.h"
+#include "program/program.h"
 
 
 struct brw_vs_prog_key {
    GLuint program_string_id;
-   GLuint nr_userclip:4;
+   /**
+    * Number of channels of the vertex attribute that need GL_FIXED rescaling
+    */
+   uint8_t gl_fixed_input_size[VERT_ATTRIB_MAX];
+
+   /**
+    * True if at least one clip flag is enabled, regardless of whether the
+    * shader uses clip planes or gl_ClipDistance.
+    */
+   GLuint userclip_active:1;
+
+   /**
+    * How many user clipping planes are being uploaded to the vertex shader as
+    * push constants.
+    */
+   GLuint nr_userclip_plane_consts:4;
+
+   /**
+    * True if the shader uses gl_ClipDistance, regardless of whether any clip
+    * flags are enabled.
+    */
+   GLuint uses_clip_distance:1;
+
+   /**
+    * For pre-Gen6 hardware, a bitfield indicating which clipping planes are
+    * enabled.  This is used to compact clip planes.
+    *
+    * For Gen6 and later hardware, clip planes are not compacted, so this
+    * value is zero to avoid provoking unnecessary shader recompiles.
+    */
+   GLuint userclip_planes_enabled_gen_4_5:MAX_CLIP_PLANES;
+
    GLuint copy_edgeflag:1;
-   GLuint pad:26;
+   GLuint point_coord_replace:8;
+   GLuint clamp_vertex_color:1;
+
+   struct brw_sampler_prog_key_data tex;
 };
 
 
@@ -51,14 +86,15 @@ struct brw_vs_compile {
    struct brw_compile func;
    struct brw_vs_prog_key key;
    struct brw_vs_prog_data prog_data;
+   int8_t constant_map[1024];
 
    struct brw_vertex_program *vp;
 
    GLuint nr_inputs;
 
+   struct brw_vue_map vue_map;
    GLuint first_output;
-   GLuint nr_outputs;
-   GLuint first_overflow_output; /**< VERT_ATTRIB_x */
+   GLuint last_scratch;
 
    GLuint first_tmp;
    GLuint last_tmp;
@@ -70,19 +106,23 @@ struct brw_vs_compile {
    struct brw_reg stack;
 
    struct {	
-       GLboolean used_in_src;
+       bool used_in_src;
        struct brw_reg reg;
    } output_regs[128];
 
-   struct brw_reg userplane[6];
+   struct brw_reg userplane[MAX_CLIP_PLANES];
 
    /** we may need up to 3 constants per instruction (if use_const_buffer) */
    struct {
       GLint index;
       struct brw_reg reg;
    } current_const[3];
+
+   bool needs_stack;
 };
 
-void brw_vs_emit( struct brw_vs_compile *c );
+bool brw_vs_emit(struct gl_shader_program *prog, struct brw_vs_compile *c);
+void brw_old_vs_emit(struct brw_vs_compile *c);
+bool brw_vs_precompile(struct gl_context *ctx, struct gl_shader_program *prog);
 
 #endif

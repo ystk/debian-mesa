@@ -38,28 +38,21 @@ MESA_ASM_SOURCES =
 # Library/program dependencies
 EXTRA_LIB_PATH=-L/usr/X11R6/lib
 
-LIBDRM_CFLAGS = $(shell pkg-config --cflags libdrm)
-LIBDRM_LIB = $(shell pkg-config --libs libdrm)
-DRI_LIB_DEPS  = $(EXTRA_LIB_PATH) -lm -lpthread -lexpat -ldl $(LIBDRM_LIB)
+MESA_MODULES  = $(TOP)/src/mesa/libmesa.a
+
+LIBDRM_CFLAGS = $(shell $(PKG_CONFIG) --cflags libdrm)
+LIBDRM_LIB = $(shell $(PKG_CONFIG) --libs libdrm)
+DRI_LIB_DEPS  = $(MESA_MODULES) $(EXTRA_LIB_PATH) -lm -lpthread -lexpat -ldl $(LIBDRM_LIB)
 GL_LIB_DEPS   = $(EXTRA_LIB_PATH) -lX11 -lXext -lXxf86vm -lXdamage -lXfixes \
 		-lm -lpthread -ldl \
                 $(LIBDRM_LIB)
 
 
-# This is now 0 by default since it seems to confuse the hell out of people
-# and generate a lot of extra noise on bugzilla.  If you need to build with
-# EGL, do 'make linux-dri USING_EGL=1'
-
-USING_EGL=0
-
 # Directories
-SRC_DIRS = gallium mesa gallium/winsys glu egl
-PROGRAM_DIRS = egl
+SRC_DIRS = gallium mesa gallium/winsys gallium/targets glu egl
 
 DRIVER_DIRS = dri
-WINDOW_SYSTEM = dri
 GALLIUM_WINSYS_DIRS = egl_drm
+GALLIUM_TARGET_DIRS =
 
-# gamma are missing because they have not been converted to use the new
-# interface.
 DRI_DIRS = intel 

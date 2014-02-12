@@ -23,7 +23,7 @@
  *
  **********************************************************/
 
-#include "pipe/p_inlines.h"
+#include "util/u_inlines.h"
 #include "pipe/p_defines.h"
 #include "util/u_math.h"
 #include "util/u_bitmask.h"
@@ -40,8 +40,13 @@
 static INLINE int compare_fs_keys( const struct svga_fs_compile_key *a,
                                    const struct svga_fs_compile_key *b )
 {
-   unsigned keysize = svga_fs_key_size( a );
-   return memcmp( a, b, keysize );
+   unsigned keysize_a = svga_fs_key_size( a );
+   unsigned keysize_b = svga_fs_key_size( b );
+
+   if (keysize_a != keysize_b) {
+      return (int)(keysize_a - keysize_b);
+   }
+   return memcmp( a, b, keysize_a );
 }
 
 
@@ -71,7 +76,7 @@ static enum pipe_error compile_fs( struct svga_context *svga,
 
    result = svga_translate_fragment_program( fs, key );
    if (result == NULL) {
-      ret = PIPE_ERROR_OUT_OF_MEMORY;
+      ret = PIPE_ERROR;  /* some problem during translation */
       goto fail;
    }
 
@@ -86,7 +91,7 @@ static enum pipe_error compile_fs( struct svga_context *svga,
                              SVGA3D_SHADERTYPE_PS,
                              result->tokens, 
                              result->nr_tokens * sizeof result->tokens[0]);
-   if (ret)
+   if (ret != PIPE_OK)
       goto fail;
 
    *out_result = result;
@@ -109,8 +114,10 @@ fail:
  * SVGA_NEW_NEED_SWTNL
  * SVGA_NEW_SAMPLER
  */
-static int make_fs_key( const struct svga_context *svga,
-                        struct svga_fs_compile_key *key )
+static enum pipe_error
+make_fs_key(const struct svga_context *svga,
+            struct svga_fragment_shader *fs,
+            struct svga_fs_compile_key *key)
 {
    int i;
    int idx = 0;
@@ -126,13 +133,12 @@ static int make_fs_key( const struct svga_context *svga,
       /* SVGA_NEW_RAST
        */
       key->light_twoside = svga->curr.rast->templ.light_twoside;
-      key->front_cw = (svga->curr.rast->templ.front_winding == 
-                       PIPE_WINDING_CW);
+      key->front_ccw = svga->curr.rast->templ.front_ccw;
    }
 
    /* The blend workaround for simulating logicop xor behaviour
     * requires that the incoming fragment color be white.  This change
-    * achieves that by creating a varient of the current fragment
+    * achieves that by creating a variant of the current fragment
     * shader that overrides all output colors with 1,1,1,1
     *   
     * This will work for most shaders, including those containing
@@ -153,18 +159,24 @@ static int make_fs_key( const struct svga_context *svga,
     *
     * SVGA_NEW_TEXTURE_BINDING | SVGA_NEW_SAMPLER
     */
-   for (i = 0; i < svga->curr.num_textures; i++) {
-      if (svga->curr.texture[i]) {
+   for (i = 0; i < svga->curr.num_sampler_views; i++) {
+      if (svga->curr.sampler_views[i]) {
          assert(svga->curr.sampler[i]);
-         key->tex[i].texture_target = svga->curr.texture[i]->target;
+         assert(svga->curr.sampler_views[i]->texture);
+         key->tex[i].texture_target = svga->curr.sampler_views[i]->texture->target;
          if (!svga->curr.sampler[i]->normalized_coords) {
             key->tex[i].width_height_idx = idx++;
             key->tex[i].unnormalized = TRUE;
             ++key->num_unnormalized_coords;
          }
+
+         key->tex[i].swizzle_r = svga->curr.sampler_views[i]->swizzle_r;
+         key->tex[i].swizzle_g = svga->curr.sampler_views[i]->swizzle_g;
+         key->tex[i].swizzle_b = svga->curr.sampler_views[i]->swizzle_b;
+         key->tex[i].swizzle_a = svga->curr.sampler_views[i]->swizzle_a;
       }
    }
-   key->num_textures = svga->curr.num_textures;
+   key->num_textures = svga->curr.num_sampler_views;
 
    idx = 0;
    for (i = 0; i < svga->curr.num_samplers; ++i) {
@@ -174,17 +186,26 @@ static int make_fs_key( const struct svga_context *svga,
       }
    }
 
-   return 0;
+   /* sprite coord gen state */
+   for (i = 0; i < svga->curr.num_samplers; ++i) {
+      key->tex[i].sprite_texgen =
+         svga->curr.rast->templ.sprite_coord_enable & (1 << i);
+   }
+
+   key->sprite_origin_lower_left = (svga->curr.rast->templ.sprite_coord_mode
+                                    == PIPE_SPRITE_COORD_LOWER_LEFT);
+
+   return PIPE_OK;
 }
 
 
 
-static int emit_hw_fs( struct svga_context *svga,
-                       unsigned dirty )
+static enum pipe_error
+emit_hw_fs(struct svga_context *svga, unsigned dirty)
 {
    struct svga_shader_result *result = NULL;
    unsigned id = SVGA3D_INVALID_ID;
-   int ret = 0;
+   enum pipe_error ret = PIPE_OK;
 
    struct svga_fragment_shader *fs = svga->curr.fs;
    struct svga_fs_compile_key key;
@@ -195,14 +216,14 @@ static int emit_hw_fs( struct svga_context *svga,
     * SVGA_NEW_NEED_SWTNL
     * SVGA_NEW_SAMPLER
     */
-   ret = make_fs_key( svga, &key );
-   if (ret)
+   ret = make_fs_key( svga, fs, &key );
+   if (ret != PIPE_OK)
       return ret;
 
    result = search_fs_key( fs, &key );
    if (!result) {
       ret = compile_fs( svga, fs, &key, &result );
-      if (ret)
+      if (ret != PIPE_OK)
          return ret;
    }
 
@@ -215,14 +236,14 @@ static int emit_hw_fs( struct svga_context *svga,
       ret = SVGA3D_SetShader(svga->swc,
                              SVGA3D_SHADERTYPE_PS,
                              id );
-      if (ret)
+      if (ret != PIPE_OK)
          return ret;
 
       svga->dirty |= SVGA_NEW_FS_RESULT;
       svga->state.hw_draw.fs = result;      
    }
 
-   return 0;
+   return PIPE_OK;
 }
 
 struct svga_tracked_state svga_hw_fs = 

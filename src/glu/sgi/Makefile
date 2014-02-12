@@ -8,7 +8,7 @@ include $(TOP)/configs/current
 
 GLU_MAJOR = 1
 GLU_MINOR = 3
-GLU_TINY = 0$(MESA_MAJOR)0$(MESA_MINOR)0$(MESA_TINY)
+GLU_TINY = 0$(MESA_MAJOR)$(MESA_MINOR)0$(MESA_TINY)
 
 INCDIRS = -I$(TOP)/include -Iinclude -Iinternals -Ilibnurbs/internals -Ilibnurbs/interface -Ilibnurbs/nurbtess
 
@@ -124,12 +124,7 @@ OBJECTS = $(C_OBJECTS) $(CC_OBJECTS)
 ##### TARGETS #####
 
 default:
-	@if [ "${CONFIG_NAME}" = "beos" ] ; then \
-		echo "$(GLU_LIB_NAME) not build under BeOS, but integrated into ${GL_LIB_NAME}." ; \
-		exit 0 ; \
-	else \
-		$(MAKE) $(TOP)/$(LIB_DIR)/$(GLU_LIB_NAME) || exit 1 ; \
-	fi
+	$(MAKE) $(TOP)/$(LIB_DIR)/$(GLU_LIB_NAME)
 
 $(TOP)/$(LIB_DIR):
 	-mkdir $(TOP)/$(LIB_DIR)
