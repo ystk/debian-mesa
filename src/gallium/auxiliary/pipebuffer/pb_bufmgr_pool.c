@@ -37,7 +37,7 @@
 
 #include "pipe/p_compiler.h"
 #include "util/u_debug.h"
-#include "pipe/p_thread.h"
+#include "os/os_thread.h"
 #include "pipe/p_defines.h"
 #include "util/u_memory.h"
 #include "util/u_double_list.h"
@@ -108,7 +108,7 @@ pool_buffer_destroy(struct pb_buffer *buf)
    struct pool_buffer *pool_buf = pool_buffer(buf);
    struct pool_pb_manager *pool = pool_buf->mgr;
    
-   assert(!pipe_is_referenced(&pool_buf->base.base.reference));
+   assert(!pipe_is_referenced(&pool_buf->base.reference));
 
    pipe_mutex_lock(pool->mutex);
    LIST_ADD(&pool_buf->head, &pool->free);
@@ -118,11 +118,13 @@ pool_buffer_destroy(struct pb_buffer *buf)
 
 
 static void *
-pool_buffer_map(struct pb_buffer *buf, unsigned flags)
+pool_buffer_map(struct pb_buffer *buf, unsigned flags, void *flush_ctx)
 {
    struct pool_buffer *pool_buf = pool_buffer(buf);
    struct pool_pb_manager *pool = pool_buf->mgr;
    void *map;
+
+   /* XXX: it will be necessary to remap here to propagate flush_ctx */
 
    pipe_mutex_lock(pool->mutex);
    map = (unsigned char *) pool->map + pool_buf->start;
@@ -216,10 +218,10 @@ pool_bufmgr_create_buffer(struct pb_manager *mgr,
    pipe_mutex_unlock(pool->mutex);
    
    pool_buf = LIST_ENTRY(struct pool_buffer, item, head);
-   assert(!pipe_is_referenced(&pool_buf->base.base.reference));
-   pipe_reference_init(&pool_buf->base.base.reference, 1);
-   pool_buf->base.base.alignment = desc->alignment;
-   pool_buf->base.base.usage = desc->usage;
+   assert(!pipe_is_referenced(&pool_buf->base.reference));
+   pipe_reference_init(&pool_buf->base.reference, 1);
+   pool_buf->base.alignment = desc->alignment;
+   pool_buf->base.usage = desc->usage;
    
    return SUPER(pool_buf);
 }
@@ -284,8 +286,8 @@ pool_bufmgr_create(struct pb_manager *provider,
       goto failure;
 
    pool->map = pb_map(pool->buffer,
-                          PIPE_BUFFER_USAGE_CPU_READ |
-                          PIPE_BUFFER_USAGE_CPU_WRITE);
+                          PB_USAGE_CPU_READ |
+                          PB_USAGE_CPU_WRITE, NULL);
    if(!pool->map)
       goto failure;
 
@@ -295,10 +297,10 @@ pool_bufmgr_create(struct pb_manager *provider,
 
    pool_buf = pool->bufs;
    for (i = 0; i < numBufs; ++i) {
-      pipe_reference_init(&pool_buf->base.base.reference, 0);
-      pool_buf->base.base.alignment = 0;
-      pool_buf->base.base.usage = 0;
-      pool_buf->base.base.size = bufSize;
+      pipe_reference_init(&pool_buf->base.reference, 0);
+      pool_buf->base.alignment = 0;
+      pool_buf->base.usage = 0;
+      pool_buf->base.size = bufSize;
       pool_buf->base.vtbl = &pool_buffer_vtbl;
       pool_buf->mgr = pool;
       pool_buf->start = i * bufSize;

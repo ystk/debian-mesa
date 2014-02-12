@@ -28,7 +28,14 @@
 #define S_SPAN_H
 
 
-#include "swrast.h"
+#include "main/config.h"
+#include "main/glheader.h"
+#include "main/mtypes.h"
+#include "swrast/s_chan.h"
+
+
+struct gl_context;
+struct gl_renderbuffer;
 
 
 /**
@@ -41,13 +48,12 @@
  */
 /*@{*/
 #define SPAN_RGBA       0x01  /**< interpMask and arrayMask */
-#define SPAN_INDEX      0x02  /**< interpMask and arrayMask */
-#define SPAN_Z          0x04  /**< interpMask and arrayMask */
-#define SPAN_FLAT       0x08  /**< interpMask: flat shading? */
-#define SPAN_XY         0x10  /**< array.x[], y[] valid? */
-#define SPAN_MASK       0x20  /**< was array.mask[] filled in by caller? */
-#define SPAN_LAMBDA     0x40  /**< array.lambda[] valid? */
-#define SPAN_COVERAGE   0x80  /**< array.coverage[] valid? */
+#define SPAN_Z          0x02  /**< interpMask and arrayMask */
+#define SPAN_FLAT       0x04  /**< interpMask: flat shading? */
+#define SPAN_XY         0x08  /**< array.x[], y[] valid? */
+#define SPAN_MASK       0x10  /**< was array.mask[] filled in by caller? */
+#define SPAN_LAMBDA     0x20  /**< array.lambda[] valid? */
+#define SPAN_COVERAGE   0x40  /**< array.coverage[] valid? */
 /*@}*/
 
 
@@ -149,7 +155,8 @@ typedef struct sw_span
     */
    GLbitfield arrayMask;
 
-   GLbitfield arrayAttribs;
+   /** Mask of FRAG_BIT_x bits */
+   GLbitfield64 arrayAttribs;
 
    /**
     * We store the arrays of fragment values in a separate struct so
@@ -177,50 +184,33 @@ do {						\
 
 
 extern void
-_swrast_span_default_attribs(GLcontext *ctx, SWspan *span);
+_swrast_span_default_attribs(struct gl_context *ctx, SWspan *span);
 
 extern void
-_swrast_span_interpolate_z( const GLcontext *ctx, SWspan *span );
+_swrast_span_interpolate_z( const struct gl_context *ctx, SWspan *span );
 
 extern GLfloat
 _swrast_compute_lambda(GLfloat dsdx, GLfloat dsdy, GLfloat dtdx, GLfloat dtdy,
                        GLfloat dqdx, GLfloat dqdy, GLfloat texW, GLfloat texH,
                        GLfloat s, GLfloat t, GLfloat q, GLfloat invQ);
 
-extern void
-_swrast_write_index_span( GLcontext *ctx, SWspan *span);
-
 
 extern void
-_swrast_write_rgba_span( GLcontext *ctx, SWspan *span);
+_swrast_write_rgba_span( struct gl_context *ctx, SWspan *span);
 
 
 extern void
-_swrast_read_rgba_span(GLcontext *ctx, struct gl_renderbuffer *rb,
-                       GLuint n, GLint x, GLint y, GLenum type, GLvoid *rgba);
+_swrast_read_rgba_span(struct gl_context *ctx, struct gl_renderbuffer *rb,
+                       GLuint n, GLint x, GLint y, GLvoid *rgba);
 
 extern void
-_swrast_read_index_span( GLcontext *ctx, struct gl_renderbuffer *rb,
-                         GLuint n, GLint x, GLint y, GLuint indx[] );
-
-extern void
-_swrast_get_values(GLcontext *ctx, struct gl_renderbuffer *rb,
-                   GLuint count, const GLint x[], const GLint y[],
-                   void *values, GLuint valueSize);
-
-extern void
-_swrast_put_row(GLcontext *ctx, struct gl_renderbuffer *rb,
+_swrast_put_row(struct gl_context *ctx, struct gl_renderbuffer *rb,
+                GLenum datatype,
                 GLuint count, GLint x, GLint y,
-                const GLvoid *values, GLuint valueSize);
-
-extern void
-_swrast_get_row(GLcontext *ctx, struct gl_renderbuffer *rb,
-                GLuint count, GLint x, GLint y,
-                GLvoid *values, GLuint valueSize);
-
+                const void *values, const GLubyte *mask);
 
 extern void *
-_swrast_get_dest_rgba(GLcontext *ctx, struct gl_renderbuffer *rb,
+_swrast_get_dest_rgba(struct gl_context *ctx, struct gl_renderbuffer *rb,
                       SWspan *span);
 
 #endif

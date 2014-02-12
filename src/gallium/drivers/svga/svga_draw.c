@@ -24,18 +24,20 @@
  **********************************************************/
 
 #include "pipe/p_compiler.h"
-#include "pipe/p_inlines.h"
+#include "util/u_inlines.h"
 #include "pipe/p_defines.h"
 #include "util/u_memory.h"
 #include "util/u_math.h"
+#include "util/u_upload_mgr.h"
 
 #include "svga_context.h"
 #include "svga_draw.h"
 #include "svga_draw_private.h"
 #include "svga_debug.h"
 #include "svga_screen.h"
-#include "svga_screen_buffer.h"
-#include "svga_screen_texture.h"
+#include "svga_resource_buffer.h"
+#include "svga_resource_texture.h"
+#include "svga_surface.h"
 #include "svga_winsys.h"
 #include "svga_cmd.h"
 
@@ -65,16 +67,16 @@ void svga_hwtnl_destroy( struct svga_hwtnl *hwtnl )
 
    for (i = 0; i < PIPE_PRIM_MAX; i++) {
       for (j = 0; j < IDX_CACHE_MAX; j++) {
-         pipe_buffer_reference( &hwtnl->index_cache[i][j].buffer,
+         pipe_resource_reference( &hwtnl->index_cache[i][j].buffer,
                                 NULL );
       }
    }
 
    for (i = 0; i < hwtnl->cmd.vdecl_count; i++)
-      pipe_buffer_reference(&hwtnl->cmd.vdecl_vb[i], NULL);
+      pipe_resource_reference(&hwtnl->cmd.vdecl_vb[i], NULL);
 
    for (i = 0; i < hwtnl->cmd.prim_count; i++)
-      pipe_buffer_reference(&hwtnl->cmd.prim_ib[i], NULL);
+      pipe_resource_reference(&hwtnl->cmd.prim_ib[i], NULL);
       
 
    FREE(hwtnl);
@@ -103,7 +105,7 @@ void svga_hwtnl_reset_vdecl( struct svga_hwtnl *hwtnl,
    assert(hwtnl->cmd.prim_count == 0);
 
    for (i = count; i < hwtnl->cmd.vdecl_count; i++) {
-      pipe_buffer_reference(&hwtnl->cmd.vdecl_vb[i],
+      pipe_resource_reference(&hwtnl->cmd.vdecl_vb[i],
                             NULL);
    }
 
@@ -112,9 +114,9 @@ void svga_hwtnl_reset_vdecl( struct svga_hwtnl *hwtnl,
 
 
 void svga_hwtnl_vdecl( struct svga_hwtnl *hwtnl,
-                          unsigned i,
-                          const SVGA3dVertexDecl *decl,
-                          struct pipe_buffer *vb)
+		       unsigned i,
+		       const SVGA3dVertexDecl *decl,
+		       struct pipe_resource *vb)
 {
    assert(hwtnl->cmd.prim_count == 0);
 
@@ -122,10 +124,42 @@ void svga_hwtnl_vdecl( struct svga_hwtnl *hwtnl,
 
    hwtnl->cmd.vdecl[i] = *decl;
 
-   pipe_buffer_reference(&hwtnl->cmd.vdecl_vb[i],
-                         vb);   
+   pipe_resource_reference(&hwtnl->cmd.vdecl_vb[i], vb);   
 }
 
+
+/**
+ * Determine whether the specified buffer is referred in the primitive queue,
+ * for which no commands have been written yet.
+ */
+boolean
+svga_hwtnl_is_buffer_referred( struct svga_hwtnl *hwtnl,
+                               struct pipe_resource *buffer)
+{
+   unsigned i;
+
+   if (svga_buffer_is_user_buffer(buffer)) {
+      return FALSE;
+   }
+
+   if (!hwtnl->cmd.prim_count) {
+      return FALSE;
+   }
+
+   for (i = 0; i < hwtnl->cmd.vdecl_count; ++i) {
+      if (hwtnl->cmd.vdecl_vb[i] == buffer) {
+         return TRUE;
+      }
+   }
+
+   for (i = 0; i < hwtnl->cmd.prim_count; ++i) {
+      if (hwtnl->cmd.prim_ib[i] == buffer) {
+         return TRUE;
+      }
+   }
+
+   return FALSE;
+}
 
 
 enum pipe_error
@@ -143,6 +177,9 @@ svga_hwtnl_flush( struct svga_hwtnl *hwtnl )
       SVGA3dPrimitiveRange *prim;
       unsigned i;
 
+      /* Unmap upload manager vertex buffers */
+      u_upload_unmap(svga->upload_vb);
+
       for (i = 0; i < hwtnl->cmd.vdecl_count; i++) {
          handle = svga_buffer_handle(svga, hwtnl->cmd.vdecl_vb[i]);
          if (handle == NULL)
@@ -150,6 +187,9 @@ svga_hwtnl_flush( struct svga_hwtnl *hwtnl )
 
          vb_handle[i] = handle;
       }
+
+      /* Unmap upload manager index buffers */
+      u_upload_unmap(svga->upload_ib);
 
       for (i = 0; i < hwtnl->cmd.prim_count; i++) {
          if (hwtnl->cmd.prim_ib[i]) {
@@ -161,6 +201,20 @@ svga_hwtnl_flush( struct svga_hwtnl *hwtnl )
             handle = NULL;
 
          ib_handle[i] = handle;
+      }
+
+      if (svga->rebind.rendertargets) {
+         ret = svga_reemit_framebuffer_bindings(svga);
+         if (ret != PIPE_OK) {
+            return ret;
+         }
+      }
+
+      if (svga->rebind.texture_samplers) {
+         ret = svga_reemit_tss_bindings(svga);
+         if (ret != PIPE_OK) {
+            return ret;
+         }
       }
 
       SVGA_DBG(DEBUG_DMA, "draw to sid %p, %d prims\n",
@@ -198,7 +252,7 @@ svga_hwtnl_flush( struct svga_hwtnl *hwtnl )
          swc->surface_relocation(swc,
                                  &vdecl[i].array.surfaceId,
                                  vb_handle[i],
-                                 PIPE_BUFFER_USAGE_GPU_READ);
+                                 SVGA_RELOC_READ);
       }
 
       memcpy( prim,
@@ -209,8 +263,8 @@ svga_hwtnl_flush( struct svga_hwtnl *hwtnl )
          swc->surface_relocation(swc,
                                  &prim[i].indexArray.surfaceId,
                                  ib_handle[i],
-                                 PIPE_BUFFER_USAGE_GPU_READ);
-         pipe_buffer_reference(&hwtnl->cmd.prim_ib[i], NULL);
+                                 SVGA_RELOC_READ);
+         pipe_resource_reference(&hwtnl->cmd.prim_ib[i], NULL);
       }
       
       SVGA_FIFOCommitAll( swc );
@@ -221,6 +275,11 @@ svga_hwtnl_flush( struct svga_hwtnl *hwtnl )
 }
 
 
+void svga_hwtnl_set_index_bias( struct svga_hwtnl *hwtnl,
+				int index_bias)
+{
+   hwtnl->index_bias = index_bias;
+}
 
 
 
@@ -232,28 +291,29 @@ enum pipe_error svga_hwtnl_prim( struct svga_hwtnl *hwtnl,
                                  const SVGA3dPrimitiveRange *range,
                                  unsigned min_index,
                                  unsigned max_index,
-                                 struct pipe_buffer *ib )
+                                 struct pipe_resource *ib )
 {
-   int ret = PIPE_OK;
+   enum pipe_error ret = PIPE_OK;
 
 #ifdef DEBUG
    {
       unsigned i;
       for (i = 0; i < hwtnl->cmd.vdecl_count; i++) {
-         struct pipe_buffer *vb = hwtnl->cmd.vdecl_vb[i];
-         unsigned size = vb ? vb->size : 0;
+         struct pipe_resource *vb = hwtnl->cmd.vdecl_vb[i];
+         unsigned size = vb ? vb->width0 : 0;
          unsigned offset = hwtnl->cmd.vdecl[i].array.offset;
          unsigned stride = hwtnl->cmd.vdecl[i].array.stride;
-         unsigned index_bias = range->indexBias;
+         int index_bias = (int) range->indexBias + hwtnl->index_bias;
          unsigned width;
 
          assert(vb);
          assert(size);
          assert(offset < size);
-         assert(index_bias >= 0);
          assert(min_index <= max_index);
-         assert(offset + index_bias*stride < size);
-         if (min_index != ~0) {
+         if (index_bias >= 0) {
+            assert(offset + index_bias*stride < size);
+         }
+         if (min_index != ~0 && index_bias >= 0) {
             assert(offset + (index_bias + min_index) * stride < size);
          }
 
@@ -315,7 +375,6 @@ enum pipe_error svga_hwtnl_prim( struct svga_hwtnl *hwtnl,
             break;
          }
 
-         assert(!stride || width <= stride);
          if (max_index != ~0) {
             assert(offset + (index_bias + max_index) * stride + width <= size);
          }
@@ -324,7 +383,7 @@ enum pipe_error svga_hwtnl_prim( struct svga_hwtnl *hwtnl,
       assert(range->indexWidth == range->indexArray.stride);
 
       if(ib) {
-         unsigned size = ib->size;
+         unsigned size = ib->width0;
          unsigned offset = range->indexArray.offset;
          unsigned stride = range->indexArray.stride;
          unsigned count;
@@ -374,8 +433,9 @@ enum pipe_error svga_hwtnl_prim( struct svga_hwtnl *hwtnl,
    hwtnl->cmd.max_index[hwtnl->cmd.prim_count] = max_index;
 
    hwtnl->cmd.prim[hwtnl->cmd.prim_count] = *range;
+   hwtnl->cmd.prim[hwtnl->cmd.prim_count].indexBias += hwtnl->index_bias;
 
-   pipe_buffer_reference(&hwtnl->cmd.prim_ib[hwtnl->cmd.prim_count], ib);
+   pipe_resource_reference(&hwtnl->cmd.prim_ib[hwtnl->cmd.prim_count], ib);
    hwtnl->cmd.prim_count++;
 
    return ret;

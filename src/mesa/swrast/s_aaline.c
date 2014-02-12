@@ -29,6 +29,7 @@
 #include "main/mtypes.h"
 #include "swrast/s_aaline.h"
 #include "swrast/s_context.h"
+#include "swrast/s_fragprog.h"
 #include "swrast/s_span.h"
 #include "swrast/swrast.h"
 
@@ -59,10 +60,8 @@ struct LineInfo
 
    /* DO_Z */
    GLfloat zPlane[4];
-   /* DO_RGBA */
+   /* DO_RGBA - always enabled */
    GLfloat rPlane[4], gPlane[4], bPlane[4], aPlane[4];
-   /* DO_INDEX */
-   GLfloat iPlane[4];
    /* DO_ATTRIBS */
    GLfloat wPlane[4];
    GLfloat attrPlane[FRAG_ATTRIB_MAX][4][4];
@@ -132,7 +131,7 @@ compute_plane(GLfloat x0, GLfloat y0, GLfloat x1, GLfloat y1,
 }
 
 
-static INLINE void
+static inline void
 constant_plane(GLfloat value, GLfloat plane[4])
 {
    plane[0] = 0.0;
@@ -142,7 +141,7 @@ constant_plane(GLfloat value, GLfloat plane[4])
 }
 
 
-static INLINE GLfloat
+static inline GLfloat
 solve_plane(GLfloat x, GLfloat y, const GLfloat plane[4])
 {
    const GLfloat z = (plane[3] + plane[0] * x + plane[1] * y) / -plane[2];
@@ -156,7 +155,7 @@ solve_plane(GLfloat x, GLfloat y, const GLfloat plane[4])
 /*
  * Return 1 / solve_plane().
  */
-static INLINE GLfloat
+static inline GLfloat
 solve_plane_recip(GLfloat x, GLfloat y, const GLfloat plane[4])
 {
    const GLfloat denom = plane[3] + plane[0] * x + plane[1] * y;
@@ -170,7 +169,7 @@ solve_plane_recip(GLfloat x, GLfloat y, const GLfloat plane[4])
 /*
  * Solve plane and return clamped GLchan value.
  */
-static INLINE GLchan
+static inline GLchan
 solve_plane_chan(GLfloat x, GLfloat y, const GLfloat plane[4])
 {
    const GLfloat z = (plane[3] + plane[0] * x + plane[1] * y) / -plane[2];
@@ -189,7 +188,7 @@ solve_plane_chan(GLfloat x, GLfloat y, const GLfloat plane[4])
 /*
  * Compute mipmap level of detail.
  */
-static INLINE GLfloat
+static inline GLfloat
 compute_lambda(const GLfloat sPlane[4], const GLfloat tPlane[4],
                GLfloat invQ, GLfloat width, GLfloat height)
 {
@@ -325,21 +324,7 @@ compute_coveragef(const struct LineInfo *info,
 }
 
 
-/**
- * Compute coverage value for color index mode.
- * XXX this may not be quite correct.
- * \return coverage in [0,15].
- */
-static GLfloat
-compute_coveragei(const struct LineInfo *info,
-                  GLint winx, GLint winy)
-{
-   return compute_coveragef(info, winx, winy) * 15.0F;
-}
-
-
-
-typedef void (*plot_func)(GLcontext *ctx, struct LineInfo *line,
+typedef void (*plot_func)(struct gl_context *ctx, struct LineInfo *line,
                           int ix, int iy);
                          
 
@@ -348,7 +333,7 @@ typedef void (*plot_func)(GLcontext *ctx, struct LineInfo *line,
  * Draw an AA line segment (called many times per line when stippling)
  */
 static void
-segment(GLcontext *ctx,
+segment(struct gl_context *ctx,
         struct LineInfo *line,
         plot_func plot,
         GLfloat t0, GLfloat t1)
@@ -475,50 +460,34 @@ segment(GLcontext *ctx,
 }
 
 
-#define NAME(x) aa_ci_##x
-#define DO_Z
-#define DO_ATTRIBS /* for fog */
-#define DO_INDEX
-#include "s_aalinetemp.h"
-
-
 #define NAME(x) aa_rgba_##x
 #define DO_Z
-#define DO_RGBA
 #include "s_aalinetemp.h"
 
 
 #define NAME(x)  aa_general_rgba_##x
 #define DO_Z
-#define DO_RGBA
 #define DO_ATTRIBS
 #include "s_aalinetemp.h"
 
 
 
 void
-_swrast_choose_aa_line_function(GLcontext *ctx)
+_swrast_choose_aa_line_function(struct gl_context *ctx)
 {
    SWcontext *swrast = SWRAST_CONTEXT(ctx);
 
    ASSERT(ctx->Line.SmoothFlag);
 
-   if (ctx->Visual.rgbMode) {
-      /* RGBA */
-      if (ctx->Texture._EnabledCoordUnits != 0
-          || ctx->FragmentProgram._Current
-          || (ctx->Light.Enabled &&
-              ctx->Light.Model.ColorControl == GL_SEPARATE_SPECULAR_COLOR)
-          || ctx->Fog.ColorSumEnabled
-          || swrast->_FogEnabled) {
-         swrast->Line = aa_general_rgba_line;
-      }
-      else {
-         swrast->Line = aa_rgba_line;
-      }
+   if (ctx->Texture._EnabledCoordUnits != 0
+       || _swrast_use_fragment_program(ctx)
+       || (ctx->Light.Enabled &&
+           ctx->Light.Model.ColorControl == GL_SEPARATE_SPECULAR_COLOR)
+       || ctx->Fog.ColorSumEnabled
+       || swrast->_FogEnabled) {
+      swrast->Line = aa_general_rgba_line;
    }
    else {
-      /* Color Index */
-      swrast->Line = aa_ci_line;
+      swrast->Line = aa_rgba_line;
    }
 }

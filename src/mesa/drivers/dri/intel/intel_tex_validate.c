@@ -1,133 +1,47 @@
 #include "main/mtypes.h"
 #include "main/macros.h"
+#include "main/samplerobj.h"
 
 #include "intel_context.h"
 #include "intel_mipmap_tree.h"
+#include "intel_blit.h"
 #include "intel_tex.h"
+#include "intel_tex_layout.h"
 
 #define FILE_DEBUG_FLAG DEBUG_TEXTURE
 
 /**
- * Compute which mipmap levels that really need to be sent to the hardware.
- * This depends on the base image size, GL_TEXTURE_MIN_LOD,
- * GL_TEXTURE_MAX_LOD, GL_TEXTURE_BASE_LEVEL, and GL_TEXTURE_MAX_LEVEL.
+ * When validating, we only care about the texture images that could
+ * be seen, so for non-mipmapped modes we want to ignore everything
+ * but BaseLevel.
  */
 static void
-intel_calculate_first_last_level(struct intel_context *intel,
-				 struct intel_texture_object *intelObj)
+intel_update_max_level(struct intel_texture_object *intelObj,
+		       struct gl_sampler_object *sampler)
 {
    struct gl_texture_object *tObj = &intelObj->base;
-   const struct gl_texture_image *const baseImage =
-      tObj->Image[0][tObj->BaseLevel];
 
-   /* These must be signed values.  MinLod and MaxLod can be negative numbers,
-    * and having firstLevel and lastLevel as signed prevents the need for
-    * extra sign checks.
-    */
-   int firstLevel;
-   int lastLevel;
-
-   /* Yes, this looks overly complicated, but it's all needed.
-    */
-   switch (tObj->Target) {
-   case GL_TEXTURE_1D:
-   case GL_TEXTURE_2D:
-   case GL_TEXTURE_3D:
-   case GL_TEXTURE_CUBE_MAP:
-      if (tObj->MinFilter == GL_NEAREST || tObj->MinFilter == GL_LINEAR) {
-         /* GL_NEAREST and GL_LINEAR only care about GL_TEXTURE_BASE_LEVEL.
-          */
-         firstLevel = lastLevel = tObj->BaseLevel;
-      }
-      else {
-	 if (intel->gen == 2) {
-	    firstLevel = tObj->BaseLevel + (GLint) (tObj->MinLod + 0.5);
-	    firstLevel = MAX2(firstLevel, tObj->BaseLevel);
-	    firstLevel = MIN2(firstLevel, tObj->BaseLevel + baseImage->MaxLog2);
-	    lastLevel = tObj->BaseLevel + (GLint) (tObj->MaxLod + 0.5);
-	    lastLevel = MAX2(lastLevel, tObj->BaseLevel);
-	    lastLevel = MIN2(lastLevel, tObj->BaseLevel + baseImage->MaxLog2);
-	    lastLevel = MIN2(lastLevel, tObj->MaxLevel);
-	    lastLevel = MAX2(firstLevel, lastLevel);       /* need at least one level */
-	 } else {
-	    /* Min/max LOD are taken into account in sampler state.  We don't
-	     * want to re-layout textures just because clamping has been applied
-	     * since it means a bunch of blitting around and probably no memory
-	     * savings (since we have to keep the other levels around anyway).
-	     */
-	    firstLevel = tObj->BaseLevel;
-	    lastLevel = MIN2(tObj->BaseLevel + baseImage->MaxLog2,
-			     tObj->MaxLevel);
-	    /* need at least one level */
-	    lastLevel = MAX2(firstLevel, lastLevel);
-	 }
-      }
-      break;
-   case GL_TEXTURE_RECTANGLE_NV:
-   case GL_TEXTURE_4D_SGIS:
-      firstLevel = lastLevel = 0;
-      break;
-   default:
-      return;
+   if (sampler->MinFilter == GL_NEAREST ||
+       sampler->MinFilter == GL_LINEAR) {
+      intelObj->_MaxLevel = tObj->BaseLevel;
+   } else {
+      intelObj->_MaxLevel = tObj->_MaxLevel;
    }
-
-   /* save these values */
-   intelObj->firstLevel = firstLevel;
-   intelObj->lastLevel = lastLevel;
 }
-
-/**
- * Copies the image's contents at its level into the object's miptree,
- * and updates the image to point at the object's miptree.
- */
-static void
-copy_image_data_to_tree(struct intel_context *intel,
-                        struct intel_texture_object *intelObj,
-                        struct intel_texture_image *intelImage)
-{
-   if (intelImage->mt) {
-      /* Copy potentially with the blitter:
-       */
-      intel_miptree_image_copy(intel,
-                               intelObj->mt,
-                               intelImage->face,
-                               intelImage->level, intelImage->mt);
-
-      intel_miptree_release(intel, &intelImage->mt);
-   }
-   else {
-      assert(intelImage->base.Data != NULL);
-
-      /* More straightforward upload.  
-       */
-      intel_miptree_image_data(intel,
-                               intelObj->mt,
-                               intelImage->face,
-                               intelImage->level,
-                               intelImage->base.Data,
-                               intelImage->base.RowStride,
-                               intelImage->base.RowStride *
-                               intelImage->base.Height);
-      _mesa_align_free(intelImage->base.Data);
-      intelImage->base.Data = NULL;
-   }
-
-   intel_miptree_reference(&intelImage->mt, intelObj->mt);
-}
-
 
 /*  
  */
 GLuint
 intel_finalize_mipmap_tree(struct intel_context *intel, GLuint unit)
 {
+   struct gl_context *ctx = &intel->ctx;
    struct gl_texture_object *tObj = intel->ctx.Texture.Unit[unit]._Current;
    struct intel_texture_object *intelObj = intel_texture_object(tObj);
-   int comp_byte = 0;
-   int cpp;
+   struct gl_sampler_object *sampler = _mesa_get_samplerobj(ctx, unit);
    GLuint face, i;
    GLuint nr_faces = 0;
    struct intel_texture_image *firstImage;
+   int width, height, depth;
 
    /* We know/require this is true by now: 
     */
@@ -135,170 +49,160 @@ intel_finalize_mipmap_tree(struct intel_context *intel, GLuint unit)
 
    /* What levels must the tree include at a minimum?
     */
-   intel_calculate_first_last_level(intel, intelObj);
-   firstImage = intel_texture_image(tObj->Image[0][intelObj->firstLevel]);
-
-   /* Fallback case:
-    */
-   if (firstImage->base.Border) {
-      if (intelObj->mt) {
-         intel_miptree_release(intel, &intelObj->mt);
-      }
-      return GL_FALSE;
-   }
-
-
-   /* If both firstImage and intelObj have a tree which can contain
-    * all active images, favour firstImage.  Note that because of the
-    * completeness requirement, we know that the image dimensions
-    * will match.
-    */
-   if (firstImage->mt &&
-       firstImage->mt != intelObj->mt &&
-       firstImage->mt->first_level <= intelObj->firstLevel &&
-       firstImage->mt->last_level >= intelObj->lastLevel) {
-
-      if (intelObj->mt)
-         intel_miptree_release(intel, &intelObj->mt);
-
-      intel_miptree_reference(&intelObj->mt, firstImage->mt);
-   }
-
-   if (_mesa_is_format_compressed(firstImage->base.TexFormat)) {
-      comp_byte = intel_compressed_num_bytes(firstImage->base.TexFormat);
-      cpp = comp_byte;
-   }
-   else
-      cpp = _mesa_get_format_bytes(firstImage->base.TexFormat);
+   intel_update_max_level(intelObj, sampler);
+   firstImage = intel_texture_image(tObj->Image[0][tObj->BaseLevel]);
 
    /* Check tree can hold all active levels.  Check tree matches
     * target, imageFormat, etc.
-    * 
-    * XXX: For some layouts (eg i945?), the test might have to be
-    * first_level == firstLevel, as the tree isn't valid except at the
-    * original start level.  Hope to get around this by
-    * programming minLod, maxLod, baseLevel into the hardware and
-    * leaving the tree alone.
+    *
+    * For pre-gen4, we have to match first_level == tObj->BaseLevel,
+    * because we don't have the control that gen4 does to make min/mag
+    * determination happen at a nonzero (hardware) baselevel.  Because
+    * of that, we just always relayout on baselevel change.
     */
    if (intelObj->mt &&
-       (intelObj->mt->target != intelObj->base.Target ||
-	intelObj->mt->internal_format != firstImage->base.InternalFormat ||
-	intelObj->mt->first_level != intelObj->firstLevel ||
-	intelObj->mt->last_level != intelObj->lastLevel ||
-	intelObj->mt->width0 != firstImage->base.Width ||
-	intelObj->mt->height0 != firstImage->base.Height ||
-	intelObj->mt->depth0 != firstImage->base.Depth ||
-	intelObj->mt->cpp != cpp ||
-	intelObj->mt->compressed != _mesa_is_format_compressed(firstImage->base.TexFormat))) {
-      intel_miptree_release(intel, &intelObj->mt);
+       (!intel_miptree_match_image(intelObj->mt, &firstImage->base.Base) ||
+	intelObj->mt->first_level != tObj->BaseLevel ||
+	intelObj->mt->last_level < intelObj->_MaxLevel)) {
+      intel_miptree_release(&intelObj->mt);
    }
 
 
    /* May need to create a new tree:
     */
    if (!intelObj->mt) {
+      intel_miptree_get_dimensions_for_image(&firstImage->base.Base,
+					     &width, &height, &depth);
+
       intelObj->mt = intel_miptree_create(intel,
                                           intelObj->base.Target,
-                                          firstImage->base._BaseFormat,
-                                          firstImage->base.InternalFormat,
-                                          intelObj->firstLevel,
-                                          intelObj->lastLevel,
-                                          firstImage->base.Width,
-                                          firstImage->base.Height,
-                                          firstImage->base.Depth,
-                                          cpp,
-                                          comp_byte,
-					  GL_TRUE);
+					  firstImage->base.Base.TexFormat,
+                                          tObj->BaseLevel,
+                                          intelObj->_MaxLevel,
+                                          width,
+                                          height,
+                                          depth,
+					  true);
+      if (!intelObj->mt)
+         return false;
    }
 
    /* Pull in any images not in the object's tree:
     */
    nr_faces = (intelObj->base.Target == GL_TEXTURE_CUBE_MAP) ? 6 : 1;
    for (face = 0; face < nr_faces; face++) {
-      for (i = intelObj->firstLevel; i <= intelObj->lastLevel; i++) {
+      for (i = tObj->BaseLevel; i <= intelObj->_MaxLevel; i++) {
          struct intel_texture_image *intelImage =
             intel_texture_image(intelObj->base.Image[face][i]);
+	 /* skip too small size mipmap */
+ 	 if (intelImage == NULL)
+		 break;
 
-         /* Need to import images in main memory or held in other trees.
-	  * If it's a render target, then its data isn't needed to be in
-	  * the object tree (otherwise we'd be FBO incomplete), and we need
-	  * to keep track of the image's MT as needing to be pulled in still,
-	  * or we'll lose the rendering that's done to it.
-          */
-         if (intelObj->mt != intelImage->mt &&
-	     !intelImage->used_as_render_target) {
-            copy_image_data_to_tree(intel, intelObj, intelImage);
+         if (intelObj->mt != intelImage->mt) {
+            intel_miptree_copy_teximage(intel, intelImage, intelObj->mt);
          }
       }
    }
 
-   return GL_TRUE;
+   return true;
 }
 
-void
-intel_tex_map_level_images(struct intel_context *intel,
-			   struct intel_texture_object *intelObj,
-			   int level)
+/**
+ * \param mode  bitmask of GL_MAP_READ_BIT, GL_MAP_WRITE_BIT
+ */
+static void
+intel_tex_map_image_for_swrast(struct intel_context *intel,
+			       struct intel_texture_image *intel_image,
+			       GLbitfield mode)
 {
-   GLuint nr_faces = (intelObj->base.Target == GL_TEXTURE_CUBE_MAP) ? 6 : 1;
-   GLuint face;
+   int level;
+   int face;
+   struct intel_mipmap_tree *mt;
+   unsigned int x, y;
 
-   for (face = 0; face < nr_faces; face++) {
-      struct intel_texture_image *intelImage =
-	 intel_texture_image(intelObj->base.Image[face][level]);
+   if (!intel_image || !intel_image->mt)
+      return;
 
-      if (intelImage && intelImage->mt) {
-	 intelImage->base.Data =
-	    intel_miptree_image_map(intel,
-				    intelImage->mt,
-				    intelImage->face,
-				    intelImage->level,
-				    &intelImage->base.RowStride,
-				    intelImage->base.ImageOffsets);
-	 /* convert stride to texels, not bytes */
-	 intelImage->base.RowStride /= intelImage->mt->cpp;
-	 /* intelImage->base.ImageStride /= intelImage->mt->cpp; */
+   level = intel_image->base.Base.Level;
+   face = intel_image->base.Base.Face;
+   mt = intel_image->mt;
+
+   if (mt->target == GL_TEXTURE_3D ||
+       mt->target == GL_TEXTURE_2D_ARRAY ||
+       mt->target == GL_TEXTURE_1D_ARRAY) {
+      int i;
+
+      /* ImageOffsets[] is only used for swrast's fetch_texel_3d, so we can't
+       * share code with the normal path.
+       */
+      for (i = 0; i < mt->level[level].depth; i++) {
+	 intel_miptree_get_image_offset(mt, level, face, i, &x, &y);
+	 intel_image->base.ImageOffsets[i] = x + y * mt->region->pitch;
       }
+
+      DBG("%s \n", __FUNCTION__);
+
+      intel_image->base.Map = intel_region_map(intel, mt->region, mode);
+   } else {
+      assert(intel_image->base.Base.Depth == 1);
+      intel_miptree_get_image_offset(mt, level, face, 0, &x, &y);
+
+      DBG("%s: (%d,%d) -> (%d, %d)/%d\n",
+	  __FUNCTION__, face, level, x, y, mt->region->pitch * mt->cpp);
+
+      intel_image->base.Map = intel_region_map(intel, mt->region, mode) +
+	 (x + y * mt->region->pitch) * mt->cpp;
+   }
+
+   intel_image->base.RowStride = mt->region->pitch;
+}
+
+static void
+intel_tex_unmap_image_for_swrast(struct intel_context *intel,
+				 struct intel_texture_image *intel_image)
+{
+   if (intel_image && intel_image->mt) {
+      intel_region_unmap(intel, intel_image->mt->region);
+      intel_image->base.Map = NULL;
    }
 }
 
-void
-intel_tex_unmap_level_images(struct intel_context *intel,
-			     struct intel_texture_object *intelObj,
-			     int level)
-{
-   GLuint nr_faces = (intelObj->base.Target == GL_TEXTURE_CUBE_MAP) ? 6 : 1;
-   GLuint face;
-
-   for (face = 0; face < nr_faces; face++) {
-      struct intel_texture_image *intelImage =
-	 intel_texture_image(intelObj->base.Image[face][level]);
-
-      if (intelImage && intelImage->mt) {
-	 intel_miptree_image_unmap(intel, intelImage->mt);
-	 intelImage->base.Data = NULL;
-      }
-   }
-}
-
+/**
+ * \param mode  bitmask of GL_MAP_READ_BIT, GL_MAP_WRITE_BIT
+ */
 void
 intel_tex_map_images(struct intel_context *intel,
-                     struct intel_texture_object *intelObj)
+		     struct intel_texture_object *intelObj,
+		     GLbitfield mode)
 {
-   int i;
+   GLuint nr_faces = (intelObj->base.Target == GL_TEXTURE_CUBE_MAP) ? 6 : 1;
+   int i, face;
 
    DBG("%s\n", __FUNCTION__);
 
-   for (i = intelObj->firstLevel; i <= intelObj->lastLevel; i++)
-      intel_tex_map_level_images(intel, intelObj, i);
+   for (i = intelObj->base.BaseLevel; i <= intelObj->_MaxLevel; i++) {
+      for (face = 0; face < nr_faces; face++) {
+	 struct intel_texture_image *intel_image =
+	    intel_texture_image(intelObj->base.Image[face][i]);
+
+	 intel_tex_map_image_for_swrast(intel, intel_image, mode);
+      }
+   }
 }
 
 void
 intel_tex_unmap_images(struct intel_context *intel,
-                       struct intel_texture_object *intelObj)
+		       struct intel_texture_object *intelObj)
 {
-   int i;
+   GLuint nr_faces = (intelObj->base.Target == GL_TEXTURE_CUBE_MAP) ? 6 : 1;
+   int i, face;
 
-   for (i = intelObj->firstLevel; i <= intelObj->lastLevel; i++)
-      intel_tex_unmap_level_images(intel, intelObj, i);
+   for (i = intelObj->base.BaseLevel; i <= intelObj->_MaxLevel; i++) {
+      for (face = 0; face < nr_faces; face++) {
+	 struct intel_texture_image *intel_image =
+	    intel_texture_image(intelObj->base.Image[face][i]);
+
+	 intel_tex_unmap_image_for_swrast(intel, intel_image);
+      }
+   }
 }

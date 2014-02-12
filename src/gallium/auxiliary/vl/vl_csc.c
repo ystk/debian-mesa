@@ -1,8 +1,8 @@
 /**************************************************************************
- * 
+ *
  * Copyright 2009 Younes Manton.
  * All Rights Reserved.
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
@@ -10,11 +10,11 @@
  * distribute, sub license, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice (including the
  * next paragraph) shall be included in all copies or substantial portions
  * of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
@@ -22,12 +22,13 @@
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- * 
+ *
  **************************************************************************/
 
+#include "util/u_math.h"
+#include "util/u_debug.h"
+
 #include "vl_csc.h"
-#include <util/u_math.h>
-#include <util/u_debug.h>
 
 /*
  * Color space conversion formulas
@@ -146,12 +147,35 @@ static const float bt_709_full[16] =
    0.0f,    0.0f,    0.0f,   1.0f
 };
 
+static const float smpte240m[16] =
+{
+   1.0f,  0.0f,    1.582f, 0.0f,
+   1.0f, -0.228f, -0.478f, 0.0f,
+   1.0f,  1.833f,  0.0f,   0.0f,
+   0.0f,  0.0f,    0.0f,   1.0f
+};
+
+static const float smpte240m_full[16] =
+{
+   1.164f,  0.0f,    1.794f, 0.0f,
+   1.164f, -0.258f, -0.543f, 0.0f,
+   1.164f,  2.079f,  0.0f,   0.0f,
+   0.0f,    0.0f,    0.0f,   1.0f
+};
+
 static const float identity[16] =
 {
    1.0f, 0.0f, 0.0f, 0.0f,
    0.0f, 1.0f, 0.0f, 0.0f,
    0.0f, 0.0f, 1.0f, 0.0f,
    0.0f, 0.0f, 0.0f, 1.0f
+};
+
+const struct vl_procamp vl_default_procamp = {
+   0.0f,  /* brightness */
+   1.0f,  /* contrast   */
+   1.0f,  /* saturation */
+   0.0f   /* hue        */
 };
 
 void vl_csc_get_matrix(enum VL_CSC_COLOR_STANDARD cs,
@@ -162,10 +186,13 @@ void vl_csc_get_matrix(enum VL_CSC_COLOR_STANDARD cs,
    float ybias = full_range ? -16.0f/255.0f : 0.0f;
    float cbbias = -128.0f/255.0f;
    float crbias = -128.0f/255.0f;
-   float c = procamp ? procamp->contrast : 1.0f;
-   float s = procamp ? procamp->saturation : 1.0f;
-   float b = procamp ? procamp->brightness : 0.0f;
-   float h = procamp ? procamp->hue : 0.0f;
+
+   const struct vl_procamp *p = procamp ? procamp : &vl_default_procamp;
+   float c = p->contrast;
+   float s = p->saturation;
+   float b = p->brightness;
+   float h = p->hue;
+
    const float *cstd;
 
    assert(matrix);
@@ -176,6 +203,9 @@ void vl_csc_get_matrix(enum VL_CSC_COLOR_STANDARD cs,
          break;
       case VL_CSC_COLOR_STANDARD_BT_709:
          cstd = full_range ? &bt_709_full[0] : &bt_709[0];
+         break;
+      case VL_CSC_COLOR_STANDARD_SMPTE_240M:
+         cstd = full_range ? &smpte240m_full[0] : &smpte240m[0];
          break;
       case VL_CSC_COLOR_STANDARD_IDENTITY:
       default:

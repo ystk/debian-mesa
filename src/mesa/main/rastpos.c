@@ -32,9 +32,11 @@
 #include "context.h"
 #include "feedback.h"
 #include "macros.h"
+#include "mfeatures.h"
+#include "mtypes.h"
 #include "rastpos.h"
 #include "state.h"
-#include "glapi/dispatch.h"
+#include "main/dispatch.h"
 
 
 #if FEATURE_rastpos
@@ -246,33 +248,28 @@ window_pos3f(GLfloat x, GLfloat y, GLfloat z)
       ctx->Current.RasterDistance = 0.0;
 
    /* raster color = current color or index */
-   if (ctx->Visual.rgbMode) {
-      ctx->Current.RasterColor[0]
-         = CLAMP(ctx->Current.Attrib[VERT_ATTRIB_COLOR0][0], 0.0F, 1.0F);
-      ctx->Current.RasterColor[1]
-         = CLAMP(ctx->Current.Attrib[VERT_ATTRIB_COLOR0][1], 0.0F, 1.0F);
-      ctx->Current.RasterColor[2]
-         = CLAMP(ctx->Current.Attrib[VERT_ATTRIB_COLOR0][2], 0.0F, 1.0F);
-      ctx->Current.RasterColor[3]
-         = CLAMP(ctx->Current.Attrib[VERT_ATTRIB_COLOR0][3], 0.0F, 1.0F);
-      ctx->Current.RasterSecondaryColor[0]
-         = CLAMP(ctx->Current.Attrib[VERT_ATTRIB_COLOR1][0], 0.0F, 1.0F);
-      ctx->Current.RasterSecondaryColor[1]
-         = CLAMP(ctx->Current.Attrib[VERT_ATTRIB_COLOR1][1], 0.0F, 1.0F);
-      ctx->Current.RasterSecondaryColor[2]
-         = CLAMP(ctx->Current.Attrib[VERT_ATTRIB_COLOR1][2], 0.0F, 1.0F);
-      ctx->Current.RasterSecondaryColor[3]
-         = CLAMP(ctx->Current.Attrib[VERT_ATTRIB_COLOR1][3], 0.0F, 1.0F);
-   }
-   else {
-      ctx->Current.RasterIndex
-         = ctx->Current.Attrib[VERT_ATTRIB_COLOR_INDEX][0];
-   }
+   ctx->Current.RasterColor[0]
+      = CLAMP(ctx->Current.Attrib[VERT_ATTRIB_COLOR0][0], 0.0F, 1.0F);
+   ctx->Current.RasterColor[1]
+      = CLAMP(ctx->Current.Attrib[VERT_ATTRIB_COLOR0][1], 0.0F, 1.0F);
+   ctx->Current.RasterColor[2]
+      = CLAMP(ctx->Current.Attrib[VERT_ATTRIB_COLOR0][2], 0.0F, 1.0F);
+   ctx->Current.RasterColor[3]
+      = CLAMP(ctx->Current.Attrib[VERT_ATTRIB_COLOR0][3], 0.0F, 1.0F);
+   ctx->Current.RasterSecondaryColor[0]
+      = CLAMP(ctx->Current.Attrib[VERT_ATTRIB_COLOR1][0], 0.0F, 1.0F);
+   ctx->Current.RasterSecondaryColor[1]
+      = CLAMP(ctx->Current.Attrib[VERT_ATTRIB_COLOR1][1], 0.0F, 1.0F);
+   ctx->Current.RasterSecondaryColor[2]
+      = CLAMP(ctx->Current.Attrib[VERT_ATTRIB_COLOR1][2], 0.0F, 1.0F);
+   ctx->Current.RasterSecondaryColor[3]
+      = CLAMP(ctx->Current.Attrib[VERT_ATTRIB_COLOR1][3], 0.0F, 1.0F);
 
    /* raster texcoord = current texcoord */
    {
       GLuint texSet;
       for (texSet = 0; texSet < ctx->Const.MaxTextureCoordUnits; texSet++) {
+         assert(texSet < Elements(ctx->Current.RasterTexCoords));
          COPY_4FV( ctx->Current.RasterTexCoords[texSet],
                   ctx->Current.Attrib[VERT_ATTRIB_TEX0 + texSet] );
       }
@@ -550,10 +547,10 @@ _mesa_init_rastpos_dispatch(struct _glapi_table *disp)
  * \param ctx GL context.
  *
  * Initialize the current raster position information in
- * __GLcontextRec::Current, and adds the extension entry points to the
+ * __struct gl_contextRec::Current, and adds the extension entry points to the
  * dispatcher.
  */
-void _mesa_init_rastpos( GLcontext * ctx )
+void _mesa_init_rastpos( struct gl_context * ctx )
 {
    int i;
 
@@ -561,8 +558,7 @@ void _mesa_init_rastpos( GLcontext * ctx )
    ctx->Current.RasterDistance = 0.0;
    ASSIGN_4V( ctx->Current.RasterColor, 1.0, 1.0, 1.0, 1.0 );
    ASSIGN_4V( ctx->Current.RasterSecondaryColor, 0.0, 0.0, 0.0, 1.0 );
-   ctx->Current.RasterIndex = 1.0;
-   for (i = 0; i < MAX_TEXTURE_COORD_UNITS; i++)
+   for (i = 0; i < Elements(ctx->Current.RasterTexCoords); i++)
       ASSIGN_4V( ctx->Current.RasterTexCoords[i], 0.0, 0.0, 0.0, 1.0 );
    ctx->Current.RasterPosValid = GL_TRUE;
 }

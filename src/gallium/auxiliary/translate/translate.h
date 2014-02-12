@@ -44,12 +44,19 @@
 #include "pipe/p_format.h"
 #include "pipe/p_state.h"
 
+enum translate_element_type {
+   TRANSLATE_ELEMENT_NORMAL,
+   TRANSLATE_ELEMENT_INSTANCE_ID
+};
+
 struct translate_element 
 {
+   enum translate_element_type type;
    enum pipe_format input_format;
    enum pipe_format output_format;
    unsigned input_buffer:8;
    unsigned input_offset:24;
+   unsigned instance_divisor;
    unsigned output_offset;
 };
 
@@ -61,6 +68,33 @@ struct translate_key {
 };
 
 
+struct translate;
+
+
+typedef void (PIPE_CDECL *run_elts_func)(struct translate *,
+                                         const unsigned *elts,
+                                         unsigned count,
+                                         unsigned instance_id,
+                                         void *output_buffer);
+
+typedef void (PIPE_CDECL *run_elts16_func)(struct translate *,
+                                           const uint16_t *elts,
+                                           unsigned count,
+                                           unsigned instance_id,
+                                           void *output_buffer);
+
+typedef void (PIPE_CDECL *run_elts8_func)(struct translate *,
+                                          const uint8_t *elts,
+                                          unsigned count,
+                                          unsigned instance_id,
+                                          void *output_buffer);
+
+typedef void (PIPE_CDECL *run_func)(struct translate *,
+                                    unsigned start,
+                                    unsigned count,
+                                    unsigned instance_id,
+                                    void *output_buffer);
+
 struct translate {
    struct translate_key key;
 
@@ -69,31 +103,20 @@ struct translate {
    void (*set_buffer)( struct translate *,
 		       unsigned i,
 		       const void *ptr,
-		       unsigned stride );
+		       unsigned stride,
+		       unsigned max_index );
 
-   void (PIPE_CDECL *run_elts)( struct translate *,
-                                const unsigned *elts,
-                                unsigned count,
-                                void *output_buffer);
-
-   void (PIPE_CDECL *run)( struct translate *,
-                           unsigned start,
-                           unsigned count,
-                           void *output_buffer);
+   run_elts_func run_elts;
+   run_elts16_func run_elts16;
+   run_elts8_func run_elts8;
+   run_func run;
 };
 
 
 
-#if 0
-struct translate_context *translate_context_create( void );
-void translate_context_destroy( struct translate_context * );
-
-struct translate *translate_lookup_or_create( struct translate_context *tctx,
-					      const struct translate_key *key );
-#endif
-
-
 struct translate *translate_create( const struct translate_key *key );
+
+boolean translate_is_output_format_supported(enum pipe_format format);
 
 static INLINE int translate_keysize( const struct translate_key *key )
 {
@@ -103,8 +126,13 @@ static INLINE int translate_keysize( const struct translate_key *key )
 static INLINE int translate_key_compare( const struct translate_key *a,
                                          const struct translate_key *b )
 {
-   int keysize = translate_keysize(a);
-   return memcmp(a, b, keysize);
+   int keysize_a = translate_keysize(a);
+   int keysize_b = translate_keysize(b);
+
+   if (keysize_a != keysize_b) {
+      return keysize_a - keysize_b;
+   }
+   return memcmp(a, b, keysize_a);
 }
 
 
@@ -123,5 +151,6 @@ struct translate *translate_sse2_create( const struct translate_key *key );
 
 struct translate *translate_generic_create( const struct translate_key *key );
 
+boolean translate_generic_is_output_format_supported(enum pipe_format format);
 
 #endif

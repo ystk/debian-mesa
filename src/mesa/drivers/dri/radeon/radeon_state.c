@@ -37,15 +37,16 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "main/api_arrayelt.h"
 #include "main/enums.h"
 #include "main/light.h"
-#include "main/state.h"
 #include "main/context.h"
 #include "main/framebuffer.h"
 #include "main/simple_list.h"
+#include "main/state.h"
 
 #include "vbo/vbo.h"
 #include "tnl/tnl.h"
 #include "tnl/t_pipeline.h"
 #include "swrast_setup/swrast_setup.h"
+#include "drivers/common/meta.h"
 
 #include "radeon_context.h"
 #include "radeon_mipmap_tree.h"
@@ -54,15 +55,14 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "radeon_tcl.h"
 #include "radeon_tex.h"
 #include "radeon_swtcl.h"
-#include "drirenderbuffer.h"
 
-static void radeonUpdateSpecular( GLcontext *ctx );
+static void radeonUpdateSpecular( struct gl_context *ctx );
 
 /* =============================================================
  * Alpha blending
  */
 
-static void radeonAlphaFunc( GLcontext *ctx, GLenum func, GLfloat ref )
+static void radeonAlphaFunc( struct gl_context *ctx, GLenum func, GLfloat ref )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    int pp_misc = rmesa->hw.ctx.cmd[CTX_PP_MISC];
@@ -105,7 +105,7 @@ static void radeonAlphaFunc( GLcontext *ctx, GLenum func, GLfloat ref )
    rmesa->hw.ctx.cmd[CTX_PP_MISC] = pp_misc;
 }
 
-static void radeonBlendEquationSeparate( GLcontext *ctx,
+static void radeonBlendEquationSeparate( struct gl_context *ctx,
 					 GLenum modeRGB, GLenum modeA )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
@@ -137,7 +137,7 @@ static void radeonBlendEquationSeparate( GLcontext *ctx,
       RADEON_STATECHANGE( rmesa, ctx );
       rmesa->hw.ctx.cmd[CTX_RB3D_BLENDCNTL] = b;
       if ( (ctx->Color.ColorLogicOpEnabled || (ctx->Color.BlendEnabled
-	    && ctx->Color.BlendEquationRGB == GL_LOGIC_OP)) ) {
+	    && ctx->Color.Blend[0].EquationRGB == GL_LOGIC_OP)) ) {
 	 rmesa->hw.ctx.cmd[CTX_RB3D_CNTL] |=  RADEON_ROP_ENABLE;
       } else {
 	 rmesa->hw.ctx.cmd[CTX_RB3D_CNTL] &= ~RADEON_ROP_ENABLE;
@@ -145,7 +145,7 @@ static void radeonBlendEquationSeparate( GLcontext *ctx,
    }
 }
 
-static void radeonBlendFuncSeparate( GLcontext *ctx,
+static void radeonBlendFuncSeparate( struct gl_context *ctx,
 				     GLenum sfactorRGB, GLenum dfactorRGB,
 				     GLenum sfactorA, GLenum dfactorA )
 {
@@ -154,7 +154,7 @@ static void radeonBlendFuncSeparate( GLcontext *ctx,
       ~(RADEON_SRC_BLEND_MASK | RADEON_DST_BLEND_MASK);
    GLboolean fallback = GL_FALSE;
 
-   switch ( ctx->Color.BlendSrcRGB ) {
+   switch ( ctx->Color.Blend[0].SrcRGB ) {
    case GL_ZERO:
       b |= RADEON_SRC_BLEND_GL_ZERO;
       break;
@@ -201,7 +201,7 @@ static void radeonBlendFuncSeparate( GLcontext *ctx,
       break;
    }
 
-   switch ( ctx->Color.BlendDstRGB ) {
+   switch ( ctx->Color.Blend[0].DstRGB ) {
    case GL_ZERO:
       b |= RADEON_DST_BLEND_GL_ZERO;
       break;
@@ -257,7 +257,7 @@ static void radeonBlendFuncSeparate( GLcontext *ctx,
  * Depth testing
  */
 
-static void radeonDepthFunc( GLcontext *ctx, GLenum func )
+static void radeonDepthFunc( struct gl_context *ctx, GLenum func )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
 
@@ -293,7 +293,7 @@ static void radeonDepthFunc( GLcontext *ctx, GLenum func )
 }
 
 
-static void radeonDepthMask( GLcontext *ctx, GLboolean flag )
+static void radeonDepthMask( struct gl_context *ctx, GLboolean flag )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    RADEON_STATECHANGE( rmesa, ctx );
@@ -305,7 +305,7 @@ static void radeonDepthMask( GLcontext *ctx, GLboolean flag )
    }
 }
 
-static void radeonClearDepth( GLcontext *ctx, GLclampd d )
+static void radeonClearDepth( struct gl_context *ctx, GLclampd d )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    GLuint format = (rmesa->hw.ctx.cmd[CTX_RB3D_ZSTENCILCNTL] &
@@ -327,11 +327,11 @@ static void radeonClearDepth( GLcontext *ctx, GLclampd d )
  */
 
 
-static void radeonFogfv( GLcontext *ctx, GLenum pname, const GLfloat *param )
+static void radeonFogfv( struct gl_context *ctx, GLenum pname, const GLfloat *param )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    union { int i; float f; } c, d;
-   GLchan col[4];
+   GLubyte col[4];
 
    switch (pname) {
    case GL_FOG_MODE:
@@ -395,7 +395,7 @@ static void radeonFogfv( GLcontext *ctx, GLenum pname, const GLfloat *param )
       break;
    case GL_FOG_COLOR:
       RADEON_STATECHANGE( rmesa, ctx );
-      UNCLAMPED_FLOAT_TO_RGB_CHAN( col, ctx->Fog.Color );
+      _mesa_unclamped_float_rgba_to_ubyte(col, ctx->Fog.Color );
       rmesa->hw.ctx.cmd[CTX_PP_FOG_COLOR] &= ~RADEON_FOG_COLOR_MASK;
       rmesa->hw.ctx.cmd[CTX_PP_FOG_COLOR] |=
 	 radeonPackColor( 4, col[0], col[1], col[2], 0 );
@@ -412,7 +412,7 @@ static void radeonFogfv( GLcontext *ctx, GLenum pname, const GLfloat *param )
  * Culling
  */
 
-static void radeonCullFace( GLcontext *ctx, GLenum unused )
+static void radeonCullFace( struct gl_context *ctx, GLenum unused )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    GLuint s = rmesa->hw.set.cmd[SET_SE_CNTL];
@@ -449,7 +449,7 @@ static void radeonCullFace( GLcontext *ctx, GLenum unused )
    }
 }
 
-static void radeonFrontFace( GLcontext *ctx, GLenum mode )
+static void radeonFrontFace( struct gl_context *ctx, GLenum mode )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
 
@@ -478,7 +478,7 @@ static void radeonFrontFace( GLcontext *ctx, GLenum mode )
 /* =============================================================
  * Line state
  */
-static void radeonLineWidth( GLcontext *ctx, GLfloat widthf )
+static void radeonLineWidth( struct gl_context *ctx, GLfloat widthf )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
 
@@ -495,7 +495,7 @@ static void radeonLineWidth( GLcontext *ctx, GLfloat widthf )
    }
 }
 
-static void radeonLineStipple( GLcontext *ctx, GLint factor, GLushort pattern )
+static void radeonLineStipple( struct gl_context *ctx, GLint factor, GLushort pattern )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
 
@@ -508,7 +508,7 @@ static void radeonLineStipple( GLcontext *ctx, GLint factor, GLushort pattern )
 /* =============================================================
  * Masks
  */
-static void radeonColorMask( GLcontext *ctx,
+static void radeonColorMask( struct gl_context *ctx,
 			     GLboolean r, GLboolean g,
 			     GLboolean b, GLboolean a )
 {
@@ -521,10 +521,10 @@ static void radeonColorMask( GLcontext *ctx,
      return;
 
    mask = radeonPackColor( rrb->cpp,
-			   ctx->Color.ColorMask[RCOMP],
-			   ctx->Color.ColorMask[GCOMP],
-			   ctx->Color.ColorMask[BCOMP],
-			   ctx->Color.ColorMask[ACOMP] );
+			   ctx->Color.ColorMask[0][RCOMP],
+			   ctx->Color.ColorMask[0][GCOMP],
+			   ctx->Color.ColorMask[0][BCOMP],
+			   ctx->Color.ColorMask[0][ACOMP] );
 
    if ( rmesa->hw.msk.cmd[MSK_RB3D_PLANEMASK] != mask ) {
       RADEON_STATECHANGE( rmesa, msk );
@@ -537,7 +537,7 @@ static void radeonColorMask( GLcontext *ctx,
  * Polygon state
  */
 
-static void radeonPolygonOffset( GLcontext *ctx,
+static void radeonPolygonOffset( struct gl_context *ctx,
 				 GLfloat factor, GLfloat units )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
@@ -550,32 +550,7 @@ static void radeonPolygonOffset( GLcontext *ctx,
    rmesa->hw.zbs.cmd[ZBS_SE_ZBIAS_CONSTANT] = constant.ui32;
 }
 
-static void radeonPolygonStipplePreKMS( GLcontext *ctx, const GLubyte *mask )
-{
-   r100ContextPtr rmesa = R100_CONTEXT(ctx);
-   GLuint i;
-   drm_radeon_stipple_t stipple;
-
-   /* Must flip pattern upside down.
-    */
-   for ( i = 0 ; i < 32 ; i++ ) {
-      rmesa->state.stipple.mask[31 - i] = ((GLuint *) mask)[i];
-   }
-
-   /* TODO: push this into cmd mechanism
-    */
-   radeon_firevertices(&rmesa->radeon);
-   LOCK_HARDWARE( &rmesa->radeon );
-
-   /* FIXME: Use window x,y offsets into stipple RAM.
-    */
-   stipple.mask = rmesa->state.stipple.mask;
-   drmCommandWrite( rmesa->radeon.dri.fd, DRM_RADEON_STIPPLE,
-		    &stipple, sizeof(drm_radeon_stipple_t) );
-   UNLOCK_HARDWARE( &rmesa->radeon );
-}
-
-static void radeonPolygonMode( GLcontext *ctx, GLenum face, GLenum mode )
+static void radeonPolygonMode( struct gl_context *ctx, GLenum face, GLenum mode )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    GLboolean flag = (ctx->_TriangleCaps & DD_TRI_UNFILLED) != 0;
@@ -602,7 +577,7 @@ static void radeonPolygonMode( GLcontext *ctx, GLenum face, GLenum mode )
 /* Examine lighting and texture state to determine if separate specular
  * should be enabled.
  */
-static void radeonUpdateSpecular( GLcontext *ctx )
+static void radeonUpdateSpecular( struct gl_context *ctx )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    uint32_t p = rmesa->hw.ctx.cmd[CTX_PP_CNTL];
@@ -662,7 +637,7 @@ static void radeonUpdateSpecular( GLcontext *ctx )
 
    TCL_FALLBACK( ctx, RADEON_TCL_FALLBACK_FOGCOORDSPEC, flag);
 
-   if (NEED_SECONDARY_COLOR(ctx)) {
+   if (_mesa_need_secondary_color(ctx)) {
       assert( (p & RADEON_SPECULAR_ENABLE) != 0 );
    } else {
       assert( (p & RADEON_SPECULAR_ENABLE) == 0 );
@@ -690,7 +665,7 @@ static void radeonUpdateSpecular( GLcontext *ctx )
 /* Update on colormaterial, material emmissive/ambient,
  * lightmodel.globalambient
  */
-static void update_global_ambient( GLcontext *ctx )
+static void update_global_ambient( struct gl_context *ctx )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    float *fcmd = (float *)RADEON_DB_STATE( glt );
@@ -720,7 +695,7 @@ static void update_global_ambient( GLcontext *ctx )
  *    - light[p].colors
  *    - light[p].enabled
  */
-static void update_light_colors( GLcontext *ctx, GLuint p )
+static void update_light_colors( struct gl_context *ctx, GLuint p )
 {
    struct gl_light *l = &ctx->Light.Light[p];
 
@@ -740,7 +715,7 @@ static void update_light_colors( GLcontext *ctx, GLuint p )
 
 /* Also fallback for asym colormaterial mode in twoside lighting...
  */
-static void check_twoside_fallback( GLcontext *ctx )
+static void check_twoside_fallback( struct gl_context *ctx )
 {
    GLboolean fallback = GL_FALSE;
    GLint i;
@@ -765,7 +740,7 @@ static void check_twoside_fallback( GLcontext *ctx )
 }
 
 
-static void radeonColorMaterial( GLcontext *ctx, GLenum face, GLenum mode )
+static void radeonColorMaterial( struct gl_context *ctx, GLenum face, GLenum mode )
 {
       r100ContextPtr rmesa = R100_CONTEXT(ctx);
       GLuint light_model_ctl1 = rmesa->hw.tcl.cmd[TCL_LIGHT_MODEL_CTL];
@@ -829,7 +804,7 @@ static void radeonColorMaterial( GLcontext *ctx, GLenum face, GLenum mode )
    }
 }
 
-void radeonUpdateMaterial( GLcontext *ctx )
+void radeonUpdateMaterial( struct gl_context *ctx )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    GLfloat (*mat)[4] = ctx->Light.Material.Attrib;
@@ -894,7 +869,7 @@ void radeonUpdateMaterial( GLcontext *ctx )
  * lighting space (model or eye), hence dependencies on _NEW_MODELVIEW
  * and _MESA_NEW_NEED_EYE_COORDS.
  */
-static void update_light( GLcontext *ctx )
+static void update_light( struct gl_context *ctx )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
 
@@ -958,7 +933,7 @@ static void update_light( GLcontext *ctx )
    }
 }
 
-static void radeonLightfv( GLcontext *ctx, GLenum light,
+static void radeonLightfv( struct gl_context *ctx, GLenum light,
 			   GLenum pname, const GLfloat *params )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
@@ -1079,7 +1054,7 @@ static void radeonLightfv( GLcontext *ctx, GLenum light,
 
 
 
-static void radeonLightModelfv( GLcontext *ctx, GLenum pname,
+static void radeonLightModelfv( struct gl_context *ctx, GLenum pname,
 				const GLfloat *param )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
@@ -1121,7 +1096,7 @@ static void radeonLightModelfv( GLcontext *ctx, GLenum pname,
    }
 }
 
-static void radeonShadeModel( GLcontext *ctx, GLenum mode )
+static void radeonShadeModel( struct gl_context *ctx, GLenum mode )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    GLuint s = rmesa->hw.set.cmd[SET_SE_CNTL];
@@ -1159,7 +1134,7 @@ static void radeonShadeModel( GLcontext *ctx, GLenum mode )
  * User clip planes
  */
 
-static void radeonClipPlane( GLcontext *ctx, GLenum plane, const GLfloat *eq )
+static void radeonClipPlane( struct gl_context *ctx, GLenum plane, const GLfloat *eq )
 {
    GLint p = (GLint) plane - (GLint) GL_CLIP_PLANE0;
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
@@ -1172,7 +1147,7 @@ static void radeonClipPlane( GLcontext *ctx, GLenum plane, const GLfloat *eq )
    rmesa->hw.ucp[p].cmd[UCP_W] = ip[3];
 }
 
-static void radeonUpdateClipPlanes( GLcontext *ctx )
+static void radeonUpdateClipPlanes( struct gl_context *ctx )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    GLuint p;
@@ -1196,7 +1171,7 @@ static void radeonUpdateClipPlanes( GLcontext *ctx )
  */
 
 static void
-radeonStencilFuncSeparate( GLcontext *ctx, GLenum face, GLenum func,
+radeonStencilFuncSeparate( struct gl_context *ctx, GLenum face, GLenum func,
                            GLint ref, GLuint mask )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
@@ -1241,7 +1216,7 @@ radeonStencilFuncSeparate( GLcontext *ctx, GLenum face, GLenum func,
 }
 
 static void
-radeonStencilMaskSeparate( GLcontext *ctx, GLenum face, GLuint mask )
+radeonStencilMaskSeparate( struct gl_context *ctx, GLenum face, GLuint mask )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
 
@@ -1251,7 +1226,7 @@ radeonStencilMaskSeparate( GLcontext *ctx, GLenum face, GLuint mask )
       ((ctx->Stencil.WriteMask[0] & 0xff) << RADEON_STENCIL_WRITEMASK_SHIFT);
 }
 
-static void radeonStencilOpSeparate( GLcontext *ctx, GLenum face, GLenum fail,
+static void radeonStencilOpSeparate( struct gl_context *ctx, GLenum face, GLenum fail,
                                      GLenum zfail, GLenum zpass )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
@@ -1371,7 +1346,7 @@ static void radeonStencilOpSeparate( GLcontext *ctx, GLenum face, GLenum fail,
    }
 }
 
-static void radeonClearStencil( GLcontext *ctx, GLint s )
+static void radeonClearStencil( struct gl_context *ctx, GLint s )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
 
@@ -1397,12 +1372,12 @@ static void radeonClearStencil( GLcontext *ctx, GLint s )
  * Called when window size or position changes or viewport or depth range
  * state is changed.  We update the hardware viewport state here.
  */
-void radeonUpdateWindow( GLcontext *ctx )
+void radeonUpdateWindow( struct gl_context *ctx )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
-   __DRIdrawablePrivate *dPriv = radeon_get_drawable(&rmesa->radeon);
-   GLfloat xoffset = dPriv ? (GLfloat) dPriv->x : 0;
-   GLfloat yoffset = dPriv ? (GLfloat) dPriv->y + dPriv->h : 0;
+   __DRIdrawable *dPriv = radeon_get_drawable(&rmesa->radeon);
+   GLfloat xoffset = 0.0;
+   GLfloat yoffset = dPriv ? (GLfloat) dPriv->h : 0;
    const GLfloat *v = ctx->Viewport._WindowMap.m;
    const GLboolean render_to_fbo = (ctx->DrawBuffer ? (ctx->DrawBuffer->Name != 0) : 0);
    const GLfloat depthScale = 1.0F / ctx->DrawBuffer->_DepthMaxF;
@@ -1434,7 +1409,7 @@ void radeonUpdateWindow( GLcontext *ctx )
 }
 
 
-static void radeonViewport( GLcontext *ctx, GLint x, GLint y,
+static void radeonViewport( struct gl_context *ctx, GLint x, GLint y,
 			    GLsizei width, GLsizei height )
 {
    /* Don't pipeline viewport changes, conflict with window offset
@@ -1446,18 +1421,18 @@ static void radeonViewport( GLcontext *ctx, GLint x, GLint y,
    radeon_viewport(ctx, x, y, width, height);
 }
 
-static void radeonDepthRange( GLcontext *ctx, GLclampd nearval,
+static void radeonDepthRange( struct gl_context *ctx, GLclampd nearval,
 			      GLclampd farval )
 {
    radeonUpdateWindow( ctx );
 }
 
-void radeonUpdateViewportOffset( GLcontext *ctx )
+void radeonUpdateViewportOffset( struct gl_context *ctx )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
-   __DRIdrawablePrivate *dPriv = radeon_get_drawable(&rmesa->radeon);
-   GLfloat xoffset = (GLfloat)dPriv->x;
-   GLfloat yoffset = (GLfloat)dPriv->y + dPriv->h;
+   __DRIdrawable *dPriv = radeon_get_drawable(&rmesa->radeon);
+   GLfloat xoffset = 0.0;
+   GLfloat yoffset = (GLfloat)dPriv->h;
    const GLfloat *v = ctx->Viewport._WindowMap.m;
 
    float_ui32_type tx;
@@ -1485,8 +1460,8 @@ void radeonUpdateViewportOffset( GLcontext *ctx )
                 RADEON_STIPPLE_Y_OFFSET_MASK);
 
          /* add magic offsets, then invert */
-         stx = 31 - ((dPriv->x - 1) & RADEON_STIPPLE_COORD_MASK);
-         sty = 31 - ((dPriv->y + dPriv->h - 1)
+         stx = 31 - ((-1) & RADEON_STIPPLE_COORD_MASK);
+         sty = 31 - ((dPriv->h - 1)
                      & RADEON_STIPPLE_COORD_MASK);
 
          m |= ((stx << RADEON_STIPPLE_X_OFFSET_SHIFT) |
@@ -1508,7 +1483,8 @@ void radeonUpdateViewportOffset( GLcontext *ctx )
  * Miscellaneous
  */
 
-static void radeonClearColor( GLcontext *ctx, const GLfloat color[4] )
+static void radeonClearColor( struct gl_context *ctx,
+                              const union gl_color_union color )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    GLubyte c[4];
@@ -1518,16 +1494,13 @@ static void radeonClearColor( GLcontext *ctx, const GLfloat color[4] )
    if (!rrb)
      return;
      
-   CLAMPED_FLOAT_TO_UBYTE(c[0], color[0]);
-   CLAMPED_FLOAT_TO_UBYTE(c[1], color[1]);
-   CLAMPED_FLOAT_TO_UBYTE(c[2], color[2]);
-   CLAMPED_FLOAT_TO_UBYTE(c[3], color[3]);
+   _mesa_unclamped_float_rgba_to_ubyte(c, color.f);
    rmesa->radeon.state.color.clear = radeonPackColor( rrb->cpp,
 					       c[0], c[1], c[2], c[3] );
 }
 
 
-static void radeonRenderMode( GLcontext *ctx, GLenum mode )
+static void radeonRenderMode( struct gl_context *ctx, GLenum mode )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    FALLBACK( rmesa, RADEON_FALLBACK_RENDER_MODE, (mode != GL_RENDER) );
@@ -1553,7 +1526,7 @@ static GLuint radeon_rop_tab[] = {
    RADEON_ROP_SET,
 };
 
-static void radeonLogicOpCode( GLcontext *ctx, GLenum opcode )
+static void radeonLogicOpCode( struct gl_context *ctx, GLenum opcode )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    GLuint rop = (GLuint)opcode - GL_CLEAR;
@@ -1568,7 +1541,7 @@ static void radeonLogicOpCode( GLcontext *ctx, GLenum opcode )
  * State enable/disable
  */
 
-static void radeonEnable( GLcontext *ctx, GLenum cap, GLboolean state )
+static void radeonEnable( struct gl_context *ctx, GLenum cap, GLboolean state )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    GLuint p, flag;
@@ -1603,7 +1576,7 @@ static void radeonEnable( GLcontext *ctx, GLenum cap, GLboolean state )
 	 rmesa->hw.ctx.cmd[CTX_RB3D_CNTL] &= ~RADEON_ALPHA_BLEND_ENABLE;
       }
       if ( (ctx->Color.ColorLogicOpEnabled || (ctx->Color.BlendEnabled
-	    && ctx->Color.BlendEquationRGB == GL_LOGIC_OP)) ) {
+	    && ctx->Color.Blend[0].EquationRGB == GL_LOGIC_OP)) ) {
 	 rmesa->hw.ctx.cmd[CTX_RB3D_CNTL] |=  RADEON_ROP_ENABLE;
       } else {
 	 rmesa->hw.ctx.cmd[CTX_RB3D_CNTL] &= ~RADEON_ROP_ENABLE;
@@ -1613,12 +1586,12 @@ static void radeonEnable( GLcontext *ctx, GLenum cap, GLboolean state )
        */
       if (state) {
 	 ctx->Driver.BlendEquationSeparate( ctx,
-					    ctx->Color.BlendEquationRGB,
-					    ctx->Color.BlendEquationA );
-	 ctx->Driver.BlendFuncSeparate( ctx, ctx->Color.BlendSrcRGB,
-					ctx->Color.BlendDstRGB,
-					ctx->Color.BlendSrcA,
-					ctx->Color.BlendDstA );
+					    ctx->Color.Blend[0].EquationRGB,
+					    ctx->Color.Blend[0].EquationA );
+	 ctx->Driver.BlendFuncSeparate( ctx, ctx->Color.Blend[0].SrcRGB,
+					ctx->Color.Blend[0].DstRGB,
+					ctx->Color.Blend[0].SrcA,
+					ctx->Color.Blend[0].DstA );
       }
       else {
 	 FALLBACK( rmesa, RADEON_FALLBACK_BLEND_FUNC, GL_FALSE );
@@ -1742,7 +1715,7 @@ static void radeonEnable( GLcontext *ctx, GLenum cap, GLboolean state )
    case GL_COLOR_LOGIC_OP:
       RADEON_STATECHANGE( rmesa, ctx );
       if ( (ctx->Color.ColorLogicOpEnabled || (ctx->Color.BlendEnabled
-	    && ctx->Color.BlendEquationRGB == GL_LOGIC_OP)) ) {
+	    && ctx->Color.Blend[0].EquationRGB == GL_LOGIC_OP)) ) {
 	 rmesa->hw.ctx.cmd[CTX_RB3D_CNTL] |=  RADEON_ROP_ENABLE;
       } else {
 	 rmesa->hw.ctx.cmd[CTX_RB3D_CNTL] &= ~RADEON_ROP_ENABLE;
@@ -1861,7 +1834,7 @@ static void radeonEnable( GLcontext *ctx, GLenum cap, GLboolean state )
 }
 
 
-static void radeonLightingSpaceChange( GLcontext *ctx )
+static void radeonLightingSpaceChange( struct gl_context *ctx )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    GLboolean tmp;
@@ -1902,7 +1875,7 @@ void radeonUploadTexMatrix( r100ContextPtr rmesa,
    So: if we need the q coord in the end (solely determined by the texture
    target, i.e. 2d / 1d / texrect targets) we swap the third and 4th row.
    Additionally, if we don't have texgen but 4 tex coords submitted, we swap
-   column 3 and 4 (for the 2d / 1d / texrect targets) since the the q coord
+   column 3 and 4 (for the 2d / 1d / texrect targets) since the q coord
    will get submitted in the "wrong", i.e. 3rd, slot.
    If an app submits 3 coords for 2d targets, we assume it is saving on vertex
    size and using the texture matrix to swap the r and q coords around (ut2k3
@@ -1996,7 +1969,7 @@ static void upload_matrix_t( r100ContextPtr rmesa, GLfloat *src, int idx )
 }
 
 
-static void update_texturematrix( GLcontext *ctx )
+static void update_texturematrix( struct gl_context *ctx )
 {
    r100ContextPtr rmesa = R100_CONTEXT( ctx );
    GLuint tpc = rmesa->hw.tcl.cmd[TCL_TEXTURE_PROC_CTL];
@@ -2062,7 +2035,7 @@ static void update_texturematrix( GLcontext *ctx )
    }
 }
 
-static GLboolean r100ValidateBuffers(GLcontext *ctx)
+static GLboolean r100ValidateBuffers(struct gl_context *ctx)
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    struct radeon_renderbuffer *rrb;
@@ -2092,6 +2065,9 @@ static GLboolean r100ValidateBuffers(GLcontext *ctx)
 	 continue;
 
       t = rmesa->state.texture.unit[i].texobj;
+
+      if (!t)
+	 continue;
       if (t->image_override && t->bo)
 	radeon_cs_space_add_persistent_bo(rmesa->radeon.cmdbuf.cs, t->bo,
 			   RADEON_GEM_DOMAIN_GTT | RADEON_GEM_DOMAIN_VRAM, 0);
@@ -2106,7 +2082,7 @@ static GLboolean r100ValidateBuffers(GLcontext *ctx)
    return GL_TRUE;
 }
 
-GLboolean radeonValidateState( GLcontext *ctx )
+GLboolean radeonValidateState( struct gl_context *ctx )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    GLuint new_state = rmesa->radeon.NewGLState;
@@ -2164,7 +2140,7 @@ GLboolean radeonValidateState( GLcontext *ctx )
 }
 
 
-static void radeonInvalidateState( GLcontext *ctx, GLuint new_state )
+static void radeonInvalidateState( struct gl_context *ctx, GLuint new_state )
 {
    _swrast_InvalidateState( ctx, new_state );
    _swsetup_InvalidateState( ctx, new_state );
@@ -2177,7 +2153,7 @@ static void radeonInvalidateState( GLcontext *ctx, GLuint new_state )
 
 /* A hack.  Need a faster way to find this out.
  */
-static GLboolean check_material( GLcontext *ctx )
+static GLboolean check_material( struct gl_context *ctx )
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    GLint i;
@@ -2193,7 +2169,7 @@ static GLboolean check_material( GLcontext *ctx )
 }
 
 
-static void radeonWrapRunPipeline( GLcontext *ctx )
+static void radeonWrapRunPipeline( struct gl_context *ctx )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    GLboolean has_material;
@@ -2222,7 +2198,7 @@ static void radeonWrapRunPipeline( GLcontext *ctx )
    }
 }
 
-static void radeonPolygonStipple( GLcontext *ctx, const GLubyte *mask )
+static void radeonPolygonStipple( struct gl_context *ctx, const GLubyte *mask )
 {
    r100ContextPtr r100 = R100_CONTEXT(ctx);
    GLint i;
@@ -2243,20 +2219,22 @@ static void radeonPolygonStipple( GLcontext *ctx, const GLubyte *mask )
  * Many of the ctx->Driver functions might have been initialized to
  * software defaults in the earlier _mesa_init_driver_functions() call.
  */
-void radeonInitStateFuncs( GLcontext *ctx , GLboolean dri2 )
+void radeonInitStateFuncs( struct gl_context *ctx )
 {
    ctx->Driver.UpdateState		= radeonInvalidateState;
    ctx->Driver.LightingSpaceChange      = radeonLightingSpaceChange;
 
    ctx->Driver.DrawBuffer		= radeonDrawBuffer;
    ctx->Driver.ReadBuffer		= radeonReadBuffer;
+   ctx->Driver.CopyPixels               = _mesa_meta_CopyPixels;
+   ctx->Driver.DrawPixels               = _mesa_meta_DrawPixels;
+   ctx->Driver.ReadPixels               = radeonReadPixels;
 
    ctx->Driver.AlphaFunc		= radeonAlphaFunc;
    ctx->Driver.BlendEquationSeparate	= radeonBlendEquationSeparate;
    ctx->Driver.BlendFuncSeparate	= radeonBlendFuncSeparate;
    ctx->Driver.ClearColor		= radeonClearColor;
    ctx->Driver.ClearDepth		= radeonClearDepth;
-   ctx->Driver.ClearIndex		= NULL;
    ctx->Driver.ClearStencil		= radeonClearStencil;
    ctx->Driver.ClipPlane		= radeonClipPlane;
    ctx->Driver.ColorMask		= radeonColorMask;
@@ -2268,7 +2246,6 @@ void radeonInitStateFuncs( GLcontext *ctx , GLboolean dri2 )
    ctx->Driver.Fogfv			= radeonFogfv;
    ctx->Driver.FrontFace		= radeonFrontFace;
    ctx->Driver.Hint			= NULL;
-   ctx->Driver.IndexMask		= NULL;
    ctx->Driver.LightModelfv		= radeonLightModelfv;
    ctx->Driver.Lightfv			= radeonLightfv;
    ctx->Driver.LineStipple              = radeonLineStipple;
@@ -2276,10 +2253,7 @@ void radeonInitStateFuncs( GLcontext *ctx , GLboolean dri2 )
    ctx->Driver.LogicOpcode		= radeonLogicOpCode;
    ctx->Driver.PolygonMode		= radeonPolygonMode;
    ctx->Driver.PolygonOffset		= radeonPolygonOffset;
-   if (dri2)
-      ctx->Driver.PolygonStipple		= radeonPolygonStipple;
-   else
-      ctx->Driver.PolygonStipple		= radeonPolygonStipplePreKMS;
+   ctx->Driver.PolygonStipple		= radeonPolygonStipple;
    ctx->Driver.RenderMode		= radeonRenderMode;
    ctx->Driver.Scissor			= radeonScissor;
    ctx->Driver.ShadeModel		= radeonShadeModel;

@@ -103,7 +103,7 @@ _mesa_ProvokingVertexEXT(GLenum mode)
  * Also, all error checking should have already been done.
  */
 void
-_mesa_light(GLcontext *ctx, GLuint lnum, GLenum pname, const GLfloat *params)
+_mesa_light(struct gl_context *ctx, GLuint lnum, GLenum pname, const GLfloat *params)
 {
    struct gl_light *light;
 
@@ -162,7 +162,7 @@ _mesa_light(GLcontext *ctx, GLuint lnum, GLenum pname, const GLfloat *params)
          return;
       FLUSH_VERTICES(ctx, _NEW_LIGHT);
       light->SpotCutoff = params[0];
-      light->_CosCutoffNeg = (GLfloat) (_mesa_cos(light->SpotCutoff * DEG2RAD));
+      light->_CosCutoffNeg = (GLfloat) (cos(light->SpotCutoff * DEG2RAD));
       if (light->_CosCutoffNeg < 0)
          light->_CosCutoff = 0;
       else
@@ -569,7 +569,7 @@ _mesa_LightModelf( GLenum pname, GLfloat param )
  * of the targeted material values.
  */
 GLuint
-_mesa_material_bitmask( GLcontext *ctx, GLenum face, GLenum pname,
+_mesa_material_bitmask( struct gl_context *ctx, GLenum face, GLenum pname,
                         GLuint legal, const char *where )
 {
    GLuint bitmask = 0;
@@ -599,7 +599,7 @@ _mesa_material_bitmask( GLcontext *ctx, GLenum face, GLenum pname,
          bitmask |= MAT_BIT_FRONT_INDEXES  | MAT_BIT_BACK_INDEXES;
          break;
       default:
-         _mesa_error( ctx, GL_INVALID_ENUM, where );
+         _mesa_error( ctx, GL_INVALID_ENUM, "%s", where );
          return 0;
    }
 
@@ -610,12 +610,12 @@ _mesa_material_bitmask( GLcontext *ctx, GLenum face, GLenum pname,
       bitmask &= BACK_MATERIAL_BITS;
    }
    else if (face != GL_FRONT_AND_BACK) {
-      _mesa_error( ctx, GL_INVALID_ENUM, where );
+      _mesa_error( ctx, GL_INVALID_ENUM, "%s", where );
       return 0;
    }
 
    if (bitmask & ~legal) {
-      _mesa_error( ctx, GL_INVALID_ENUM, where );
+      _mesa_error( ctx, GL_INVALID_ENUM, "%s", where );
       return 0;
    }
 
@@ -624,26 +624,10 @@ _mesa_material_bitmask( GLcontext *ctx, GLenum face, GLenum pname,
 
 
 
-/* Perform a straight copy between materials.
- */
-void
-_mesa_copy_materials( struct gl_material *dst,
-                      const struct gl_material *src,
-                      GLuint bitmask )
-{
-   int i;
-
-   for (i = 0 ; i < MAT_ATTRIB_MAX ; i++) 
-      if (bitmask & (1<<i))
-	 COPY_4FV( dst->Attrib[i], src->Attrib[i] );
-}
-
-
-
 /* Update derived values following a change in ctx->Light.Material
  */
 void
-_mesa_update_material( GLcontext *ctx, GLuint bitmask )
+_mesa_update_material( struct gl_context *ctx, GLuint bitmask )
 {
    struct gl_light *light, *list = &ctx->Light.EnabledList;
    GLfloat (*mat)[4] = ctx->Light.Material.Attrib;
@@ -728,7 +712,7 @@ _mesa_update_material( GLcontext *ctx, GLuint bitmask )
  * set by glColorMaterial().
  */
 void
-_mesa_update_color_material( GLcontext *ctx, const GLfloat color[4] )
+_mesa_update_color_material( struct gl_context *ctx, const GLfloat color[4] )
 {
    GLuint bitmask = ctx->Light.ColorMaterialBitmask;
    struct gl_material *mat = &ctx->Light.Material;
@@ -759,6 +743,8 @@ _mesa_ColorMaterial( GLenum face, GLenum mode )
                   _mesa_lookup_enum_by_nr(mode));
 
    bitmask = _mesa_material_bitmask(ctx, face, mode, legal, "glColorMaterial");
+   if (bitmask == 0)
+      return; /* error was recorded */
 
    if (ctx->Light.ColorMaterialBitmask == bitmask &&
        ctx->Light.ColorMaterialFace == face &&
@@ -950,7 +936,7 @@ validate_spot_exp_table( struct gl_light *l )
 
    for (i = EXP_TABLE_SIZE - 1; i > 0 ;i--) {
       if (clamp == 0) {
-	 tmp = _mesa_pow(i / (GLdouble) (EXP_TABLE_SIZE - 1), exponent);
+	 tmp = pow(i / (GLdouble) (EXP_TABLE_SIZE - 1), exponent);
 	 if (tmp < FLT_MIN * 100.0) {
 	    tmp = 0.0;
 	    clamp = 1;
@@ -972,7 +958,7 @@ validate_spot_exp_table( struct gl_light *l )
  * by keeping a MRU cache of shine tables for various shine values.
  */
 void
-_mesa_invalidate_shine_table( GLcontext *ctx, GLuint side )
+_mesa_invalidate_shine_table( struct gl_context *ctx, GLuint side )
 {
    ASSERT(side < 2);
    if (ctx->_ShineTable[side])
@@ -982,7 +968,7 @@ _mesa_invalidate_shine_table( GLcontext *ctx, GLuint side )
 
 
 static void
-validate_shine_table( GLcontext *ctx, GLuint side, GLfloat shininess )
+validate_shine_table( struct gl_context *ctx, GLuint side, GLfloat shininess )
 {
    struct gl_shine_tab *list = ctx->_ShineTabList;
    struct gl_shine_tab *s;
@@ -1012,7 +998,7 @@ validate_shine_table( GLcontext *ctx, GLuint side, GLfloat shininess )
             GLdouble t, x = j / (GLfloat) (SHINE_TABLE_SIZE - 1);
             if (x < 0.005) /* underflow check */
                x = 0.005;
-            t = _mesa_pow(x, shininess);
+            t = pow(x, shininess);
 	    if (t > 1e-20)
 	       m[j] = (GLfloat) t;
 	    else
@@ -1034,7 +1020,7 @@ validate_shine_table( GLcontext *ctx, GLuint side, GLfloat shininess )
 
 
 void
-_mesa_validate_all_lighting_tables( GLcontext *ctx )
+_mesa_validate_all_lighting_tables( struct gl_context *ctx )
 {
    GLuint i;
    GLfloat shininess;
@@ -1060,7 +1046,7 @@ _mesa_validate_all_lighting_tables( GLcontext *ctx )
  * source and material ambient, diffuse and specular coefficients.
  */
 void
-_mesa_update_lighting( GLcontext *ctx )
+_mesa_update_lighting( struct gl_context *ctx )
 {
    struct gl_light *light;
    ctx->Light._NeedEyeCoords = GL_FALSE;
@@ -1093,31 +1079,22 @@ _mesa_update_lighting( GLcontext *ctx )
     * FLUSH_UPDATE_CURRENT, as when any outstanding material changes
     * are flushed, they will update the derived state at that time.
     */
-   if (ctx->Visual.rgbMode) {
-      if (ctx->Light.Model.TwoSide)
-	 _mesa_update_material( ctx, 
-				MAT_BIT_FRONT_EMISSION |
-				MAT_BIT_FRONT_AMBIENT |
-				MAT_BIT_FRONT_DIFFUSE | 
-				MAT_BIT_FRONT_SPECULAR |
-				MAT_BIT_BACK_EMISSION |
-				MAT_BIT_BACK_AMBIENT |
-				MAT_BIT_BACK_DIFFUSE | 
-				MAT_BIT_BACK_SPECULAR);
-      else
-	 _mesa_update_material( ctx, 
-				MAT_BIT_FRONT_EMISSION |
-				MAT_BIT_FRONT_AMBIENT |
-				MAT_BIT_FRONT_DIFFUSE | 
-				MAT_BIT_FRONT_SPECULAR);
-   }
-   else {
-      static const GLfloat ci[3] = { .30F, .59F, .11F };
-      foreach(light, &ctx->Light.EnabledList) {
-	 light->_dli = DOT3(ci, light->Diffuse);
-	 light->_sli = DOT3(ci, light->Specular);
-      }
-   }
+   if (ctx->Light.Model.TwoSide)
+      _mesa_update_material(ctx,
+			    MAT_BIT_FRONT_EMISSION |
+			    MAT_BIT_FRONT_AMBIENT |
+			    MAT_BIT_FRONT_DIFFUSE |
+			    MAT_BIT_FRONT_SPECULAR |
+			    MAT_BIT_BACK_EMISSION |
+			    MAT_BIT_BACK_AMBIENT |
+			    MAT_BIT_BACK_DIFFUSE |
+			    MAT_BIT_BACK_SPECULAR);
+   else
+      _mesa_update_material(ctx,
+			    MAT_BIT_FRONT_EMISSION |
+			    MAT_BIT_FRONT_AMBIENT |
+			    MAT_BIT_FRONT_DIFFUSE |
+			    MAT_BIT_FRONT_SPECULAR);
 }
 
 
@@ -1132,7 +1109,7 @@ _mesa_update_lighting( GLcontext *ctx )
  * Also update on lighting space changes.
  */
 static void
-compute_light_positions( GLcontext *ctx )
+compute_light_positions( struct gl_context *ctx )
 {
    struct gl_light *light;
    static const GLfloat eye_z[3] = { 0, 0, 1 };
@@ -1146,6 +1123,9 @@ compute_light_positions( GLcontext *ctx )
    else {
       TRANSFORM_NORMAL( ctx->_EyeZDir, eye_z, ctx->ModelviewMatrixStack.Top->m );
    }
+
+   /* Make sure all the light tables are updated before the computation */
+   _mesa_validate_all_lighting_tables(ctx);
 
    foreach (light, &ctx->Light.EnabledList) {
 
@@ -1219,7 +1199,7 @@ compute_light_positions( GLcontext *ctx )
 
 
 static void
-update_modelview_scale( GLcontext *ctx )
+update_modelview_scale( struct gl_context *ctx )
 {
    ctx->_ModelViewInvScale = 1.0F;
    if (!_math_matrix_is_length_preserving(ctx->ModelviewMatrixStack.Top)) {
@@ -1238,7 +1218,7 @@ update_modelview_scale( GLcontext *ctx )
  * Bring up to date any state that relies on _NeedEyeCoords.
  */
 void
-_mesa_update_tnl_spaces( GLcontext *ctx, GLuint new_state )
+_mesa_update_tnl_spaces( struct gl_context *ctx, GLuint new_state )
 {
    const GLuint oldneedeyecoords = ctx->_NeedEyeCoords;
 
@@ -1287,7 +1267,7 @@ _mesa_update_tnl_spaces( GLcontext *ctx, GLuint new_state )
  * light-in-modelspace optimization.  It's also useful for debugging.
  */
 void
-_mesa_allow_light_in_model( GLcontext *ctx, GLboolean flag )
+_mesa_allow_light_in_model( struct gl_context *ctx, GLboolean flag )
 {
    ctx->_ForceEyeCoords = !flag;
    ctx->NewState |= _NEW_POINT;	/* one of the bits from
@@ -1379,7 +1359,7 @@ init_material( struct gl_material *m )
  * Initialize all lighting state for the given context.
  */
 void
-_mesa_init_lighting( GLcontext *ctx )
+_mesa_init_lighting( struct gl_context *ctx )
 {
    GLuint i;
 
@@ -1427,13 +1407,13 @@ _mesa_init_lighting( GLcontext *ctx )
  * Deallocate malloc'd lighting state attached to given context.
  */
 void
-_mesa_free_lighting_data( GLcontext *ctx )
+_mesa_free_lighting_data( struct gl_context *ctx )
 {
    struct gl_shine_tab *s, *tmps;
 
    /* Free lighting shininess exponentiation table */
    foreach_s( s, tmps, ctx->_ShineTabList ) {
-      _mesa_free( s );
+      free( s );
    }
-   _mesa_free( ctx->_ShineTabList );
+   free( ctx->_ShineTabList );
 }

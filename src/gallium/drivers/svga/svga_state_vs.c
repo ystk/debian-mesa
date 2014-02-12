@@ -23,8 +23,9 @@
  *
  **********************************************************/
 
-#include "pipe/p_inlines.h"
+#include "util/u_inlines.h"
 #include "pipe/p_defines.h"
+#include "util/u_format.h"
 #include "util/u_math.h"
 #include "util/u_bitmask.h"
 #include "translate/translate.h"
@@ -89,7 +90,7 @@ static enum pipe_error compile_vs( struct svga_context *svga,
                              SVGA3D_SHADERTYPE_VS,
                              result->tokens, 
                              result->nr_tokens * sizeof result->tokens[0]);
-   if (ret)
+   if (ret != PIPE_OK)
       goto fail;
 
    *out_result = result;
@@ -106,10 +107,10 @@ fail:
    return ret;
 }
 
-/* SVGA_NEW_PRESCALE, SVGA_NEW_RAST, SVGA_NEW_ZERO_STRIDE
+/* SVGA_NEW_PRESCALE, SVGA_NEW_RAST, SVGA_NEW_ZERO_STRIDE, SVGA_NEW_FS
  */
-static int make_vs_key( struct svga_context *svga,
-                        struct svga_vs_compile_key *key )
+static void
+make_vs_key(struct svga_context *svga, struct svga_vs_compile_key *key)
 {
    memset(key, 0, sizeof *key);
    key->need_prescale = svga->state.hw_clear.prescale.enabled;
@@ -118,31 +119,31 @@ static int make_vs_key( struct svga_context *svga,
       svga->curr.zero_stride_vertex_elements;
    key->num_zero_stride_vertex_elements =
       svga->curr.num_zero_stride_vertex_elements;
-   return 0;
+
+   /* SVGA_NEW_FS */
+   key->fs_generic_inputs = svga->curr.fs->generic_inputs;
 }
 
 
 
-static int emit_hw_vs( struct svga_context *svga,
-                       unsigned dirty )
+static enum pipe_error
+emit_hw_vs(struct svga_context *svga, unsigned dirty)
 {
    struct svga_shader_result *result = NULL;
    unsigned id = SVGA3D_INVALID_ID;
-   int ret = 0;
+   enum pipe_error ret = PIPE_OK;
 
    /* SVGA_NEW_NEED_SWTNL */
    if (!svga->state.sw.need_swtnl) {
       struct svga_vertex_shader *vs = svga->curr.vs;
       struct svga_vs_compile_key key;
 
-      ret = make_vs_key( svga, &key );
-      if (ret)
-         return ret;
+      make_vs_key( svga, &key );
 
       result = search_vs_key( vs, &key );
       if (!result) {
          ret = compile_vs( svga, vs, &key, &result );
-         if (ret)
+         if (ret != PIPE_OK)
             return ret;
       }
 
@@ -154,20 +155,21 @@ static int emit_hw_vs( struct svga_context *svga,
       ret = SVGA3D_SetShader(svga->swc,
                              SVGA3D_SHADERTYPE_VS,
                              id );
-      if (ret)
+      if (ret != PIPE_OK)
          return ret;
 
       svga->dirty |= SVGA_NEW_VS_RESULT;
       svga->state.hw_draw.vs = result;      
    }
 
-   return 0;
+   return PIPE_OK;
 }
 
 struct svga_tracked_state svga_hw_vs = 
 {
    "vertex shader (hwtnl)",
    (SVGA_NEW_VS |
+    SVGA_NEW_FS |
     SVGA_NEW_PRESCALE |
     SVGA_NEW_NEED_SWTNL |
     SVGA_NEW_ZERO_STRIDE),
@@ -177,21 +179,24 @@ struct svga_tracked_state svga_hw_vs =
 
 /***********************************************************************
  */
-static int update_zero_stride( struct svga_context *svga,
-                               unsigned dirty )
+static enum pipe_error
+update_zero_stride( struct svga_context *svga,
+                    unsigned dirty )
 {
    unsigned i;
 
    svga->curr.zero_stride_vertex_elements = 0;
    svga->curr.num_zero_stride_vertex_elements = 0;
 
-   for (i = 0; i < svga->curr.num_vertex_elements; i++) {
-      const struct pipe_vertex_element *vel = &svga->curr.ve[i];
+   for (i = 0; i < svga->curr.velems->count; i++) {
+      const struct pipe_vertex_element *vel = &svga->curr.velems->velem[i];
       const struct pipe_vertex_buffer *vbuffer = &svga->curr.vb[
          vel->vertex_buffer_index];
+
       if (vbuffer->stride == 0) {
          unsigned const_idx =
             svga->curr.num_zero_stride_vertex_elements;
+	 struct pipe_transfer *transfer;
          struct translate *translate;
          struct translate_key key;
          void *mapped_buffer;
@@ -201,10 +206,12 @@ static int update_zero_stride( struct svga_context *svga,
 
          key.output_stride = 4 * sizeof(float);
          key.nr_elements = 1;
+         key.element[0].type = TRANSLATE_ELEMENT_NORMAL;
          key.element[0].input_format = vel->src_format;
          key.element[0].output_format = PIPE_FORMAT_R32G32B32A32_FLOAT;
          key.element[0].input_buffer = vel->vertex_buffer_index;
          key.element[0].input_offset = vel->src_offset;
+         key.element[0].instance_divisor = vel->instance_divisor;
          key.element[0].output_offset = const_idx * 4 * sizeof(float);
 
          translate_key_sanitize(&key);
@@ -215,19 +222,22 @@ static int update_zero_stride( struct svga_context *svga,
 
          assert(vel->src_offset == 0);
          
-         mapped_buffer = pipe_buffer_map_range(svga->pipe.screen, 
+         mapped_buffer = pipe_buffer_map_range(&svga->pipe, 
                                                vbuffer->buffer,
                                                vel->src_offset,
-                                               pf_get_size(vel->src_format),
-                                               PIPE_BUFFER_USAGE_CPU_READ);
+                                               util_format_get_blocksize(vel->src_format),
+                                               PIPE_TRANSFER_READ,
+					       &transfer);
+         mapped_buffer = (uint8_t*)mapped_buffer - vel->src_offset;
+
          translate->set_buffer(translate, vel->vertex_buffer_index,
                                mapped_buffer,
-                               vbuffer->stride);
-         translate->run(translate, 0, 1,
+                               vbuffer->stride, ~0);
+         translate->run(translate, 0, 1, 0,
                         svga->curr.zero_stride_constants);
 
-         pipe_buffer_unmap(svga->pipe.screen,
-                           vbuffer->buffer);
+         pipe_buffer_unmap(&svga->pipe, transfer);
+
          translate->release(translate);
       }
    }

@@ -50,19 +50,18 @@ struct svga_arl_consts {
 
 struct svga_shader_emitter
 {
-   boolean use_sm30;
-   
    unsigned size;
    char *buf;
    char *ptr;
 
-   union svga_compile_key key;
+   struct svga_compile_key key;
    struct tgsi_shader_info info;
    int unit;
 
    int imm_start;
 
-   int nr_hw_const;
+   int nr_hw_float_const;
+   int nr_hw_int_const;
    int nr_hw_temp;
    
    int insn_offset;
@@ -78,6 +77,7 @@ struct svga_shader_emitter
    int internal_frontface_idx;
 
    int ps30_input_count;
+   int vs30_output_count;
 
    int dynamic_branching_level;
 
@@ -89,8 +89,10 @@ struct svga_shader_emitter
    boolean created_loop_const;
    int loop_const_idx;
 
-   boolean created_sincos_consts;
-   int sincos_consts_idx;
+   unsigned inverted_texcoords;  /**< bitmask of which texcoords are flipped */
+   struct src_register ps_true_texcoord[PIPE_MAX_ATTRIBS];
+   struct src_register ps_inverted_texcoord[PIPE_MAX_ATTRIBS];
+   unsigned ps_inverted_texcoord_input[PIPE_MAX_ATTRIBS];
 
    unsigned label[32];
    unsigned nr_labels;
@@ -98,9 +100,22 @@ struct svga_shader_emitter
    struct src_register input_map[PIPE_MAX_ATTRIBS];
    SVGA3dShaderDestToken output_map[PIPE_MAX_ATTRIBS];
 
+   boolean ps_reads_pos;
+   boolean emitted_depth_fog;
+   struct src_register ps_true_pos;
+   struct src_register ps_depth_pos;
+   SVGA3dShaderDestToken ps_temp_pos;
+
+   /* shared input for depth and fog */
+   struct src_register ps_depth_fog;
+
    struct src_register imm_0055;
    SVGA3dShaderDestToken temp_pos;
    SVGA3dShaderDestToken true_pos;
+   SVGA3dShaderDestToken depth_pos;
+
+   /* shared output for depth and fog */
+   SVGA3dShaderDestToken vs_depth_fog;
 
    SVGA3dShaderDestToken temp_col[PIPE_MAX_COLOR_BUFS];
    SVGA3dShaderDestToken true_col[PIPE_MAX_COLOR_BUFS];
@@ -126,9 +141,6 @@ boolean svga_shader_emit_opcode( struct svga_shader_emitter *emit,
 
 boolean svga_shader_emit_instructions( struct svga_shader_emitter *emit,
                                        const struct tgsi_token *tokens );
-
-boolean svga_translate_decl_sm20( struct svga_shader_emitter *emit,
-                               const struct tgsi_full_declaration *decl );
 
 boolean svga_translate_decl_sm30( struct svga_shader_emitter *emit,
                                const struct tgsi_full_declaration *decl );
@@ -250,6 +262,10 @@ dst_register( unsigned file,
 {
    SVGA3dShaderDestToken dest;
 
+   /* check values against bitfield sizes */
+   assert(number < (1 << 11));
+   assert(file <= SVGA3DREG_PREDICATE);
+
    dest.value = 0;
    dest.num = number;
    dest.type_upper = file >> 3;
@@ -278,6 +294,10 @@ static INLINE SVGA3dShaderSrcToken
 src_token( unsigned file, int number )
 {
    SVGA3dShaderSrcToken src;
+
+   /* check values against bitfield sizes */
+   assert(number < (1 << 11));
+   assert(file <= SVGA3DREG_PREDICATE);
 
    src.value = 0;
    src.num = number;
@@ -353,6 +373,7 @@ static INLINE ubyte svga_tgsi_sampler_type( struct svga_shader_emitter *emit,
    case PIPE_TEXTURE_1D:
       return SVGA3DSAMP_2D;
    case PIPE_TEXTURE_2D:
+   case PIPE_TEXTURE_RECT:
       return SVGA3DSAMP_2D;
    case PIPE_TEXTURE_3D:
       return SVGA3DSAMP_VOLUME;

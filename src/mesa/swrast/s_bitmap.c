@@ -30,8 +30,10 @@
 
 #include "main/glheader.h"
 #include "main/bufferobj.h"
+#include "main/condrender.h"
 #include "main/image.h"
 #include "main/macros.h"
+#include "main/pbo.h"
 
 #include "s_context.h"
 #include "s_span.h"
@@ -44,7 +46,7 @@
  * All parameter error checking will have been done before this is called.
  */
 void
-_swrast_Bitmap( GLcontext *ctx, GLint px, GLint py,
+_swrast_Bitmap( struct gl_context *ctx, GLint px, GLint py,
 		GLsizei width, GLsizei height,
 		const struct gl_pixelstore_attrib *unpack,
 		const GLubyte *bitmap )
@@ -54,6 +56,9 @@ _swrast_Bitmap( GLcontext *ctx, GLint px, GLint py,
    SWspan span;
 
    ASSERT(ctx->RenderMode == GL_RENDER);
+
+   if (!_mesa_check_conditional_render(ctx))
+      return; /* don't draw */
 
    bitmap = (const GLubyte *) _mesa_map_pbo_source(ctx, unpack, bitmap);
    if (!bitmap)
@@ -121,10 +126,7 @@ _swrast_Bitmap( GLcontext *ctx, GLint px, GLint py,
       if (count + width >= MAX_WIDTH || row + 1 == height) {
          /* flush the span */
          span.end = count;
-         if (ctx->Visual.rgbMode)
-            _swrast_write_rgba_span(ctx, &span);
-         else
-            _swrast_write_index_span(ctx, &span);
+         _swrast_write_rgba_span(ctx, &span);
          span.end = 0;
          count = 0;
       }
@@ -143,7 +145,7 @@ _swrast_Bitmap( GLcontext *ctx, GLint px, GLint py,
  * draw or skip.
  */
 void
-_swrast_Bitmap( GLcontext *ctx, GLint px, GLint py,
+_swrast_Bitmap( struct gl_context *ctx, GLint px, GLint py,
 		GLsizei width, GLsizei height,
 		const struct gl_pixelstore_attrib *unpack,
 		const GLubyte *bitmap )
@@ -188,10 +190,7 @@ _swrast_Bitmap( GLcontext *ctx, GLint px, GLint py,
             }
          }
 
-         if (ctx->Visual.rgbMode)
-            _swrast_write_rgba_span(ctx, &span);
-         else
-	    _swrast_write_index_span(ctx, &span);
+         _swrast_write_rgba_span(ctx, &span);
 
          /* get ready for next row */
          if (mask != 1)
@@ -211,10 +210,7 @@ _swrast_Bitmap( GLcontext *ctx, GLint px, GLint py,
             }
          }
 
-         if (ctx->Visual.rgbMode)
-            _swrast_write_rgba_span(ctx, &span);
-         else
-            _swrast_write_index_span(ctx, &span);
+         _swrast_write_rgba_span(ctx, &span);
 
          /* get ready for next row */
          if (mask != 128)

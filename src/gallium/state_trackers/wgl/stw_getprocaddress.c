@@ -50,6 +50,13 @@ static const struct stw_extension_entry stw_extension_entries[] = {
    /* WGL_ARB_extensions_string */
    STW_EXTENSION_ENTRY( wglGetExtensionsStringARB ),
 
+   /* WGL_ARB_pbuffer */
+   STW_EXTENSION_ENTRY( wglCreatePbufferARB ),
+   STW_EXTENSION_ENTRY( wglGetPbufferDCARB ),
+   STW_EXTENSION_ENTRY( wglReleasePbufferDCARB ),
+   STW_EXTENSION_ENTRY( wglDestroyPbufferARB ),
+   STW_EXTENSION_ENTRY( wglQueryPbufferARB ),
+
    /* WGL_ARB_pixel_format */
    STW_EXTENSION_ENTRY( wglChoosePixelFormatARB ),
    STW_EXTENSION_ENTRY( wglGetPixelFormatAttribfvARB ),
@@ -65,6 +72,9 @@ static const struct stw_extension_entry stw_extension_entries[] = {
    /* WGL_EXT_gallium ? */
    STW_EXTENSION_ENTRY( wglGetGalliumScreenMESA ),
    STW_EXTENSION_ENTRY( wglCreateGalliumContextMESA ),
+
+   /* WGL_ARB_create_context */
+   STW_EXTENSION_ENTRY( wglCreateContextAttribsARB ),
 
    { NULL, NULL }
 };

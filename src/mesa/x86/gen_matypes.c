@@ -32,6 +32,11 @@
  * Mesa, including lighting, clipping, texture image conversion etc.
  */
 
+#ifndef __STDC_FORMAT_MACROS
+#define __STDC_FORMAT_MACROS
+#endif
+#include <inttypes.h>
+
 #include "main/glheader.h"
 #include "main/mtypes.h"
 #include "tnl/t_context.h"
@@ -68,7 +73,7 @@ do {									\
    printf( "#define %s\t%lu\n", s, (unsigned long) sizeof(t) );
 
 #define DEFINE( s, d )							\
-   printf( "#define %s\t0x%x\n", s, d );
+   printf( "#define %s\t0x%" PRIx64 "\n", s, (uint64_t) d );
 
 
 
@@ -84,22 +89,22 @@ int main( int argc, char **argv )
    printf( "\n" );
 
 
-   /* GLcontext offsets:
+   /* struct gl_context offsets:
     */
-   OFFSET_HEADER( "GLcontext" );
+   OFFSET_HEADER( "struct gl_context" );
 
-   OFFSET( "CTX_DRIVER_CTX              ", GLcontext, DriverCtx );
+   OFFSET( "CTX_DRIVER_CTX              ", struct gl_context, DriverCtx );
    printf( "\n" );
-   OFFSET( "CTX_LIGHT_ENABLED           ", GLcontext, Light.Enabled );
-   OFFSET( "CTX_LIGHT_SHADE_MODEL       ", GLcontext, Light.ShadeModel );
-   OFFSET( "CTX_LIGHT_COLOR_MAT_FACE    ", GLcontext, Light.ColorMaterialFace );
-   OFFSET( "CTX_LIGHT_COLOR_MAT_MODE    ", GLcontext, Light.ColorMaterialMode );
-   OFFSET( "CTX_LIGHT_COLOR_MAT_MASK    ", GLcontext, Light.ColorMaterialBitmask );
-   OFFSET( "CTX_LIGHT_COLOR_MAT_ENABLED ", GLcontext, Light.ColorMaterialEnabled );
-   OFFSET( "CTX_LIGHT_ENABLED_LIST      ", GLcontext, Light.EnabledList );
-   OFFSET( "CTX_LIGHT_NEED_VERTS        ", GLcontext, Light._NeedVertices );
-   OFFSET( "CTX_LIGHT_FLAGS             ", GLcontext, Light._Flags );
-   OFFSET( "CTX_LIGHT_BASE_COLOR        ", GLcontext, Light._BaseColor );
+   OFFSET( "CTX_LIGHT_ENABLED           ", struct gl_context, Light.Enabled );
+   OFFSET( "CTX_LIGHT_SHADE_MODEL       ", struct gl_context, Light.ShadeModel );
+   OFFSET( "CTX_LIGHT_COLOR_MAT_FACE    ", struct gl_context, Light.ColorMaterialFace );
+   OFFSET( "CTX_LIGHT_COLOR_MAT_MODE    ", struct gl_context, Light.ColorMaterialMode );
+   OFFSET( "CTX_LIGHT_COLOR_MAT_MASK    ", struct gl_context, Light.ColorMaterialBitmask );
+   OFFSET( "CTX_LIGHT_COLOR_MAT_ENABLED ", struct gl_context, Light.ColorMaterialEnabled );
+   OFFSET( "CTX_LIGHT_ENABLED_LIST      ", struct gl_context, Light.EnabledList );
+   OFFSET( "CTX_LIGHT_NEED_VERTS        ", struct gl_context, Light._NeedVertices );
+   OFFSET( "CTX_LIGHT_FLAGS             ", struct gl_context, Light._Flags );
+   OFFSET( "CTX_LIGHT_BASE_COLOR        ", struct gl_context, Light._BaseColor );
 
 
    /* struct vertex_buffer offsets:
@@ -110,22 +115,22 @@ int main( int argc, char **argv )
    OFFSET( "VB_COUNT               ", struct vertex_buffer, Count );
    printf( "\n" );
    OFFSET( "VB_ELTS                ", struct vertex_buffer, Elts );
-   OFFSET( "VB_OBJ_PTR             ", struct vertex_buffer, ObjPtr );
+   OFFSET( "VB_OBJ_PTR             ", struct vertex_buffer, AttribPtr[_TNL_ATTRIB_POS] );
    OFFSET( "VB_EYE_PTR             ", struct vertex_buffer, EyePtr );
    OFFSET( "VB_CLIP_PTR            ", struct vertex_buffer, ClipPtr );
    OFFSET( "VB_PROJ_CLIP_PTR       ", struct vertex_buffer, NdcPtr );
    OFFSET( "VB_CLIP_OR_MASK        ", struct vertex_buffer, ClipOrMask );
    OFFSET( "VB_CLIP_MASK           ", struct vertex_buffer, ClipMask );
-   OFFSET( "VB_NORMAL_PTR          ", struct vertex_buffer, NormalPtr );
+   OFFSET( "VB_NORMAL_PTR          ", struct vertex_buffer, AttribPtr[_TNL_ATTRIB_NORMAL] );
    OFFSET( "VB_EDGE_FLAG           ", struct vertex_buffer, EdgeFlag );
-   OFFSET( "VB_TEX0_COORD_PTR      ", struct vertex_buffer, TexCoordPtr[0] );
-   OFFSET( "VB_TEX1_COORD_PTR      ", struct vertex_buffer, TexCoordPtr[1] );
-   OFFSET( "VB_TEX2_COORD_PTR      ", struct vertex_buffer, TexCoordPtr[2] );
-   OFFSET( "VB_TEX3_COORD_PTR      ", struct vertex_buffer, TexCoordPtr[3] );
-   OFFSET( "VB_INDEX_PTR           ", struct vertex_buffer, IndexPtr );
-   OFFSET( "VB_COLOR_PTR           ", struct vertex_buffer, ColorPtr );
-   OFFSET( "VB_SECONDARY_COLOR_PTR ", struct vertex_buffer, SecondaryColorPtr );
-   OFFSET( "VB_FOG_COORD_PTR       ", struct vertex_buffer, FogCoordPtr );
+   OFFSET( "VB_TEX0_COORD_PTR      ", struct vertex_buffer, AttribPtr[_TNL_ATTRIB_TEX0] );
+   OFFSET( "VB_TEX1_COORD_PTR      ", struct vertex_buffer, AttribPtr[_TNL_ATTRIB_TEX1] );
+   OFFSET( "VB_TEX2_COORD_PTR      ", struct vertex_buffer, AttribPtr[_TNL_ATTRIB_TEX2] );
+   OFFSET( "VB_TEX3_COORD_PTR      ", struct vertex_buffer, AttribPtr[_TNL_ATTRIB_TEX3] );
+   OFFSET( "VB_INDEX_PTR           ", struct vertex_buffer, AttribPtr[_TNL_ATTRIB_COLOR_INDEX] );
+   OFFSET( "VB_COLOR_PTR           ", struct vertex_buffer, AttribPtr[_TNL_ATTRIB_COLOR0] );
+   OFFSET( "VB_SECONDARY_COLOR_PTR ", struct vertex_buffer, AttribPtr[_TNL_ATTRIB_COLOR1] );
+   OFFSET( "VB_FOG_COORD_PTR       ", struct vertex_buffer, AttribPtr[_TNL_ATTRIB_FOG] );
    OFFSET( "VB_PRIMITIVE           ", struct vertex_buffer, Primitive );
    printf( "\n" );
 

@@ -28,7 +28,6 @@
 
 #include "main/glheader.h"
 #include "main/colormac.h"
-#include "main/context.h"
 #include "main/macros.h"
 #include "main/imports.h"
 #include "main/mtypes.h"
@@ -59,7 +58,7 @@ struct vertex_stage_data {
  * t_render_clip.h.
  */
 #define USER_CLIPTEST(NAME, SZ)					\
-static void NAME( GLcontext *ctx,				\
+static void NAME( struct gl_context *ctx,				\
 		  GLvector4f *clip,				\
 		  GLubyte *clipmask,				\
 		  GLubyte *clipormask,				\
@@ -106,7 +105,7 @@ USER_CLIPTEST(userclip2, 2)
 USER_CLIPTEST(userclip3, 3)
 USER_CLIPTEST(userclip4, 4)
 
-static void (*(usercliptab[5]))( GLcontext *,
+static void (*(usercliptab[5]))( struct gl_context *,
 				 GLvector4f *, GLubyte *,
 				 GLubyte *, GLubyte * ) =
 {
@@ -119,7 +118,7 @@ static void (*(usercliptab[5]))( GLcontext *,
 
 
 void
-tnl_clip_prepare(GLcontext *ctx)
+tnl_clip_prepare(struct gl_context *ctx)
 {
    /* Neither the x86 nor sparc asm cliptest functions have been updated
     * for ARB_depth_clamp, so force the C paths.
@@ -135,7 +134,7 @@ tnl_clip_prepare(GLcontext *ctx)
 
 
 
-static GLboolean run_vertex_stage( GLcontext *ctx,
+static GLboolean run_vertex_stage( struct gl_context *ctx,
 				   struct tnl_pipeline_stage *stage )
 {
    struct vertex_stage_data *store = (struct vertex_stage_data *)stage->privatePtr;
@@ -152,16 +151,16 @@ static GLboolean run_vertex_stage( GLcontext *ctx,
        * Use combined ModelProject to avoid some depth artifacts
        */
       if (ctx->ModelviewMatrixStack.Top->type == MATRIX_IDENTITY)
-	 VB->EyePtr = VB->ObjPtr;
+	 VB->EyePtr = VB->AttribPtr[_TNL_ATTRIB_POS];
       else
 	 VB->EyePtr = TransformRaw( &store->eye,
 				    ctx->ModelviewMatrixStack.Top,
-				    VB->ObjPtr);
+				    VB->AttribPtr[_TNL_ATTRIB_POS]);
    }
 
    VB->ClipPtr = TransformRaw( &store->clip,
 			       &ctx->_ModelProjectMatrix,
-			       VB->ObjPtr );
+			       VB->AttribPtr[_TNL_ATTRIB_POS] );
 
    /* Drivers expect this to be clean to element 4...
     */
@@ -230,7 +229,7 @@ static GLboolean run_vertex_stage( GLcontext *ctx,
 }
 
 
-static GLboolean init_vertex_stage( GLcontext *ctx,
+static GLboolean init_vertex_stage( struct gl_context *ctx,
 				    struct tnl_pipeline_stage *stage )
 {
    struct vertex_buffer *VB = &TNL_CONTEXT(ctx)->vb;
@@ -246,7 +245,7 @@ static GLboolean init_vertex_stage( GLcontext *ctx,
    _mesa_vector4f_alloc( &store->clip, 0, size, 32 );
    _mesa_vector4f_alloc( &store->proj, 0, size, 32 );
 
-   store->clipmask = (GLubyte *) ALIGN_MALLOC(sizeof(GLubyte)*size, 32 );
+   store->clipmask = (GLubyte *) _mesa_align_malloc(sizeof(GLubyte)*size, 32 );
 
    if (!store->clipmask ||
        !store->eye.data ||
@@ -265,7 +264,7 @@ static void dtr( struct tnl_pipeline_stage *stage )
       _mesa_vector4f_free( &store->eye );
       _mesa_vector4f_free( &store->clip );
       _mesa_vector4f_free( &store->proj );
-      ALIGN_FREE( store->clipmask );
+      _mesa_align_free( store->clipmask );
       FREE(store);
       stage->privatePtr = NULL;
       stage->run = init_vertex_stage;

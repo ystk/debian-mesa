@@ -28,27 +28,28 @@
 #ifndef BRW_DRAW_H
 #define BRW_DRAW_H
 
-#include "main/mtypes.h"		/* for GLcontext... */
+#include "main/mtypes.h"		/* for struct gl_context... */
 #include "vbo/vbo.h"
 
 struct brw_context;
 
 
-void brw_draw_prims( GLcontext *ctx,
+void brw_draw_prims( struct gl_context *ctx,
 		     const struct gl_client_array *arrays[],
 		     const struct _mesa_prim *prims,
 		     GLuint nr_prims,
 		     const struct _mesa_index_buffer *ib,
 		     GLboolean index_bounds_valid,
 		     GLuint min_index,
-		     GLuint max_index );
+		     GLuint max_index,
+		     struct gl_transform_feedback_object *tfb_vertcount );
 
 void brw_draw_init( struct brw_context *brw );
 void brw_draw_destroy( struct brw_context *brw );
 
 /* brw_draw_current.c
  */
-void brw_init_current_values(GLcontext *ctx,
+void brw_init_current_values(struct gl_context *ctx,
 			     struct gl_client_array *arrays);
 
 #endif

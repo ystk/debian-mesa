@@ -34,7 +34,7 @@
 #define BRW_SF_H
 
 
-#include "shader/program.h"
+#include "program/program.h"
 #include "brw_context.h"
 #include "brw_eu.h"
 
@@ -46,18 +46,15 @@
 
 struct brw_sf_prog_key {
    GLbitfield64 attrs;
+   uint8_t point_sprite_coord_replace;
    GLuint primitive:2;
    GLuint do_twoside_color:1;
    GLuint do_flat_shading:1;
    GLuint frontface_ccw:1;
    GLuint do_point_sprite:1;
-   GLuint linear_color:1;  /**< linear interp vs. perspective interp */
+   GLuint do_point_coord:1;
    GLuint sprite_origin_lower_left:1;
-   GLuint pad:24;
-};
-
-struct brw_sf_point_tex {
-   GLboolean CoordReplace;	
+   GLuint userclip_active:1;
 };
 
 struct brw_sf_compile {
@@ -93,21 +90,19 @@ struct brw_sf_compile {
    struct brw_reg m3C0;
 
    GLuint nr_verts;
-   GLuint nr_attrs;
    GLuint nr_attr_regs;
-   GLuint nr_setup_attrs;
    GLuint nr_setup_regs;
+   int urb_entry_read_offset;
 
-   GLubyte attr_to_idx[VERT_RESULT_MAX];   
-   GLubyte idx_to_attr[VERT_RESULT_MAX];   
-   struct brw_sf_point_tex point_attrs[VERT_RESULT_MAX];
+   struct brw_vue_map vue_map;
 };
 
  
-void brw_emit_tri_setup( struct brw_sf_compile *c, GLboolean allocate );
-void brw_emit_line_setup( struct brw_sf_compile *c, GLboolean allocate );
-void brw_emit_point_setup( struct brw_sf_compile *c, GLboolean allocate );
-void brw_emit_point_sprite_setup( struct brw_sf_compile *c, GLboolean allocate );
+void brw_emit_tri_setup( struct brw_sf_compile *c, bool allocate );
+void brw_emit_line_setup( struct brw_sf_compile *c, bool allocate );
+void brw_emit_point_setup( struct brw_sf_compile *c, bool allocate );
+void brw_emit_point_sprite_setup( struct brw_sf_compile *c, bool allocate );
 void brw_emit_anyprim_setup( struct brw_sf_compile *c );
+int brw_sf_compute_urb_entry_read_offset(struct intel_context *intel);
 
 #endif

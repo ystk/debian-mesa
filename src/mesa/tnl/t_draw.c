@@ -26,6 +26,8 @@
  */
 
 #include "main/glheader.h"
+#include "main/bufferobj.h"
+#include "main/condrender.h"
 #include "main/context.h"
 #include "main/imports.h"
 #include "main/mtypes.h"
@@ -37,22 +39,22 @@
 
 
 
-static GLubyte *get_space(GLcontext *ctx, GLuint bytes)
+static GLubyte *get_space(struct gl_context *ctx, GLuint bytes)
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
-   GLubyte *space = _mesa_malloc(bytes);
+   GLubyte *space = malloc(bytes);
    
    tnl->block[tnl->nr_blocks++] = space;
    return space;
 }
 
 
-static void free_space(GLcontext *ctx)
+static void free_space(struct gl_context *ctx)
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    GLuint i;
    for (i = 0; i < tnl->nr_blocks; i++)
-      _mesa_free(tnl->block[i]);
+      free(tnl->block[i]);
    tnl->nr_blocks = 0;
 }
 
@@ -107,11 +109,64 @@ convert_bgra_to_float(const struct gl_client_array *input,
    }
 }
 
+static void
+convert_half_to_float(const struct gl_client_array *input,
+		      const GLubyte *ptr, GLfloat *fptr,
+		      GLuint count, GLuint sz)
+{
+   GLuint i, j;
+
+   for (i = 0; i < count; i++) {
+      GLhalfARB *in = (GLhalfARB *)ptr;
+
+      for (j = 0; j < sz; j++) {
+	 *fptr++ = _mesa_half_to_float(in[j]);
+      }
+      ptr += input->StrideB;
+   }
+}
+
+/**
+ * \brief Convert fixed-point to floating-point.
+ *
+ * In OpenGL, a fixed-point number is a "signed 2's complement 16.16 scaled
+ * integer" (Table 2.2 of the OpenGL ES 2.0 spec).
+ *
+ * If the buffer has the \c normalized flag set, the formula
+ *     \code normalize(x) := (2*x + 1) / (2^16 - 1) \endcode
+ * is used to map the fixed-point numbers into the range [-1, 1].
+ */
+static void
+convert_fixed_to_float(const struct gl_client_array *input,
+                       const GLubyte *ptr, GLfloat *fptr,
+                       GLuint count)
+{
+   GLuint i, j;
+   const GLint size = input->Size;
+
+   if (input->Normalized) {
+      for (i = 0; i < count; ++i) {
+         const GLfixed *in = (GLfixed *) ptr;
+         for (j = 0; j < size; ++j) {
+            *fptr++ = (GLfloat) (2 * in[j] + 1) / (GLfloat) ((1 << 16) - 1);
+         }
+         ptr += input->StrideB;
+      }
+   } else {
+      for (i = 0; i < count; ++i) {
+         const GLfixed *in = (GLfixed *) ptr;
+         for (j = 0; j < size; ++j) {
+            *fptr++ = in[j] / (GLfloat) (1 << 16);
+         }
+         ptr += input->StrideB;
+      }
+   }
+}
 
 /* Adjust pointer to point at first requested element, convert to
  * floating point, populate VB->AttribPtr[].
  */
-static void _tnl_import_array( GLcontext *ctx,
+static void _tnl_import_array( struct gl_context *ctx,
 			       GLuint attrib,
 			       GLuint count,
 			       const struct gl_client_array *input,
@@ -154,6 +209,12 @@ static void _tnl_import_array( GLcontext *ctx,
       case GL_DOUBLE: 
 	 CONVERT(GLdouble, (GLfloat)); 
 	 break;
+      case GL_HALF_FLOAT:
+	 convert_half_to_float(input, ptr, fptr, count, sz);
+	 break;
+      case GL_FIXED:
+         convert_fixed_to_float(input, ptr, fptr, count);
+         break;
       default:
 	 assert(0);
 	 break;
@@ -182,7 +243,7 @@ static void _tnl_import_array( GLcontext *ctx,
 #define CLIPVERTS  ((6 + MAX_CLIP_PLANES) * 2)
 
 
-static GLboolean *_tnl_import_edgeflag( GLcontext *ctx,
+static GLboolean *_tnl_import_edgeflag( struct gl_context *ctx,
 					const GLvector4f *input,
 					GLuint count)
 {
@@ -201,7 +262,7 @@ static GLboolean *_tnl_import_edgeflag( GLcontext *ctx,
 }
 
 
-static void bind_inputs( GLcontext *ctx, 
+static void bind_inputs( struct gl_context *ctx, 
 			 const struct gl_client_array *inputs[],
 			 GLint count,
 			 struct gl_buffer_object **bo,
@@ -220,10 +281,9 @@ static void bind_inputs( GLcontext *ctx,
 	 if (!inputs[i]->BufferObj->Pointer) {
 	    bo[*nr_bo] = inputs[i]->BufferObj;
 	    (*nr_bo)++;
-	    ctx->Driver.MapBuffer(ctx, 
-				  GL_ARRAY_BUFFER,
-				  GL_READ_ONLY_ARB,
-				  inputs[i]->BufferObj);
+	    ctx->Driver.MapBufferRange(ctx, 0, inputs[i]->BufferObj->Size,
+				       GL_MAP_READ_BIT,
+				       inputs[i]->BufferObj);
 	    
 	    assert(inputs[i]->BufferObj->Pointer);
 	 }
@@ -247,22 +307,10 @@ static void bind_inputs( GLcontext *ctx,
     */
    VB->Count = count;
 
-
-   /* Legacy pointers -- remove one day.
-    */
-   VB->ObjPtr = VB->AttribPtr[_TNL_ATTRIB_POS];
-   VB->NormalPtr = VB->AttribPtr[_TNL_ATTRIB_NORMAL];
-   VB->ColorPtr[0] = VB->AttribPtr[_TNL_ATTRIB_COLOR0];
-   VB->ColorPtr[1] = NULL;
-   VB->IndexPtr[0] = VB->AttribPtr[_TNL_ATTRIB_COLOR_INDEX];
-   VB->IndexPtr[1] = NULL;
-   VB->SecondaryColorPtr[0] = VB->AttribPtr[_TNL_ATTRIB_COLOR1];
-   VB->SecondaryColorPtr[1] = NULL;
-   VB->FogCoordPtr = VB->AttribPtr[_TNL_ATTRIB_FOG];
-
-   for (i = 0; i < ctx->Const.MaxTextureCoordUnits; i++) {
-      VB->TexCoordPtr[i] = VB->AttribPtr[_TNL_ATTRIB_TEX0 + i];
-   }
+   /* These should perhaps be part of _TNL_ATTRIB_* */
+   VB->BackfaceColorPtr = NULL;
+   VB->BackfaceIndexPtr = NULL;
+   VB->BackfaceSecondaryColorPtr = NULL;
 
    /* Clipping and drawing code still requires this to be a packed
     * array of ubytes which can be written into.  TODO: Fix and
@@ -284,7 +332,7 @@ static void bind_inputs( GLcontext *ctx,
 
 /* Translate indices to GLuints and store in VB->Elts.
  */
-static void bind_indices( GLcontext *ctx,
+static void bind_indices( struct gl_context *ctx,
 			  const struct _mesa_index_buffer *ib,
 			  struct gl_buffer_object **bo,
 			  GLuint *nr_bo)
@@ -292,25 +340,25 @@ static void bind_indices( GLcontext *ctx,
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    struct vertex_buffer *VB = &tnl->vb;
    GLuint i;
-   void *ptr;
+   const void *ptr;
 
    if (!ib) {
       VB->Elts = NULL;
       return;
    }
 
-   if (ib->obj->Name && !ib->obj->Pointer) {
+   if (_mesa_is_bufferobj(ib->obj) && !_mesa_bufferobj_mapped(ib->obj)) {
+      /* if the buffer object isn't mapped yet, map it now */
       bo[*nr_bo] = ib->obj;
       (*nr_bo)++;
-      ctx->Driver.MapBuffer(ctx, 
-			    GL_ELEMENT_ARRAY_BUFFER,
-			    GL_READ_ONLY_ARB,
-			    ib->obj);
-
+      ptr = ctx->Driver.MapBufferRange(ctx, (GLsizeiptr) ib->ptr,
+                                       ib->count * vbo_sizeof_ib_type(ib->type),
+				       GL_MAP_READ_BIT, ib->obj);
       assert(ib->obj->Pointer);
+   } else {
+      /* user-space elements, or buffer already mapped */
+      ptr = ADD_POINTERS(ib->obj->Pointer, ib->ptr);
    }
-
-   ptr = ADD_POINTERS(ib->obj->Pointer, ib->ptr);
 
    if (ib->type == GL_UNSIGNED_INT && VB->Primitive[0].basevertex == 0) {
       VB->Elts = (GLuint *) ptr;
@@ -337,7 +385,7 @@ static void bind_indices( GLcontext *ctx,
    }
 }
 
-static void bind_prims( GLcontext *ctx,
+static void bind_prims( struct gl_context *ctx,
 			const struct _mesa_prim *prim,
 			GLuint nr_prims )
 {
@@ -348,27 +396,26 @@ static void bind_prims( GLcontext *ctx,
    VB->PrimitiveCount = nr_prims;
 }
 
-static void unmap_vbos( GLcontext *ctx,
+static void unmap_vbos( struct gl_context *ctx,
 			struct gl_buffer_object **bo,
 			GLuint nr_bo )
 {
    GLuint i;
    for (i = 0; i < nr_bo; i++) { 
-      ctx->Driver.UnmapBuffer(ctx, 
-			      0, /* target -- I don't see why this would be needed */
-			      bo[i]);
+      ctx->Driver.UnmapBuffer(ctx, bo[i]);
    }
 }
 
 
-void _tnl_vbo_draw_prims(GLcontext *ctx,
+void _tnl_vbo_draw_prims(struct gl_context *ctx,
 			 const struct gl_client_array *arrays[],
 			 const struct _mesa_prim *prim,
 			 GLuint nr_prims,
 			 const struct _mesa_index_buffer *ib,
 			 GLboolean index_bounds_valid,
 			 GLuint min_index,
-			 GLuint max_index)
+			 GLuint max_index,
+			 struct gl_transform_feedback_object *tfb_vertcount)
 {
    if (!index_bounds_valid)
       vbo_get_minmax_index(ctx, prim, ib, &min_index, &max_index);
@@ -380,7 +427,7 @@ void _tnl_vbo_draw_prims(GLcontext *ctx,
  * module.  In a regular swtnl driver, this can be plugged straight
  * into the vbo->Driver.DrawPrims() callback.
  */
-void _tnl_draw_prims( GLcontext *ctx,
+void _tnl_draw_prims( struct gl_context *ctx,
 		      const struct gl_client_array *arrays[],
 		      const struct _mesa_prim *prim,
 		      GLuint nr_prims,
@@ -391,23 +438,26 @@ void _tnl_draw_prims( GLcontext *ctx,
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    const GLuint TEST_SPLIT = 0;
    const GLint max = TEST_SPLIT ? 8 : tnl->vb.Size - MAX_CLIPPED_VERTICES;
-   GLuint max_basevertex = prim->basevertex;
+   GLint max_basevertex = prim->basevertex;
    GLuint i;
 
    /* Mesa core state should have been validated already */
    assert(ctx->NewState == 0x0);
+
+   if (!_mesa_check_conditional_render(ctx))
+      return; /* don't draw */
 
    for (i = 1; i < nr_prims; i++)
       max_basevertex = MAX2(max_basevertex, prim[i].basevertex);
 
    if (0)
    {
-      _mesa_printf("%s %d..%d\n", __FUNCTION__, min_index, max_index);
+      printf("%s %d..%d\n", __FUNCTION__, min_index, max_index);
       for (i = 0; i < nr_prims; i++)
-	 _mesa_printf("prim %d: %s start %d count %d\n", i, 
-		      _mesa_lookup_enum_by_nr(prim[i].mode),
-		      prim[i].start,
-		      prim[i].count);
+	 printf("prim %d: %s start %d count %d\n", i, 
+		_mesa_lookup_enum_by_nr(prim[i].mode),
+		prim[i].start,
+		prim[i].count);
    }
 
    if (min_index) {
@@ -418,7 +468,7 @@ void _tnl_draw_prims( GLcontext *ctx,
 			_tnl_vbo_draw_prims );
       return;
    }
-   else if (max_index + max_basevertex > max) {
+   else if ((GLint)max_index + max_basevertex > max) {
       /* The software TNL pipeline has a fixed amount of storage for
        * vertices and it is necessary to split incoming drawing commands
        * if they exceed that limit.
@@ -442,6 +492,7 @@ void _tnl_draw_prims( GLcontext *ctx,
        */
       struct gl_buffer_object *bo[VERT_ATTRIB_MAX + 1];
       GLuint nr_bo = 0;
+      GLuint inst;
 
       for (i = 0; i < nr_prims;) {
 	 GLuint this_nr_prims;
@@ -456,18 +507,24 @@ void _tnl_draw_prims( GLcontext *ctx,
 	       break;
 	 }
 
+         assert(prim[i].num_instances > 0);
+
 	 /* Binding inputs may imply mapping some vertex buffer objects.
 	  * They will need to be unmapped below.
 	  */
-	 bind_prims(ctx, &prim[i], this_nr_prims);
-	 bind_inputs(ctx, arrays, max_index + prim[i].basevertex + 1,
-		     bo, &nr_bo);
-	 bind_indices(ctx, ib, bo, &nr_bo);
+         for (inst = 0; inst < prim[i].num_instances; inst++) {
 
-	 TNL_CONTEXT(ctx)->Driver.RunPipeline(ctx);
+            bind_prims(ctx, &prim[i], this_nr_prims);
+            bind_inputs(ctx, arrays, max_index + prim[i].basevertex + 1,
+                        bo, &nr_bo);
+            bind_indices(ctx, ib, bo, &nr_bo);
 
-	 unmap_vbos(ctx, bo, nr_bo);
-	 free_space(ctx);
+            tnl->CurInstance = inst;
+            TNL_CONTEXT(ctx)->Driver.RunPipeline(ctx);
+
+            unmap_vbos(ctx, bo, nr_bo);
+            free_space(ctx);
+         }
 
 	 i += this_nr_prims;
       }

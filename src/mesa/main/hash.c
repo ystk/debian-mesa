@@ -108,13 +108,13 @@ _mesa_DeleteHashTable(struct _mesa_HashTable *table)
             _mesa_problem(NULL,
                           "In _mesa_DeleteHashTable, found non-freed data");
          }
-	 _mesa_free(entry);
+	 free(entry);
 	 entry = next;
       }
    }
    _glthread_DESTROY_MUTEX(table->Mutex);
    _glthread_DESTROY_MUTEX(table->WalkMutex);
-   _mesa_free(table);
+   free(table);
 }
 
 
@@ -123,7 +123,7 @@ _mesa_DeleteHashTable(struct _mesa_HashTable *table)
  * Lookup an entry in the hash table, without locking.
  * \sa _mesa_HashLookup
  */
-static INLINE void *
+static inline void *
 _mesa_HashLookup_unlocked(struct _mesa_HashTable *table, GLuint key)
 {
    GLuint pos;
@@ -257,7 +257,7 @@ _mesa_HashRemove(struct _mesa_HashTable *table, GLuint key)
          else {
             table->Table[pos] = entry->Next;
          }
-         _mesa_free(entry);
+         free(entry);
          _glthread_UNLOCK_MUTEX(table->Mutex);
 	 return;
       }
@@ -277,7 +277,7 @@ _mesa_HashRemove(struct _mesa_HashTable *table, GLuint key)
  * \param table  the hash table to delete
  * \param callback  the callback function
  * \param userData  arbitrary pointer to pass along to the callback
- *                  (this is typically a GLcontext pointer)
+ *                  (this is typically a struct gl_context pointer)
  */
 void
 _mesa_HashDeleteAll(struct _mesa_HashTable *table,
@@ -294,7 +294,7 @@ _mesa_HashDeleteAll(struct _mesa_HashTable *table,
       for (entry = table->Table[pos]; entry; entry = next) {
          callback(entry->Key, entry->Data, userData);
          next = entry->Next;
-         _mesa_free(entry);
+         free(entry);
       }
       table->Table[pos] = NULL;
    }
@@ -313,7 +313,7 @@ _mesa_HashDeleteAll(struct _mesa_HashTable *table,
  * \param table  the hash table to walk
  * \param callback  the callback function
  * \param userData  arbitrary pointer to pass along to the callback
- *                  (this is typically a GLcontext pointer)
+ *                  (this is typically a struct gl_context pointer)
  */
 void
 _mesa_HashWalk(const struct _mesa_HashTable *table,
@@ -478,6 +478,26 @@ _mesa_HashFindFreeKeyBlock(struct _mesa_HashTable *table, GLuint numKeys)
       return 0;
    }
 }
+
+
+/**
+ * Return the number of entries in the hash table.
+ */
+GLuint
+_mesa_HashNumEntries(const struct _mesa_HashTable *table)
+{
+   GLuint pos, count = 0;
+
+   for (pos = 0; pos < TABLE_SIZE; pos++) {
+      const struct HashEntry *entry;
+      for (entry = table->Table[pos]; entry; entry = entry->Next) {
+         count++;
+      }
+   }
+
+   return count;
+}
+
 
 
 #if 0 /* debug only */

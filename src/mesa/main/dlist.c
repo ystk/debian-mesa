@@ -32,43 +32,52 @@
 #include "glheader.h"
 #include "imports.h"
 #include "api_arrayelt.h"
+#include "api_exec.h"
 #include "api_loopback.h"
+#include "api_validate.h"
+#if FEATURE_ATI_fragment_shader
+#include "atifragshader.h"
+#endif
 #include "config.h"
 #include "mfeatures.h"
-#if FEATURE_ARB_vertex_buffer_object
 #include "bufferobj.h"
-#endif
 #include "arrayobj.h"
 #include "context.h"
 #include "dlist.h"
 #include "enums.h"
 #include "eval.h"
+#if FEATURE_EXT_framebuffer_object
+#include "fbobject.h"
+#endif
 #include "framebuffer.h"
 #include "glapi/glapi.h"
 #include "hash.h"
 #include "image.h"
 #include "light.h"
-#include "dlist.h"
 #include "macros.h"
+#include "pack.h"
+#include "pbo.h"
 #include "queryobj.h"
+#include "samplerobj.h"
+#include "shaderapi.h"
+#include "syncobj.h"
 #include "teximage.h"
+#include "texstorage.h"
 #include "mtypes.h"
 #include "varray.h"
 #if FEATURE_ARB_vertex_program || FEATURE_ARB_fragment_program
-#include "shader/arbprogram.h"
-#include "shader/program.h"
+#include "arbprogram.h"
 #endif
 #if FEATURE_NV_vertex_program || FEATURE_NV_fragment_program
-#include "shader/nvprogram.h"
-#include "shader/program.h"
+#include "nvprogram.h"
 #endif
-#if FEATURE_ATI_fragment_shader
-#include "shader/atifragshader.h"
+#if FEATURE_EXT_transform_feedback
+#include "transformfeedback.h"
 #endif
 
 #include "math/m_matrix.h"
 
-#include "glapi/dispatch.h"
+#include "main/dispatch.h"
 
 
 
@@ -79,9 +88,9 @@
 struct gl_list_instruction
 {
    GLuint Size;
-   void (*Execute)( GLcontext *ctx, void *data );
-   void (*Destroy)( GLcontext *ctx, void *data );
-   void (*Print)( GLcontext *ctx, void *data );
+   void (*Execute)( struct gl_context *ctx, void *data );
+   void (*Destroy)( struct gl_context *ctx, void *data );
+   void (*Print)( struct gl_context *ctx, void *data );
 };
 
 
@@ -189,6 +198,12 @@ typedef enum
    OPCODE_BLEND_EQUATION,
    OPCODE_BLEND_EQUATION_SEPARATE,
    OPCODE_BLEND_FUNC_SEPARATE,
+
+   OPCODE_BLEND_EQUATION_I,
+   OPCODE_BLEND_EQUATION_SEPARATE_I,
+   OPCODE_BLEND_FUNC_I,
+   OPCODE_BLEND_FUNC_SEPARATE_I,
+
    OPCODE_CALL_LIST,
    OPCODE_CALL_LIST_OFFSET,
    OPCODE_CLEAR,
@@ -197,8 +212,13 @@ typedef enum
    OPCODE_CLEAR_DEPTH,
    OPCODE_CLEAR_INDEX,
    OPCODE_CLEAR_STENCIL,
+   OPCODE_CLEAR_BUFFER_IV,
+   OPCODE_CLEAR_BUFFER_UIV,
+   OPCODE_CLEAR_BUFFER_FV,
+   OPCODE_CLEAR_BUFFER_FI,
    OPCODE_CLIP_PLANE,
    OPCODE_COLOR_MASK,
+   OPCODE_COLOR_MASK_INDEXED,
    OPCODE_COLOR_MATERIAL,
    OPCODE_COLOR_TABLE,
    OPCODE_COLOR_TABLE_PARAMETER_FV,
@@ -223,9 +243,11 @@ typedef enum
    OPCODE_DEPTH_MASK,
    OPCODE_DEPTH_RANGE,
    OPCODE_DISABLE,
+   OPCODE_DISABLE_INDEXED,
    OPCODE_DRAW_BUFFER,
    OPCODE_DRAW_PIXELS,
    OPCODE_ENABLE,
+   OPCODE_ENABLE_INDEXED,
    OPCODE_EVALMESH1,
    OPCODE_EVALMESH2,
    OPCODE_FOG,
@@ -365,6 +387,19 @@ typedef enum
    OPCODE_UNIFORM_MATRIX34,
    OPCODE_UNIFORM_MATRIX43,
 
+   /* OpenGL 3.0 */
+   OPCODE_UNIFORM_1UI,
+   OPCODE_UNIFORM_2UI,
+   OPCODE_UNIFORM_3UI,
+   OPCODE_UNIFORM_4UI,
+   OPCODE_UNIFORM_1UIV,
+   OPCODE_UNIFORM_2UIV,
+   OPCODE_UNIFORM_3UIV,
+   OPCODE_UNIFORM_4UIV,
+
+   /* GL_ARB_color_buffer_float */
+   OPCODE_CLAMP_COLOR,
+
    /* GL_EXT_framebuffer_blit */
    OPCODE_BLIT_FRAMEBUFFER,
 
@@ -390,6 +425,49 @@ typedef enum
 
    /* GL_EXT_provoking_vertex */
    OPCODE_PROVOKING_VERTEX,
+
+   /* GL_EXT_transform_feedback */
+   OPCODE_BEGIN_TRANSFORM_FEEDBACK,
+   OPCODE_END_TRANSFORM_FEEDBACK,
+   OPCODE_BIND_TRANSFORM_FEEDBACK,
+   OPCODE_PAUSE_TRANSFORM_FEEDBACK,
+   OPCODE_RESUME_TRANSFORM_FEEDBACK,
+   OPCODE_DRAW_TRANSFORM_FEEDBACK,
+
+   /* GL_EXT_texture_integer */
+   OPCODE_CLEARCOLOR_I,
+   OPCODE_CLEARCOLOR_UI,
+   OPCODE_TEXPARAMETER_I,
+   OPCODE_TEXPARAMETER_UI,
+
+   /* GL_EXT_separate_shader_objects */
+   OPCODE_ACTIVE_PROGRAM_EXT,
+   OPCODE_USE_SHADER_PROGRAM_EXT,
+
+   /* GL_ARB_instanced_arrays */
+   OPCODE_VERTEX_ATTRIB_DIVISOR,
+
+   /* GL_NV_texture_barrier */
+   OPCODE_TEXTURE_BARRIER_NV,
+
+   /* GL_ARB_sampler_object */
+   OPCODE_BIND_SAMPLER,
+   OPCODE_SAMPLER_PARAMETERIV,
+   OPCODE_SAMPLER_PARAMETERFV,
+   OPCODE_SAMPLER_PARAMETERIIV,
+   OPCODE_SAMPLER_PARAMETERUIV,
+
+   /* GL_ARB_geometry_shader4 */
+   OPCODE_PROGRAM_PARAMETERI,
+   OPCODE_FRAMEBUFFER_TEXTURE,
+   OPCODE_FRAMEBUFFER_TEXTURE_FACE,
+
+   /* GL_ARB_sync */
+   OPCODE_WAIT_SYNC,
+
+   /* GL_NV_conditional_render */
+   OPCODE_BEGIN_CONDITIONAL_RENDER,
+   OPCODE_END_CONDITIONAL_RENDER,
 
    /* The following three are meta instructions */
    OPCODE_ERROR,                /* raise compiled-in error */
@@ -432,6 +510,17 @@ typedef union gl_dlist_node Node;
 
 
 /**
+ * Used to store a 64-bit uint in a pair of "Nodes" for the sake of 32-bit
+ * environment.  In 64-bit env, sizeof(Node)==8 anyway.
+ */
+union uint64_pair
+{
+   GLuint64 uint64;
+   GLuint uint32[2];
+};
+
+
+/**
  * How many nodes to allocate at a time.
  *
  * \note Reduced now that we hold vertices etc. elsewhere.
@@ -467,7 +556,7 @@ make_list(GLuint name, GLuint count)
 {
    struct gl_display_list *dlist = CALLOC_STRUCT(gl_display_list);
    dlist->Name = name;
-   dlist->Head = (Node *) _mesa_malloc(sizeof(Node) * count);
+   dlist->Head = (Node *) malloc(sizeof(Node) * count);
    dlist->Head[0].opcode = OPCODE_END_OF_LIST;
    return dlist;
 }
@@ -476,8 +565,8 @@ make_list(GLuint name, GLuint count)
 /**
  * Lookup function to just encapsulate casting.
  */
-static INLINE struct gl_display_list *
-lookup_list(GLcontext *ctx, GLuint list)
+static inline struct gl_display_list *
+lookup_list(struct gl_context *ctx, GLuint list)
 {
    return (struct gl_display_list *)
       _mesa_HashLookup(ctx->Shared->DisplayList, list);
@@ -485,7 +574,7 @@ lookup_list(GLcontext *ctx, GLuint list)
 
 
 /** Is the given opcode an extension code? */
-static INLINE GLboolean
+static inline GLboolean
 is_ext_opcode(OpCode opcode)
 {
    return (opcode >= OPCODE_EXT_0);
@@ -494,7 +583,7 @@ is_ext_opcode(OpCode opcode)
 
 /** Destroy an extended opcode instruction */
 static GLint
-ext_opcode_destroy(GLcontext *ctx, Node *node)
+ext_opcode_destroy(struct gl_context *ctx, Node *node)
 {
    const GLint i = node[0].opcode - OPCODE_EXT_0;
    GLint step;
@@ -506,7 +595,7 @@ ext_opcode_destroy(GLcontext *ctx, Node *node)
 
 /** Execute an extended opcode instruction */
 static GLint
-ext_opcode_execute(GLcontext *ctx, Node *node)
+ext_opcode_execute(struct gl_context *ctx, Node *node)
 {
    const GLint i = node[0].opcode - OPCODE_EXT_0;
    GLint step;
@@ -518,7 +607,7 @@ ext_opcode_execute(GLcontext *ctx, Node *node)
 
 /** Print an extended opcode instruction */
 static GLint
-ext_opcode_print(GLcontext *ctx, Node *node)
+ext_opcode_print(struct gl_context *ctx, Node *node)
 {
    const GLint i = node[0].opcode - OPCODE_EXT_0;
    GLint step;
@@ -533,7 +622,7 @@ ext_opcode_print(GLcontext *ctx, Node *node)
  * \param dlist - display list pointer
  */
 void
-_mesa_delete_list(GLcontext *ctx, struct gl_display_list *dlist)
+_mesa_delete_list(struct gl_context *ctx, struct gl_display_list *dlist)
 {
    Node *n, *block;
    GLboolean done;
@@ -552,108 +641,108 @@ _mesa_delete_list(GLcontext *ctx, struct gl_display_list *dlist)
          switch (opcode) {
             /* for some commands, we need to free malloc'd memory */
          case OPCODE_MAP1:
-            _mesa_free(n[6].data);
+            free(n[6].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_MAP2:
-            _mesa_free(n[10].data);
+            free(n[10].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_DRAW_PIXELS:
-            _mesa_free(n[5].data);
+            free(n[5].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_BITMAP:
-            _mesa_free(n[7].data);
+            free(n[7].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_COLOR_TABLE:
-            _mesa_free(n[6].data);
+            free(n[6].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_COLOR_SUB_TABLE:
-            _mesa_free(n[6].data);
+            free(n[6].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_CONVOLUTION_FILTER_1D:
-            _mesa_free(n[6].data);
+            free(n[6].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_CONVOLUTION_FILTER_2D:
-            _mesa_free(n[7].data);
+            free(n[7].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_POLYGON_STIPPLE:
-            _mesa_free(n[1].data);
+            free(n[1].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_TEX_IMAGE1D:
-            _mesa_free(n[8].data);
+            free(n[8].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_TEX_IMAGE2D:
-            _mesa_free(n[9].data);
+            free(n[9].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_TEX_IMAGE3D:
-            _mesa_free(n[10].data);
+            free(n[10].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_TEX_SUB_IMAGE1D:
-            _mesa_free(n[7].data);
+            free(n[7].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_TEX_SUB_IMAGE2D:
-            _mesa_free(n[9].data);
+            free(n[9].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_TEX_SUB_IMAGE3D:
-            _mesa_free(n[11].data);
+            free(n[11].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_COMPRESSED_TEX_IMAGE_1D:
-            _mesa_free(n[7].data);
+            free(n[7].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_COMPRESSED_TEX_IMAGE_2D:
-            _mesa_free(n[8].data);
+            free(n[8].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_COMPRESSED_TEX_IMAGE_3D:
-            _mesa_free(n[9].data);
+            free(n[9].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_COMPRESSED_TEX_SUB_IMAGE_1D:
-            _mesa_free(n[7].data);
+            free(n[7].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_COMPRESSED_TEX_SUB_IMAGE_2D:
-            _mesa_free(n[9].data);
+            free(n[9].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_COMPRESSED_TEX_SUB_IMAGE_3D:
-            _mesa_free(n[11].data);
+            free(n[11].data);
             n += InstSize[n[0].opcode];
             break;
 #if FEATURE_NV_vertex_program
          case OPCODE_LOAD_PROGRAM_NV:
-            _mesa_free(n[4].data);      /* program string */
+            free(n[4].data);      /* program string */
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_REQUEST_RESIDENT_PROGRAMS_NV:
-            _mesa_free(n[2].data);      /* array of program ids */
+            free(n[2].data);      /* array of program ids */
             n += InstSize[n[0].opcode];
             break;
 #endif
 #if FEATURE_NV_fragment_program
          case OPCODE_PROGRAM_NAMED_PARAMETER_NV:
-            _mesa_free(n[3].data);      /* parameter name */
+            free(n[3].data);      /* parameter name */
             n += InstSize[n[0].opcode];
             break;
 #endif
 #if FEATURE_ARB_vertex_program || FEATURE_ARB_fragment_program
          case OPCODE_PROGRAM_STRING_ARB:
-            _mesa_free(n[4].data);      /* program string */
+            free(n[4].data);      /* program string */
             n += InstSize[n[0].opcode];
             break;
 #endif
@@ -665,7 +754,11 @@ _mesa_delete_list(GLcontext *ctx, struct gl_display_list *dlist)
          case OPCODE_UNIFORM_2IV:
          case OPCODE_UNIFORM_3IV:
          case OPCODE_UNIFORM_4IV:
-            _mesa_free(n[3].data);
+         case OPCODE_UNIFORM_1UIV:
+         case OPCODE_UNIFORM_2UIV:
+         case OPCODE_UNIFORM_3UIV:
+         case OPCODE_UNIFORM_4UIV:
+            free(n[3].data);
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_UNIFORM_MATRIX22:
@@ -677,17 +770,17 @@ _mesa_delete_list(GLcontext *ctx, struct gl_display_list *dlist)
          case OPCODE_UNIFORM_MATRIX32:
          case OPCODE_UNIFORM_MATRIX34:
          case OPCODE_UNIFORM_MATRIX43:
-            _mesa_free(n[4].data);
+            free(n[4].data);
             n += InstSize[n[0].opcode];
             break;
 
          case OPCODE_CONTINUE:
             n = (Node *) n[1].next;
-            _mesa_free(block);
+            free(block);
             block = n;
             break;
          case OPCODE_END_OF_LIST:
-            _mesa_free(block);
+            free(block);
             done = GL_TRUE;
             break;
          default:
@@ -698,7 +791,7 @@ _mesa_delete_list(GLcontext *ctx, struct gl_display_list *dlist)
       }
    }
 
-   _mesa_free(dlist);
+   free(dlist);
 }
 
 
@@ -707,7 +800,7 @@ _mesa_delete_list(GLcontext *ctx, struct gl_display_list *dlist)
  * \param list - display list number
  */
 static void
-destroy_list(GLcontext *ctx, GLuint list)
+destroy_list(struct gl_context *ctx, GLuint list)
 {
    struct gl_display_list *dlist;
 
@@ -787,32 +880,50 @@ translate_id(GLsizei n, GLenum type, const GLvoid * list)
 /**********************************************************************/
 
 /**
- * Wrapper for _mesa_unpack_image() that handles pixel buffer objects.
- * If we run out of memory, GL_OUT_OF_MEMORY will be recorded.
+ * Wrapper for _mesa_unpack_image/bitmap() that handles pixel buffer objects.
+ * If width < 0 or height < 0 or format or type are invalid we'll just
+ * return NULL.  We will not generate an error since OpenGL command
+ * arguments aren't error-checked until the command is actually executed
+ * (not when they're compiled).
+ * But if we run out of memory, GL_OUT_OF_MEMORY will be recorded.
  */
 static GLvoid *
-unpack_image(GLcontext *ctx, GLuint dimensions,
+unpack_image(struct gl_context *ctx, GLuint dimensions,
              GLsizei width, GLsizei height, GLsizei depth,
              GLenum format, GLenum type, const GLvoid * pixels,
              const struct gl_pixelstore_attrib *unpack)
 {
+   if (width <= 0 || height <= 0) {
+      return NULL;
+   }
+
+   if (_mesa_bytes_per_pixel(format, type) < 0) {
+      /* bad format and/or type */
+      return NULL;
+   }
+
    if (!_mesa_is_bufferobj(unpack->BufferObj)) {
       /* no PBO */
-      GLvoid *image = _mesa_unpack_image(dimensions, width, height, depth,
-                                         format, type, pixels, unpack);
+      GLvoid *image;
+
+      if (type == GL_BITMAP)
+         image = _mesa_unpack_bitmap(width, height, pixels, unpack);
+      else
+         image = _mesa_unpack_image(dimensions, width, height, depth,
+                                    format, type, pixels, unpack);
       if (pixels && !image) {
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "display list construction");
       }
       return image;
    }
-   else if (_mesa_validate_pbo_access(dimensions, unpack, width, height, depth,
-                                      format, type, pixels)) {
+   else if (_mesa_validate_pbo_access(dimensions, unpack, width, height,
+                                      depth, format, type, INT_MAX, pixels)) {
       const GLubyte *map, *src;
       GLvoid *image;
 
       map = (GLubyte *)
-         ctx->Driver.MapBuffer(ctx, GL_PIXEL_UNPACK_BUFFER_EXT,
-                               GL_READ_ONLY_ARB, unpack->BufferObj);
+         ctx->Driver.MapBufferRange(ctx, 0, unpack->BufferObj->Size,
+				    GL_MAP_READ_BIT, unpack->BufferObj);
       if (!map) {
          /* unable to map src buffer! */
          _mesa_error(ctx, GL_INVALID_OPERATION, "unable to map PBO");
@@ -820,21 +931,24 @@ unpack_image(GLcontext *ctx, GLuint dimensions,
       }
 
       src = ADD_POINTERS(map, pixels);
-      image = _mesa_unpack_image(dimensions, width, height, depth,
-                                 format, type, src, unpack);
+      if (type == GL_BITMAP)
+         image = _mesa_unpack_bitmap(width, height, src, unpack);
+      else
+         image = _mesa_unpack_image(dimensions, width, height, depth,
+                                    format, type, src, unpack);
 
-      ctx->Driver.UnmapBuffer(ctx, GL_PIXEL_UNPACK_BUFFER_EXT,
-                              unpack->BufferObj);
+      ctx->Driver.UnmapBuffer(ctx, unpack->BufferObj);
 
       if (!image) {
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "display list construction");
       }
       return image;
    }
+
    /* bad access! */
+   _mesa_error(ctx, GL_INVALID_OPERATION, "invalid PBO access");
    return NULL;
 }
-
 
 /**
  * Allocate space for a display list instruction (opcode + payload space).
@@ -843,7 +957,7 @@ unpack_image(GLcontext *ctx, GLuint dimensions,
  * \return pointer to allocated memory (the opcode space)
  */
 static Node *
-dlist_alloc(GLcontext *ctx, OpCode opcode, GLuint bytes)
+dlist_alloc(struct gl_context *ctx, OpCode opcode, GLuint bytes)
 {
    const GLuint numNodes = 1 + (bytes + sizeof(Node) - 1) / sizeof(Node);
    Node *n;
@@ -864,7 +978,7 @@ dlist_alloc(GLcontext *ctx, OpCode opcode, GLuint bytes)
       Node *newblock;
       n = ctx->ListState.CurrentBlock + ctx->ListState.CurrentPos;
       n[0].opcode = OPCODE_CONTINUE;
-      newblock = (Node *) _mesa_malloc(sizeof(Node) * BLOCK_SIZE);
+      newblock = (Node *) malloc(sizeof(Node) * BLOCK_SIZE);
       if (!newblock) {
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "Building display list");
          return NULL;
@@ -894,7 +1008,7 @@ dlist_alloc(GLcontext *ctx, OpCode opcode, GLuint bytes)
  *         opcode).
  */
 void *
-_mesa_dlist_alloc(GLcontext *ctx, GLuint opcode, GLuint bytes)
+_mesa_dlist_alloc(struct gl_context *ctx, GLuint opcode, GLuint bytes)
 {
    Node *n = dlist_alloc(ctx, (OpCode) opcode, bytes);
    if (n)
@@ -915,11 +1029,11 @@ _mesa_dlist_alloc(GLcontext *ctx, GLuint opcode, GLuint bytes)
  * \return  the new opcode number or -1 if error
  */
 GLint
-_mesa_dlist_alloc_opcode(GLcontext *ctx,
+_mesa_dlist_alloc_opcode(struct gl_context *ctx,
                          GLuint size,
-                         void (*execute) (GLcontext *, void *),
-                         void (*destroy) (GLcontext *, void *),
-                         void (*print) (GLcontext *, void *))
+                         void (*execute) (struct gl_context *, void *),
+                         void (*destroy) (struct gl_context *, void *),
+                         void (*print) (struct gl_context *, void *))
 {
    if (ctx->ListExt->NumOpcodes < MAX_DLIST_EXT_OPCODES) {
       const GLuint i = ctx->ListExt->NumOpcodes++;
@@ -943,8 +1057,8 @@ _mesa_dlist_alloc_opcode(GLcontext *ctx,
  * \param nparams  number of function parameters
  * \return  pointer to start of instruction space
  */
-static INLINE Node *
-alloc_instruction(GLcontext *ctx, OpCode opcode, GLuint nparams)
+static inline Node *
+alloc_instruction(struct gl_context *ctx, OpCode opcode, GLuint nparams)
 {
    return dlist_alloc(ctx, opcode, nparams * sizeof(Node));
 }
@@ -1021,7 +1135,8 @@ save_Bitmap(GLsizei width, GLsizei height,
       n[4].f = yorig;
       n[5].f = xmove;
       n[6].f = ymove;
-      n[7].data = _mesa_unpack_bitmap(width, height, pixels, &ctx->Unpack);
+      n[7].data = unpack_image(ctx, 2, width, height, 1, GL_COLOR_INDEX,
+                               GL_BITMAP, pixels, &ctx->Unpack);
    }
    if (ctx->ExecuteFlag) {
       CALL_Bitmap(ctx->Exec, (width, height,
@@ -1109,7 +1224,120 @@ save_BlendColor(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha)
    }
 }
 
-static void invalidate_saved_current_state( GLcontext *ctx )
+/* GL_ARB_draw_buffers_blend */
+static void GLAPIENTRY
+save_BlendFuncSeparatei(GLuint buf, GLenum sfactorRGB, GLenum dfactorRGB,
+                        GLenum sfactorA, GLenum dfactorA)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_BLEND_FUNC_SEPARATE_I, 5);
+   if (n) {
+      n[1].ui = buf;
+      n[2].e = sfactorRGB;
+      n[3].e = dfactorRGB;
+      n[4].e = sfactorA;
+      n[5].e = dfactorA;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_BlendFuncSeparateiARB(ctx->Exec, (buf, sfactorRGB, dfactorRGB,
+                                             sfactorA, dfactorA));
+   }
+}
+
+/* GL_ARB_draw_buffers_blend */
+static void GLAPIENTRY
+save_BlendFunci(GLuint buf, GLenum sfactor, GLenum dfactor)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_BLEND_FUNC_SEPARATE_I, 3);
+   if (n) {
+      n[1].ui = buf;
+      n[2].e = sfactor;
+      n[3].e = dfactor;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_BlendFunciARB(ctx->Exec, (buf, sfactor, dfactor));
+   }
+}
+
+/* GL_ARB_draw_buffers_blend */
+static void GLAPIENTRY
+save_BlendEquationi(GLuint buf, GLenum mode)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_BLEND_EQUATION_I, 2);
+   if (n) {
+      n[1].ui = buf;
+      n[2].e = mode;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_BlendEquationiARB(ctx->Exec, (buf, mode));
+   }
+}
+
+/* GL_ARB_draw_buffers_blend */
+static void GLAPIENTRY
+save_BlendEquationSeparatei(GLuint buf, GLenum modeRGB, GLenum modeA)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_BLEND_EQUATION_SEPARATE_I, 3);
+   if (n) {
+      n[1].ui = buf;
+      n[2].e = modeRGB;
+      n[3].e = modeA;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_BlendEquationSeparateiARB(ctx->Exec, (buf, modeRGB, modeA));
+   }
+}
+
+
+/* GL_ARB_draw_instanced. */
+static void GLAPIENTRY
+save_DrawArraysInstancedARB(GLenum mode,
+			    GLint first,
+			    GLsizei count,
+			    GLsizei primcount)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   _mesa_error(ctx, GL_INVALID_OPERATION,
+	       "glDrawArraysInstanced() during display list compile");
+}
+
+static void GLAPIENTRY
+save_DrawElementsInstancedARB(GLenum mode,
+			      GLsizei count,
+			      GLenum type,
+			      const GLvoid *indices,
+			      GLsizei primcount)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   _mesa_error(ctx, GL_INVALID_OPERATION,
+	       "glDrawElementsInstanced() during display list compile");
+}
+
+static void GLAPIENTRY
+save_DrawElementsInstancedBaseVertexARB(GLenum mode,
+					GLsizei count,
+					GLenum type,
+					const GLvoid *indices,
+					GLsizei primcount,
+					GLint basevertex)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   _mesa_error(ctx, GL_INVALID_OPERATION,
+	       "glDrawElementsInstancedBaseVertex() during display list compile");
+}
+
+static void invalidate_saved_current_state( struct gl_context *ctx )
 {
    GLint i;
 
@@ -1205,6 +1433,110 @@ save_Clear(GLbitfield mask)
    }
    if (ctx->ExecuteFlag) {
       CALL_Clear(ctx->Exec, (mask));
+   }
+}
+
+
+static void GLAPIENTRY
+save_ClearBufferiv(GLenum buffer, GLint drawbuffer, const GLint *value)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_CLEAR_BUFFER_IV, 6);
+   if (n) {
+      n[1].e = buffer;
+      n[2].i = drawbuffer;
+      n[3].i = value[0];
+      if (buffer == GL_COLOR) {
+         n[4].i = value[1];
+         n[5].i = value[2];
+         n[6].i = value[3];
+      }
+      else {
+         n[4].i = 0;
+         n[5].i = 0;
+         n[6].i = 0;
+      }
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_ClearBufferiv(ctx->Exec, (buffer, drawbuffer, value));
+   }
+}
+
+
+static void GLAPIENTRY
+save_ClearBufferuiv(GLenum buffer, GLint drawbuffer, const GLuint *value)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_CLEAR_BUFFER_UIV, 6);
+   if (n) {
+      n[1].e = buffer;
+      n[2].i = drawbuffer;
+      n[3].ui = value[0];
+      if (buffer == GL_COLOR) {
+         n[4].ui = value[1];
+         n[5].ui = value[2];
+         n[6].ui = value[3];
+      }
+      else {
+         n[4].ui = 0;
+         n[5].ui = 0;
+         n[6].ui = 0;
+      }
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_ClearBufferuiv(ctx->Exec, (buffer, drawbuffer, value));
+   }
+}
+
+
+static void GLAPIENTRY
+save_ClearBufferfv(GLenum buffer, GLint drawbuffer, const GLfloat *value)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_CLEAR_BUFFER_FV, 6);
+   if (n) {
+      n[1].e = buffer;
+      n[2].i = drawbuffer;
+      n[3].f = value[0];
+      if (buffer == GL_COLOR) {
+         n[4].f = value[1];
+         n[5].f = value[2];
+         n[6].f = value[3];
+      }
+      else {
+         n[4].f = 0.0F;
+         n[5].f = 0.0F;
+         n[6].f = 0.0F;
+      }
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_ClearBufferfv(ctx->Exec, (buffer, drawbuffer, value));
+   }
+}
+
+
+static void GLAPIENTRY
+save_ClearBufferfi(GLenum buffer, GLint drawbuffer,
+                   GLfloat depth, GLint stencil)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_CLEAR_BUFFER_FI, 4);
+   if (n) {
+      n[1].e = buffer;
+      n[2].i = drawbuffer;
+      n[3].f = depth;
+      n[4].i = stencil;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_ClearBufferfi(ctx->Exec, (buffer, drawbuffer, depth, stencil));
    }
 }
 
@@ -1337,6 +1669,27 @@ save_ColorMask(GLboolean red, GLboolean green,
 
 
 static void GLAPIENTRY
+save_ColorMaskIndexed(GLuint buf, GLboolean red, GLboolean green,
+                      GLboolean blue, GLboolean alpha)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_COLOR_MASK_INDEXED, 5);
+   if (n) {
+      n[1].ui = buf;
+      n[2].b = red;
+      n[3].b = green;
+      n[4].b = blue;
+      n[5].b = alpha;
+   }
+   if (ctx->ExecuteFlag) {
+      /*CALL_ColorMaskIndexedEXT(ctx->Exec, (buf, red, green, blue, alpha));*/
+   }
+}
+
+
+static void GLAPIENTRY
 save_ColorMaterial(GLenum face, GLenum mode)
 {
    GET_CURRENT_CONTEXT(ctx);
@@ -1403,7 +1756,6 @@ save_ColorTableParameterfv(GLenum target, GLenum pname,
       n[3].f = params[0];
       if (pname == GL_COLOR_TABLE_SGI ||
           pname == GL_POST_CONVOLUTION_COLOR_TABLE_SGI ||
-          pname == GL_POST_COLOR_MATRIX_COLOR_TABLE_SGI ||
           pname == GL_TEXTURE_COLOR_TABLE_SGI) {
          n[4].f = params[1];
          n[5].f = params[2];
@@ -1432,7 +1784,6 @@ save_ColorTableParameteriv(GLenum target, GLenum pname, const GLint *params)
       n[3].i = params[0];
       if (pname == GL_COLOR_TABLE_SGI ||
           pname == GL_POST_CONVOLUTION_COLOR_TABLE_SGI ||
-          pname == GL_POST_COLOR_MATRIX_COLOR_TABLE_SGI ||
           pname == GL_TEXTURE_COLOR_TABLE_SGI) {
          n[4].i = params[1];
          n[5].i = params[2];
@@ -1895,6 +2246,23 @@ save_Disable(GLenum cap)
 
 
 static void GLAPIENTRY
+save_DisableIndexed(GLuint index, GLenum cap)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_DISABLE_INDEXED, 2);
+   if (n) {
+      n[1].ui = index;
+      n[2].e = cap;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_DisableIndexedEXT(ctx->Exec, (index, cap));
+   }
+}
+
+
+static void GLAPIENTRY
 save_DrawBuffer(GLenum mode)
 {
    GET_CURRENT_CONTEXT(ctx);
@@ -1947,6 +2315,24 @@ save_Enable(GLenum cap)
    }
    if (ctx->ExecuteFlag) {
       CALL_Enable(ctx->Exec, (cap));
+   }
+}
+
+
+
+static void GLAPIENTRY
+save_EnableIndexed(GLuint index, GLenum cap)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_ENABLE_INDEXED, 2);
+   if (n) {
+      n[1].ui = index;
+      n[2].e = cap;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_EnableIndexedEXT(ctx->Exec, (index, cap));
    }
 }
 
@@ -2747,8 +3133,8 @@ save_PixelMapfv(GLenum map, GLint mapsize, const GLfloat *values)
    if (n) {
       n[1].e = map;
       n[2].i = mapsize;
-      n[3].data = (void *) _mesa_malloc(mapsize * sizeof(GLfloat));
-      MEMCPY(n[3].data, (void *) values, mapsize * sizeof(GLfloat));
+      n[3].data = (void *) malloc(mapsize * sizeof(GLfloat));
+      memcpy(n[3].data, (void *) values, mapsize * sizeof(GLfloat));
    }
    if (ctx->ExecuteFlag) {
       CALL_PixelMapfv(ctx->Exec, (map, mapsize, values));
@@ -3562,7 +3948,7 @@ save_TexEnvi(GLenum target, GLenum pname, GLint param)
 {
    GLfloat p[4];
    p[0] = (GLfloat) param;
-   p[1] = p[2] = p[3] = 0.0;
+   p[1] = p[2] = p[3] = 0.0F;
    save_TexEnvfv(target, pname, p);
 }
 
@@ -3696,7 +4082,7 @@ save_TexParameteri(GLenum target, GLenum pname, GLint param)
 {
    GLfloat fparam[4];
    fparam[0] = (GLfloat) param;
-   fparam[1] = fparam[2] = fparam[3] = 0.0;
+   fparam[1] = fparam[2] = fparam[3] = 0.0F;
    save_TexParameterfv(target, pname, fparam);
 }
 
@@ -3706,7 +4092,7 @@ save_TexParameteriv(GLenum target, GLenum pname, const GLint *params)
 {
    GLfloat fparam[4];
    fparam[0] = (GLfloat) params[0];
-   fparam[1] = fparam[2] = fparam[3] = 0.0;
+   fparam[1] = fparam[2] = fparam[3] = 0.0F;
    save_TexParameterfv(target, pname, fparam);
 }
 
@@ -4175,6 +4561,24 @@ save_MultTransposeMatrixfARB(const GLfloat m[16])
    save_MultMatrixf(tm);
 }
 
+static GLvoid *copy_data(const GLvoid *data, GLsizei size, const char *func)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   GLvoid *image;
+
+   if (!data)
+      return NULL;
+
+   image = malloc(size);
+   if (!image) {
+      _mesa_error(ctx, GL_OUT_OF_MEMORY, "%s", func);
+      return NULL;
+   }
+   memcpy(image, data, size);
+
+   return image;
+}
+
 
 /* GL_ARB_texture_compression */
 static void GLAPIENTRY
@@ -4192,15 +4596,8 @@ save_CompressedTexImage1DARB(GLenum target, GLint level,
    }
    else {
       Node *n;
-      GLvoid *image;
       ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
-      /* make copy of image */
-      image = _mesa_malloc(imageSize);
-      if (!image) {
-         _mesa_error(ctx, GL_OUT_OF_MEMORY, "glCompressedTexImage1DARB");
-         return;
-      }
-      MEMCPY(image, data, imageSize);
+
       n = alloc_instruction(ctx, OPCODE_COMPRESSED_TEX_IMAGE_1D, 7);
       if (n) {
          n[1].e = target;
@@ -4209,10 +4606,7 @@ save_CompressedTexImage1DARB(GLenum target, GLint level,
          n[4].i = (GLint) width;
          n[5].i = border;
          n[6].i = imageSize;
-         n[7].data = image;
-      }
-      else if (image) {
-         _mesa_free(image);
+         n[7].data = copy_data(data, imageSize, "glCompressedTexImage1DARB");
       }
       if (ctx->ExecuteFlag) {
          CALL_CompressedTexImage1DARB(ctx->Exec,
@@ -4238,15 +4632,8 @@ save_CompressedTexImage2DARB(GLenum target, GLint level,
    }
    else {
       Node *n;
-      GLvoid *image;
       ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
-      /* make copy of image */
-      image = _mesa_malloc(imageSize);
-      if (!image) {
-         _mesa_error(ctx, GL_OUT_OF_MEMORY, "glCompressedTexImage2DARB");
-         return;
-      }
-      MEMCPY(image, data, imageSize);
+
       n = alloc_instruction(ctx, OPCODE_COMPRESSED_TEX_IMAGE_2D, 8);
       if (n) {
          n[1].e = target;
@@ -4256,10 +4643,7 @@ save_CompressedTexImage2DARB(GLenum target, GLint level,
          n[5].i = (GLint) height;
          n[6].i = border;
          n[7].i = imageSize;
-         n[8].data = image;
-      }
-      else if (image) {
-         _mesa_free(image);
+         n[8].data = copy_data(data, imageSize, "glCompressedTexImage2DARB");
       }
       if (ctx->ExecuteFlag) {
          CALL_CompressedTexImage2DARB(ctx->Exec,
@@ -4285,15 +4669,8 @@ save_CompressedTexImage3DARB(GLenum target, GLint level,
    }
    else {
       Node *n;
-      GLvoid *image;
       ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
-      /* make copy of image */
-      image = _mesa_malloc(imageSize);
-      if (!image) {
-         _mesa_error(ctx, GL_OUT_OF_MEMORY, "glCompressedTexImage3DARB");
-         return;
-      }
-      MEMCPY(image, data, imageSize);
+
       n = alloc_instruction(ctx, OPCODE_COMPRESSED_TEX_IMAGE_3D, 9);
       if (n) {
          n[1].e = target;
@@ -4304,10 +4681,7 @@ save_CompressedTexImage3DARB(GLenum target, GLint level,
          n[6].i = (GLint) depth;
          n[7].i = border;
          n[8].i = imageSize;
-         n[9].data = image;
-      }
-      else if (image) {
-         _mesa_free(image);
+         n[9].data = copy_data(data, imageSize, "glCompressedTexImage3DARB");
       }
       if (ctx->ExecuteFlag) {
          CALL_CompressedTexImage3DARB(ctx->Exec,
@@ -4325,18 +4699,9 @@ save_CompressedTexSubImage1DARB(GLenum target, GLint level, GLint xoffset,
                                 GLsizei imageSize, const GLvoid * data)
 {
    Node *n;
-   GLvoid *image;
-
    GET_CURRENT_CONTEXT(ctx);
    ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
 
-   /* make copy of image */
-   image = _mesa_malloc(imageSize);
-   if (!image) {
-      _mesa_error(ctx, GL_OUT_OF_MEMORY, "glCompressedTexSubImage1DARB");
-      return;
-   }
-   MEMCPY(image, data, imageSize);
    n = alloc_instruction(ctx, OPCODE_COMPRESSED_TEX_SUB_IMAGE_1D, 7);
    if (n) {
       n[1].e = target;
@@ -4345,10 +4710,7 @@ save_CompressedTexSubImage1DARB(GLenum target, GLint level, GLint xoffset,
       n[4].i = (GLint) width;
       n[5].e = format;
       n[6].i = imageSize;
-      n[7].data = image;
-   }
-   else if (image) {
-      _mesa_free(image);
+      n[7].data = copy_data(data, imageSize, "glCompressedTexSubImage1DARB");
    }
    if (ctx->ExecuteFlag) {
       CALL_CompressedTexSubImage1DARB(ctx->Exec, (target, level, xoffset,
@@ -4365,18 +4727,9 @@ save_CompressedTexSubImage2DARB(GLenum target, GLint level, GLint xoffset,
                                 const GLvoid * data)
 {
    Node *n;
-   GLvoid *image;
-
    GET_CURRENT_CONTEXT(ctx);
    ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
 
-   /* make copy of image */
-   image = _mesa_malloc(imageSize);
-   if (!image) {
-      _mesa_error(ctx, GL_OUT_OF_MEMORY, "glCompressedTexSubImage2DARB");
-      return;
-   }
-   MEMCPY(image, data, imageSize);
    n = alloc_instruction(ctx, OPCODE_COMPRESSED_TEX_SUB_IMAGE_2D, 9);
    if (n) {
       n[1].e = target;
@@ -4387,10 +4740,7 @@ save_CompressedTexSubImage2DARB(GLenum target, GLint level, GLint xoffset,
       n[6].i = (GLint) height;
       n[7].e = format;
       n[8].i = imageSize;
-      n[9].data = image;
-   }
-   else if (image) {
-      _mesa_free(image);
+      n[9].data = copy_data(data, imageSize, "glCompressedTexSubImage2DARB");
    }
    if (ctx->ExecuteFlag) {
       CALL_CompressedTexSubImage2DARB(ctx->Exec,
@@ -4407,18 +4757,9 @@ save_CompressedTexSubImage3DARB(GLenum target, GLint level, GLint xoffset,
                                 GLsizei imageSize, const GLvoid * data)
 {
    Node *n;
-   GLvoid *image;
-
    GET_CURRENT_CONTEXT(ctx);
    ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
 
-   /* make copy of image */
-   image = _mesa_malloc(imageSize);
-   if (!image) {
-      _mesa_error(ctx, GL_OUT_OF_MEMORY, "glCompressedTexSubImage3DARB");
-      return;
-   }
-   MEMCPY(image, data, imageSize);
    n = alloc_instruction(ctx, OPCODE_COMPRESSED_TEX_SUB_IMAGE_3D, 11);
    if (n) {
       n[1].e = target;
@@ -4431,10 +4772,7 @@ save_CompressedTexSubImage3DARB(GLenum target, GLint level, GLint xoffset,
       n[8].i = (GLint) depth;
       n[9].e = format;
       n[10].i = imageSize;
-      n[11].data = image;
-   }
-   else if (image) {
-      _mesa_free(image);
+      n[11].data = copy_data(data, imageSize, "glCompressedTexSubImage3DARB");
    }
    if (ctx->ExecuteFlag) {
       CALL_CompressedTexSubImage3DARB(ctx->Exec,
@@ -4592,9 +4930,9 @@ save_ExecuteProgramNV(GLenum target, GLuint id, const GLfloat *params)
 
 static void GLAPIENTRY
 save_ProgramParameters4dvNV(GLenum target, GLuint index,
-                            GLuint num, const GLdouble *params)
+                            GLsizei num, const GLdouble *params)
 {
-   GLuint i;
+   GLint i;
    for (i = 0; i < num; i++) {
       save_ProgramEnvParameter4dvARB(target, index + i, params + 4 * i);
    }
@@ -4603,9 +4941,9 @@ save_ProgramParameters4dvNV(GLenum target, GLuint index,
 
 static void GLAPIENTRY
 save_ProgramParameters4fvNV(GLenum target, GLuint index,
-                            GLuint num, const GLfloat *params)
+                            GLsizei num, const GLfloat *params)
 {
-   GLuint i;
+   GLint i;
    for (i = 0; i < num; i++) {
       save_ProgramEnvParameter4fvARB(target, index + i, params + 4 * i);
    }
@@ -4623,12 +4961,12 @@ save_LoadProgramNV(GLenum target, GLuint id, GLsizei len,
 
    n = alloc_instruction(ctx, OPCODE_LOAD_PROGRAM_NV, 4);
    if (n) {
-      GLubyte *programCopy = (GLubyte *) _mesa_malloc(len);
+      GLubyte *programCopy = (GLubyte *) malloc(len);
       if (!programCopy) {
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "glLoadProgramNV");
          return;
       }
-      _mesa_memcpy(programCopy, program, len);
+      memcpy(programCopy, program, len);
       n[1].e = target;
       n[2].ui = id;
       n[3].i = len;
@@ -4650,12 +4988,12 @@ save_RequestResidentProgramsNV(GLsizei num, const GLuint * ids)
 
    n = alloc_instruction(ctx, OPCODE_TRACK_MATRIX_NV, 2);
    if (n) {
-      GLuint *idCopy = (GLuint *) _mesa_malloc(num * sizeof(GLuint));
+      GLuint *idCopy = (GLuint *) malloc(num * sizeof(GLuint));
       if (!idCopy) {
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "glRequestResidentProgramsNV");
          return;
       }
-      _mesa_memcpy(idCopy, ids, num * sizeof(GLuint));
+      memcpy(idCopy, ids, num * sizeof(GLuint));
       n[1].i = num;
       n[2].data = idCopy;
    }
@@ -4821,12 +5159,12 @@ save_ProgramNamedParameter4fNV(GLuint id, GLsizei len, const GLubyte * name,
 
    n = alloc_instruction(ctx, OPCODE_PROGRAM_NAMED_PARAMETER_NV, 6);
    if (n) {
-      GLubyte *nameCopy = (GLubyte *) _mesa_malloc(len);
+      GLubyte *nameCopy = (GLubyte *) malloc(len);
       if (!nameCopy) {
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "glProgramNamedParameter4fNV");
          return;
       }
-      _mesa_memcpy(nameCopy, name, len);
+      memcpy(nameCopy, name, len);
       n[1].ui = id;
       n[2].i = len;
       n[3].data = nameCopy;
@@ -4920,12 +5258,12 @@ save_ProgramStringARB(GLenum target, GLenum format, GLsizei len,
 
    n = alloc_instruction(ctx, OPCODE_PROGRAM_STRING_ARB, 4);
    if (n) {
-      GLubyte *programCopy = (GLubyte *) _mesa_malloc(len);
+      GLubyte *programCopy = (GLubyte *) malloc(len);
       if (!programCopy) {
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "glProgramStringARB");
          return;
       }
-      _mesa_memcpy(programCopy, string, len);
+      memcpy(programCopy, string, len);
       n[1].e = target;
       n[2].e = format;
       n[3].i = len;
@@ -5063,7 +5401,7 @@ save_SetFragmentShaderConstantATI(GLuint dst, const GLfloat *value)
 }
 #endif
 
-static void
+static void GLAPIENTRY
 save_Attr1fNV(GLenum attr, GLfloat x)
 {
    GET_CURRENT_CONTEXT(ctx);
@@ -5084,7 +5422,7 @@ save_Attr1fNV(GLenum attr, GLfloat x)
    }
 }
 
-static void
+static void GLAPIENTRY
 save_Attr2fNV(GLenum attr, GLfloat x, GLfloat y)
 {
    GET_CURRENT_CONTEXT(ctx);
@@ -5106,7 +5444,7 @@ save_Attr2fNV(GLenum attr, GLfloat x, GLfloat y)
    }
 }
 
-static void
+static void GLAPIENTRY
 save_Attr3fNV(GLenum attr, GLfloat x, GLfloat y, GLfloat z)
 {
    GET_CURRENT_CONTEXT(ctx);
@@ -5129,7 +5467,7 @@ save_Attr3fNV(GLenum attr, GLfloat x, GLfloat y, GLfloat z)
    }
 }
 
-static void
+static void GLAPIENTRY
 save_Attr4fNV(GLenum attr, GLfloat x, GLfloat y, GLfloat z, GLfloat w)
 {
    GET_CURRENT_CONTEXT(ctx);
@@ -5154,7 +5492,7 @@ save_Attr4fNV(GLenum attr, GLfloat x, GLfloat y, GLfloat z, GLfloat w)
 }
 
 
-static void
+static void GLAPIENTRY
 save_Attr1fARB(GLenum attr, GLfloat x)
 {
    GET_CURRENT_CONTEXT(ctx);
@@ -5175,7 +5513,7 @@ save_Attr1fARB(GLenum attr, GLfloat x)
    }
 }
 
-static void
+static void GLAPIENTRY
 save_Attr2fARB(GLenum attr, GLfloat x, GLfloat y)
 {
    GET_CURRENT_CONTEXT(ctx);
@@ -5197,7 +5535,7 @@ save_Attr2fARB(GLenum attr, GLfloat x, GLfloat y)
    }
 }
 
-static void
+static void GLAPIENTRY
 save_Attr3fARB(GLenum attr, GLfloat x, GLfloat y, GLfloat z)
 {
    GET_CURRENT_CONTEXT(ctx);
@@ -5220,7 +5558,7 @@ save_Attr3fARB(GLenum attr, GLfloat x, GLfloat y, GLfloat z)
    }
 }
 
-static void
+static void GLAPIENTRY
 save_Attr4fARB(GLenum attr, GLfloat x, GLfloat y, GLfloat z, GLfloat w)
 {
    GET_CURRENT_CONTEXT(ctx);
@@ -5338,7 +5676,7 @@ save_EdgeFlag(GLboolean x)
    save_Attr1fNV(VERT_ATTRIB_EDGEFLAG, x ? (GLfloat)1.0 : (GLfloat)0.0);
 }
 
-static INLINE GLboolean compare4fv( const GLfloat *a,
+static inline GLboolean compare4fv( const GLfloat *a,
                                     const GLfloat *b,
                                     GLuint count )
 {
@@ -5429,8 +5767,8 @@ save_Begin(GLenum mode)
    Node *n;
    GLboolean error = GL_FALSE;
 
-   if ( /*mode < GL_POINTS || */ mode > GL_POLYGON) {
-      _mesa_compile_error(ctx, GL_INVALID_ENUM, "Begin (mode)");
+   if (!_mesa_valid_prim_mode(ctx, mode)) {
+      _mesa_compile_error(ctx, GL_INVALID_ENUM, "glBegin(mode)");
       error = GL_TRUE;
    }
    else if (ctx->Driver.CurrentSavePrimitive == PRIM_UNKNOWN) {
@@ -5886,8 +6224,15 @@ exec_GetAttribLocationARB(GLuint program, const GLchar *name)
    FLUSH_VERTICES(ctx, 0);
    return CALL_GetAttribLocationARB(ctx->Exec, (program, name));
 }
-/* XXX more shader functions needed here */
 
+static GLint GLAPIENTRY
+exec_GetUniformLocationARB(GLuint program, const GLchar *name)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   FLUSH_VERTICES(ctx, 0);
+   return CALL_GetUniformLocationARB(ctx->Exec, (program, name));
+}
+/* XXX more shader functions needed here */
 
 
 #if FEATURE_EXT_framebuffer_blit
@@ -5935,6 +6280,90 @@ save_ProvokingVertexEXT(GLenum mode)
    if (ctx->ExecuteFlag) {
       /*CALL_ProvokingVertexEXT(ctx->Exec, (mode));*/
       _mesa_ProvokingVertexEXT(mode);
+   }
+}
+
+
+/** GL_EXT_transform_feedback */
+static void GLAPIENTRY
+save_BeginTransformFeedback(GLenum mode)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_BEGIN_TRANSFORM_FEEDBACK, 1);
+   if (n) {
+      n[1].e = mode;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_BeginTransformFeedbackEXT(ctx->Exec, (mode));
+   }
+}
+
+
+/** GL_EXT_transform_feedback */
+static void GLAPIENTRY
+save_EndTransformFeedback(void)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   (void) alloc_instruction(ctx, OPCODE_END_TRANSFORM_FEEDBACK, 0);
+   if (ctx->ExecuteFlag) {
+      CALL_EndTransformFeedbackEXT(ctx->Exec, ());
+   }
+}
+
+static void GLAPIENTRY
+save_BindTransformFeedback(GLenum target, GLuint name)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_BIND_TRANSFORM_FEEDBACK, 2);
+   if (n) {
+      n[1].e = target;
+      n[2].ui = name;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_BindTransformFeedback(ctx->Exec, (target, name));
+   }
+}
+
+static void GLAPIENTRY
+save_PauseTransformFeedback(void)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   (void) alloc_instruction(ctx, OPCODE_PAUSE_TRANSFORM_FEEDBACK, 0);
+   if (ctx->ExecuteFlag) {
+      CALL_PauseTransformFeedback(ctx->Exec, ());
+   }
+}
+
+static void GLAPIENTRY
+save_ResumeTransformFeedback(void)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   (void) alloc_instruction(ctx, OPCODE_RESUME_TRANSFORM_FEEDBACK, 0);
+   if (ctx->ExecuteFlag) {
+      CALL_ResumeTransformFeedback(ctx->Exec, ());
+   }
+}
+
+static void GLAPIENTRY
+save_DrawTransformFeedback(GLenum mode, GLuint name)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_DRAW_TRANSFORM_FEEDBACK, 2);
+   if (n) {
+      n[1].e = mode;
+      n[2].ui = name;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_DrawTransformFeedback(ctx->Exec, (mode, name));
    }
 }
 
@@ -6034,9 +6463,9 @@ save_Uniform4fARB(GLint location, GLfloat x, GLfloat y, GLfloat z, GLfloat w)
 static void *
 memdup(const void *src, GLsizei bytes)
 {
-   void *b = bytes >= 0 ? _mesa_malloc(bytes) : NULL;
+   void *b = bytes >= 0 ? malloc(bytes) : NULL;
    if (b)
-      _mesa_memcpy(b, src, bytes);
+      memcpy(b, src, bytes);
    return b;
 }
 
@@ -6251,6 +6680,149 @@ save_Uniform4ivARB(GLint location, GLsizei count, const GLint *v)
 }
 
 
+
+static void GLAPIENTRY
+save_Uniform1ui(GLint location, GLuint x)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_UNIFORM_1UI, 2);
+   if (n) {
+      n[1].i = location;
+      n[2].i = x;
+   }
+   if (ctx->ExecuteFlag) {
+      /*CALL_Uniform1ui(ctx->Exec, (location, x));*/
+   }
+}
+
+static void GLAPIENTRY
+save_Uniform2ui(GLint location, GLuint x, GLuint y)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_UNIFORM_2UI, 3);
+   if (n) {
+      n[1].i = location;
+      n[2].i = x;
+      n[3].i = y;
+   }
+   if (ctx->ExecuteFlag) {
+      /*CALL_Uniform2ui(ctx->Exec, (location, x, y));*/
+   }
+}
+
+static void GLAPIENTRY
+save_Uniform3ui(GLint location, GLuint x, GLuint y, GLuint z)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_UNIFORM_3UI, 4);
+   if (n) {
+      n[1].i = location;
+      n[2].i = x;
+      n[3].i = y;
+      n[4].i = z;
+   }
+   if (ctx->ExecuteFlag) {
+      /*CALL_Uniform3ui(ctx->Exec, (location, x, y, z));*/
+   }
+}
+
+static void GLAPIENTRY
+save_Uniform4ui(GLint location, GLuint x, GLuint y, GLuint z, GLuint w)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_UNIFORM_4UI, 5);
+   if (n) {
+      n[1].i = location;
+      n[2].i = x;
+      n[3].i = y;
+      n[4].i = z;
+      n[5].i = w;
+   }
+   if (ctx->ExecuteFlag) {
+      /*CALL_Uniform4ui(ctx->Exec, (location, x, y, z, w));*/
+   }
+}
+
+
+
+static void GLAPIENTRY
+save_Uniform1uiv(GLint location, GLsizei count, const GLuint *v)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_UNIFORM_1UIV, 3);
+   if (n) {
+      n[1].i = location;
+      n[2].i = count;
+      n[3].data = memdup(v, count * 1 * sizeof(*v));
+   }
+   if (ctx->ExecuteFlag) {
+      /*CALL_Uniform1uiv(ctx->Exec, (location, count, v));*/
+   }
+}
+
+static void GLAPIENTRY
+save_Uniform2uiv(GLint location, GLsizei count, const GLuint *v)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_UNIFORM_2UIV, 3);
+   if (n) {
+      n[1].i = location;
+      n[2].i = count;
+      n[3].data = memdup(v, count * 2 * sizeof(*v));
+   }
+   if (ctx->ExecuteFlag) {
+      /*CALL_Uniform2uiv(ctx->Exec, (location, count, v));*/
+   }
+}
+
+static void GLAPIENTRY
+save_Uniform3uiv(GLint location, GLsizei count, const GLuint *v)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_UNIFORM_3UIV, 3);
+   if (n) {
+      n[1].i = location;
+      n[2].i = count;
+      n[3].data = memdup(v, count * 3 * sizeof(*v));
+   }
+   if (ctx->ExecuteFlag) {
+      /*CALL_Uniform3uiv(ctx->Exec, (location, count, v));*/
+   }
+}
+
+static void GLAPIENTRY
+save_Uniform4uiv(GLint location, GLsizei count, const GLuint *v)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_UNIFORM_4UIV, 3);
+   if (n) {
+      n[1].i = location;
+      n[2].i = count;
+      n[3].data = memdup(v, count * 4 * sizeof(*v));
+   }
+   if (ctx->ExecuteFlag) {
+      /*CALL_Uniform4uiv(ctx->Exec, (location, count, v));*/
+   }
+}
+
+
+
 static void GLAPIENTRY
 save_UniformMatrix2fvARB(GLint location, GLsizei count, GLboolean transpose,
                          const GLfloat *m)
@@ -6425,6 +6997,420 @@ save_UniformMatrix4x3fv(GLint location, GLsizei count, GLboolean transpose,
    }
 }
 
+static void GLAPIENTRY
+save_ClampColorARB(GLenum target, GLenum clamp)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_CLAMP_COLOR, 2);
+   if (n) {
+      n[1].e = target;
+      n[2].e = clamp;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_ClampColorARB(ctx->Exec, (target, clamp));
+   }
+}
+
+static void GLAPIENTRY
+save_UseShaderProgramEXT(GLenum type, GLuint program)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_USE_SHADER_PROGRAM_EXT, 2);
+   if (n) {
+      n[1].ui = type;
+      n[2].ui = program;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_UseShaderProgramEXT(ctx->Exec, (type, program));
+   }
+}
+
+static void GLAPIENTRY
+save_ActiveProgramEXT(GLuint program)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_ACTIVE_PROGRAM_EXT, 1);
+   if (n) {
+      n[1].ui = program;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_ActiveProgramEXT(ctx->Exec, (program));
+   }
+}
+
+/** GL_EXT_texture_integer */
+static void GLAPIENTRY
+save_ClearColorIi(GLint red, GLint green, GLint blue, GLint alpha)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_CLEARCOLOR_I, 4);
+   if (n) {
+      n[1].i = red;
+      n[2].i = green;
+      n[3].i = blue;
+      n[4].i = alpha;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_ClearColorIiEXT(ctx->Exec, (red, green, blue, alpha));
+   }
+}
+
+/** GL_EXT_texture_integer */
+static void GLAPIENTRY
+save_ClearColorIui(GLuint red, GLuint green, GLuint blue, GLuint alpha)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_CLEARCOLOR_UI, 4);
+   if (n) {
+      n[1].ui = red;
+      n[2].ui = green;
+      n[3].ui = blue;
+      n[4].ui = alpha;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_ClearColorIuiEXT(ctx->Exec, (red, green, blue, alpha));
+   }
+}
+
+/** GL_EXT_texture_integer */
+static void GLAPIENTRY
+save_TexParameterIiv(GLenum target, GLenum pname, const GLint *params)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_TEXPARAMETER_I, 6);
+   if (n) {
+      n[1].e = target;
+      n[2].e = pname;
+      n[3].i = params[0];
+      n[4].i = params[1];
+      n[5].i = params[2];
+      n[6].i = params[3];
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_TexParameterIivEXT(ctx->Exec, (target, pname, params));
+   }
+}
+
+/** GL_EXT_texture_integer */
+static void GLAPIENTRY
+save_TexParameterIuiv(GLenum target, GLenum pname, const GLuint *params)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_TEXPARAMETER_UI, 6);
+   if (n) {
+      n[1].e = target;
+      n[2].e = pname;
+      n[3].ui = params[0];
+      n[4].ui = params[1];
+      n[5].ui = params[2];
+      n[6].ui = params[3];
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_TexParameterIuivEXT(ctx->Exec, (target, pname, params));
+   }
+}
+
+/** GL_EXT_texture_integer */
+static void GLAPIENTRY
+exec_GetTexParameterIiv(GLenum target, GLenum pname, GLint *params)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   FLUSH_VERTICES(ctx, 0);
+   CALL_GetTexParameterIivEXT(ctx->Exec, (target, pname, params));
+}
+
+/** GL_EXT_texture_integer */
+static void GLAPIENTRY
+exec_GetTexParameterIuiv(GLenum target, GLenum pname, GLuint *params)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   FLUSH_VERTICES(ctx, 0);
+   CALL_GetTexParameterIuivEXT(ctx->Exec, (target, pname, params));
+}
+
+
+/* GL_ARB_instanced_arrays */
+static void GLAPIENTRY
+save_VertexAttribDivisor(GLuint index, GLuint divisor)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_VERTEX_ATTRIB_DIVISOR, 2);
+   if (n) {
+      n[1].ui = index;
+      n[2].ui = divisor;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_VertexAttribDivisorARB(ctx->Exec, (index, divisor));
+   }
+}
+
+
+/* GL_NV_texture_barrier */
+static void GLAPIENTRY
+save_TextureBarrierNV(void)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   alloc_instruction(ctx, OPCODE_TEXTURE_BARRIER_NV, 0);
+   if (ctx->ExecuteFlag) {
+      CALL_TextureBarrierNV(ctx->Exec, ());
+   }
+}
+
+
+/* GL_ARB_sampler_objects */
+static void GLAPIENTRY
+save_BindSampler(GLuint unit, GLuint sampler)
+{
+   Node *n;
+   GET_CURRENT_CONTEXT(ctx);
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_BIND_SAMPLER, 2);
+   if (n) {
+      n[1].ui = unit;
+      n[2].ui = sampler;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_BindSampler(ctx->Exec, (unit, sampler));
+   }
+}
+
+static void GLAPIENTRY
+save_SamplerParameteriv(GLuint sampler, GLenum pname, const GLint *params)
+{
+   Node *n;
+   GET_CURRENT_CONTEXT(ctx);
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_SAMPLER_PARAMETERIV, 6);
+   if (n) {
+      n[1].ui = sampler;
+      n[2].e = pname;
+      n[3].i = params[0];
+      if (pname == GL_TEXTURE_BORDER_COLOR) {
+         n[4].i = params[1];
+         n[5].i = params[2];
+         n[6].i = params[3];
+      }
+      else {
+         n[4].i = n[5].i = n[6].i = 0;
+      }
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_SamplerParameteriv(ctx->Exec, (sampler, pname, params));
+   }
+}
+
+static void GLAPIENTRY
+save_SamplerParameteri(GLuint sampler, GLenum pname, GLint param)
+{
+   save_SamplerParameteriv(sampler, pname, &param);
+}
+
+static void GLAPIENTRY
+save_SamplerParameterfv(GLuint sampler, GLenum pname, const GLfloat *params)
+{
+   Node *n;
+   GET_CURRENT_CONTEXT(ctx);
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_SAMPLER_PARAMETERFV, 6);
+   if (n) {
+      n[1].ui = sampler;
+      n[2].e = pname;
+      n[3].f = params[0];
+      if (pname == GL_TEXTURE_BORDER_COLOR) {
+         n[4].f = params[1];
+         n[5].f = params[2];
+         n[6].f = params[3];
+      }
+      else {
+         n[4].f = n[5].f = n[6].f = 0.0F;
+      }
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_SamplerParameterfv(ctx->Exec, (sampler, pname, params));
+   }
+}
+
+static void GLAPIENTRY
+save_SamplerParameterf(GLuint sampler, GLenum pname, GLfloat param)
+{
+   save_SamplerParameterfv(sampler, pname, &param);
+}
+
+static void GLAPIENTRY
+save_SamplerParameterIiv(GLuint sampler, GLenum pname, const GLint *params)
+{
+   Node *n;
+   GET_CURRENT_CONTEXT(ctx);
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_SAMPLER_PARAMETERIIV, 6);
+   if (n) {
+      n[1].ui = sampler;
+      n[2].e = pname;
+      n[3].i = params[0];
+      if (pname == GL_TEXTURE_BORDER_COLOR) {
+         n[4].i = params[1];
+         n[5].i = params[2];
+         n[6].i = params[3];
+      }
+      else {
+         n[4].i = n[5].i = n[6].i = 0;
+      }
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_SamplerParameterIiv(ctx->Exec, (sampler, pname, params));
+   }
+}
+
+static void GLAPIENTRY
+save_SamplerParameterIuiv(GLuint sampler, GLenum pname, const GLuint *params)
+{
+   Node *n;
+   GET_CURRENT_CONTEXT(ctx);
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_SAMPLER_PARAMETERUIV, 6);
+   if (n) {
+      n[1].ui = sampler;
+      n[2].e = pname;
+      n[3].ui = params[0];
+      if (pname == GL_TEXTURE_BORDER_COLOR) {
+         n[4].ui = params[1];
+         n[5].ui = params[2];
+         n[6].ui = params[3];
+      }
+      else {
+         n[4].ui = n[5].ui = n[6].ui = 0;
+      }
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_SamplerParameterIuiv(ctx->Exec, (sampler, pname, params));
+   }
+}
+
+/* GL_ARB_geometry_shader4 */
+static void GLAPIENTRY
+save_ProgramParameteri(GLuint program, GLenum pname, GLint value)
+{
+   Node *n;
+   GET_CURRENT_CONTEXT(ctx);
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_PROGRAM_PARAMETERI, 3);
+   if (n) {
+      n[1].ui = program;
+      n[2].e = pname;
+      n[3].i = value;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_ProgramParameteriARB(ctx->Exec, (program, pname, value));
+   }
+}
+
+static void GLAPIENTRY
+save_FramebufferTexture(GLenum target, GLenum attachment,
+                        GLuint texture, GLint level)
+{
+   Node *n;
+   GET_CURRENT_CONTEXT(ctx);
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_FRAMEBUFFER_TEXTURE, 4);
+   if (n) {
+      n[1].e = target;
+      n[2].e = attachment;
+      n[3].ui = texture;
+      n[4].i = level;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_FramebufferTextureARB(ctx->Exec, (target, attachment, texture, level));
+   }
+}
+
+static void GLAPIENTRY
+save_FramebufferTextureFace(GLenum target, GLenum attachment,
+                            GLuint texture, GLint level, GLenum face)
+{
+   Node *n;
+   GET_CURRENT_CONTEXT(ctx);
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_FRAMEBUFFER_TEXTURE_FACE, 5);
+   if (n) {
+      n[1].e = target;
+      n[2].e = attachment;
+      n[3].ui = texture;
+      n[4].i = level;
+      n[5].e = face;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_FramebufferTextureFaceARB(ctx->Exec, (target, attachment, texture,
+                                                 level, face));
+   }
+}
+
+
+
+static void GLAPIENTRY
+save_WaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout)
+{
+   Node *n;
+   GET_CURRENT_CONTEXT(ctx);
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_WAIT_SYNC, 4);
+   if (n) {
+      union uint64_pair p;
+      p.uint64 = timeout;
+      n[1].data = sync;
+      n[2].e = flags;
+      n[3].ui = p.uint32[0];
+      n[4].ui = p.uint32[1];
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_WaitSync(ctx->Exec, (sync, flags, timeout));
+   }
+}
+
+
+/** GL_NV_conditional_render */
+static void GLAPIENTRY
+save_BeginConditionalRender(GLuint queryId, GLenum mode)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_BEGIN_CONDITIONAL_RENDER, 2);
+   if (n) {
+      n[1].i = queryId;
+      n[2].e = mode;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_BeginConditionalRenderNV(ctx->Exec, (queryId, mode));
+   }
+}
+
+static void GLAPIENTRY
+save_EndConditionalRender(void)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   alloc_instruction(ctx, OPCODE_END_CONDITIONAL_RENDER, 0);
+   if (ctx->ExecuteFlag) {
+      CALL_EndConditionalRenderNV(ctx->Exec, ());
+   }
+}
 
 
 /**
@@ -6434,7 +7420,7 @@ save_UniformMatrix4x3fv(GLint location, GLsizei count, GLboolean transpose,
  * command that provoked the error.  I don't see this as a problem.
  */
 static void
-save_error(GLcontext *ctx, GLenum error, const char *s)
+save_error(struct gl_context *ctx, GLenum error, const char *s)
 {
    Node *n;
    n = alloc_instruction(ctx, OPCODE_ERROR, 2);
@@ -6449,12 +7435,12 @@ save_error(GLcontext *ctx, GLenum error, const char *s)
  * Compile an error into current display list.
  */
 void
-_mesa_compile_error(GLcontext *ctx, GLenum error, const char *s)
+_mesa_compile_error(struct gl_context *ctx, GLenum error, const char *s)
 {
    if (ctx->CompileFlag)
       save_error(ctx, error, s);
    if (ctx->ExecuteFlag)
-      _mesa_error(ctx, error, s);
+      _mesa_error(ctx, error, "%s", s);
 }
 
 
@@ -6462,7 +7448,7 @@ _mesa_compile_error(GLcontext *ctx, GLenum error, const char *s)
  * Test if ID names a display list.
  */
 static GLboolean
-islist(GLcontext *ctx, GLuint list)
+islist(struct gl_context *ctx, GLuint list)
 {
    if (list > 0 && lookup_list(ctx, list)) {
       return GL_TRUE;
@@ -6486,7 +7472,7 @@ islist(GLcontext *ctx, GLuint list)
  * \param list - display list number
  */
 static void
-execute_list(GLcontext *ctx, GLuint list)
+execute_list(struct gl_context *ctx, GLuint list)
 {
    struct gl_display_list *dlist;
    Node *n;
@@ -6521,7 +7507,7 @@ execute_list(GLcontext *ctx, GLuint list)
       else {
          switch (opcode) {
          case OPCODE_ERROR:
-            _mesa_error(ctx, n[1].e, (const char *) n[2].data);
+            _mesa_error(ctx, n[1].e, "%s", (const char *) n[2].data);
             break;
          case OPCODE_ACCUM:
             CALL_Accum(ctx->Exec, (n[1].e, n[2].f));
@@ -6555,6 +7541,26 @@ execute_list(GLcontext *ctx, GLuint list)
             CALL_BlendFuncSeparateEXT(ctx->Exec,
                                       (n[1].e, n[2].e, n[3].e, n[4].e));
             break;
+
+         case OPCODE_BLEND_FUNC_I:
+            /* GL_ARB_draw_buffers_blend */
+            CALL_BlendFunciARB(ctx->Exec, (n[1].ui, n[2].e, n[3].e));
+            break;
+         case OPCODE_BLEND_FUNC_SEPARATE_I:
+            /* GL_ARB_draw_buffers_blend */
+            CALL_BlendFuncSeparateiARB(ctx->Exec, (n[1].ui, n[2].e, n[3].e,
+                                                   n[4].e, n[5].e));
+            break;
+         case OPCODE_BLEND_EQUATION_I:
+            /* GL_ARB_draw_buffers_blend */
+            CALL_BlendEquationiARB(ctx->Exec, (n[1].ui, n[2].e));
+            break;
+         case OPCODE_BLEND_EQUATION_SEPARATE_I:
+            /* GL_ARB_draw_buffers_blend */
+            CALL_BlendEquationSeparateiARB(ctx->Exec,
+                                           (n[1].ui, n[2].e, n[3].e));
+            break;
+
          case OPCODE_CALL_LIST:
             /* Generated by glCallList(), don't add ListBase */
             if (ctx->ListState.CallDepth < MAX_LIST_NESTING) {
@@ -6574,6 +7580,39 @@ execute_list(GLcontext *ctx, GLuint list)
             break;
          case OPCODE_CLEAR:
             CALL_Clear(ctx->Exec, (n[1].bf));
+            break;
+         case OPCODE_CLEAR_BUFFER_IV:
+            {
+               GLint value[4];
+               value[0] = n[3].i;
+               value[1] = n[4].i;
+               value[2] = n[5].i;
+               value[3] = n[6].i;
+               CALL_ClearBufferiv(ctx->Exec, (n[1].e, n[2].i, value));
+            }
+            break;
+         case OPCODE_CLEAR_BUFFER_UIV:
+            {
+               GLuint value[4];
+               value[0] = n[3].ui;
+               value[1] = n[4].ui;
+               value[2] = n[5].ui;
+               value[3] = n[6].ui;
+               CALL_ClearBufferuiv(ctx->Exec, (n[1].e, n[2].i, value));
+            }
+            break;
+         case OPCODE_CLEAR_BUFFER_FV:
+            {
+               GLfloat value[4];
+               value[0] = n[3].f;
+               value[1] = n[4].f;
+               value[2] = n[5].f;
+               value[3] = n[6].f;
+               CALL_ClearBufferfv(ctx->Exec, (n[1].e, n[2].i, value));
+            }
+            break;
+         case OPCODE_CLEAR_BUFFER_FI:
+            CALL_ClearBufferfi(ctx->Exec, (n[1].e, n[2].i, n[3].f, n[4].i));
             break;
          case OPCODE_CLEAR_COLOR:
             CALL_ClearColor(ctx->Exec, (n[1].f, n[2].f, n[3].f, n[4].f));
@@ -6602,6 +7641,10 @@ execute_list(GLcontext *ctx, GLuint list)
             break;
          case OPCODE_COLOR_MASK:
             CALL_ColorMask(ctx->Exec, (n[1].b, n[2].b, n[3].b, n[4].b));
+            break;
+         case OPCODE_COLOR_MASK_INDEXED:
+            CALL_ColorMaskIndexedEXT(ctx->Exec, (n[1].ui, n[2].b, n[3].b,
+                                                 n[4].b, n[5].b));
             break;
          case OPCODE_COLOR_MATERIAL:
             CALL_ColorMaterial(ctx->Exec, (n[1].e, n[2].e));
@@ -6745,6 +7788,9 @@ execute_list(GLcontext *ctx, GLuint list)
          case OPCODE_DISABLE:
             CALL_Disable(ctx->Exec, (n[1].e));
             break;
+         case OPCODE_DISABLE_INDEXED:
+            CALL_DisableIndexedEXT(ctx->Exec, (n[1].ui, n[2].e));
+            break;
          case OPCODE_DRAW_BUFFER:
             CALL_DrawBuffer(ctx->Exec, (n[1].e));
             break;
@@ -6759,6 +7805,9 @@ execute_list(GLcontext *ctx, GLuint list)
             break;
          case OPCODE_ENABLE:
             CALL_Enable(ctx->Exec, (n[1].e));
+            break;
+         case OPCODE_ENABLE_INDEXED:
+            CALL_EnableIndexedEXT(ctx->Exec, (n[1].ui, n[2].e));
             break;
          case OPCODE_EVALMESH1:
             CALL_EvalMesh1(ctx->Exec, (n[1].e, n[2].i, n[3].i));
@@ -7263,6 +8312,12 @@ execute_list(GLcontext *ctx, GLuint list)
 	 case OPCODE_USE_PROGRAM:
 	    CALL_UseProgramObjectARB(ctx->Exec, (n[1].ui));
 	    break;
+	 case OPCODE_USE_SHADER_PROGRAM_EXT:
+	    CALL_UseShaderProgramEXT(ctx->Exec, (n[1].ui, n[2].ui));
+	    break;
+	 case OPCODE_ACTIVE_PROGRAM_EXT:
+	    CALL_ActiveProgramEXT(ctx->Exec, (n[1].ui));
+	    break;
 	 case OPCODE_UNIFORM_1F:
 	    CALL_Uniform1fARB(ctx->Exec, (n[1].i, n[2].f));
 	    break;
@@ -7313,7 +8368,32 @@ execute_list(GLcontext *ctx, GLuint list)
 	 case OPCODE_UNIFORM_4IV:
 	    CALL_Uniform4ivARB(ctx->Exec, (n[1].i, n[2].i, n[3].data));
 	    break;
-
+	 case OPCODE_UNIFORM_1UI:
+	    /*CALL_Uniform1uiARB(ctx->Exec, (n[1].i, n[2].i));*/
+	    break;
+	 case OPCODE_UNIFORM_2UI:
+	    /*CALL_Uniform2uiARB(ctx->Exec, (n[1].i, n[2].i, n[3].i));*/
+	    break;
+	 case OPCODE_UNIFORM_3UI:
+	    /*CALL_Uniform3uiARB(ctx->Exec, (n[1].i, n[2].i, n[3].i, n[4].i));*/
+	    break;
+	 case OPCODE_UNIFORM_4UI:
+	    /*CALL_Uniform4uiARB(ctx->Exec,
+                              (n[1].i, n[2].i, n[3].i, n[4].i, n[5].i));
+            */
+	    break;
+	 case OPCODE_UNIFORM_1UIV:
+	    /*CALL_Uniform1uivARB(ctx->Exec, (n[1].i, n[2].i, n[3].data));*/
+	    break;
+	 case OPCODE_UNIFORM_2UIV:
+	    /*CALL_Uniform2uivARB(ctx->Exec, (n[1].i, n[2].i, n[3].data));*/
+	    break;
+	 case OPCODE_UNIFORM_3UIV:
+	    /*CALL_Uniform3uivARB(ctx->Exec, (n[1].i, n[2].i, n[3].data));*/
+	    break;
+	 case OPCODE_UNIFORM_4UIV:
+	    /*CALL_Uniform4uivARB(ctx->Exec, (n[1].i, n[2].i, n[3].data));*/
+	    break;
 	 case OPCODE_UNIFORM_MATRIX22:
 	    CALL_UniformMatrix2fvARB(ctx->Exec,
                                      (n[1].i, n[2].i, n[3].b, n[4].data));
@@ -7350,6 +8430,10 @@ execute_list(GLcontext *ctx, GLuint list)
 	    CALL_UniformMatrix4x3fv(ctx->Exec,
                                     (n[1].i, n[2].i, n[3].b, n[4].data));
 	    break;
+
+         case OPCODE_CLAMP_COLOR:
+            CALL_ClampColorARB(ctx->Exec, (n[1].e, n[2].e));
+            break;
 
          case OPCODE_TEX_BUMP_PARAMETER_ATI:
             {
@@ -7468,6 +8552,140 @@ execute_list(GLcontext *ctx, GLuint list)
             CALL_EvalPoint2(ctx->Exec, (n[1].i, n[2].i));
             break;
 
+         /* GL_EXT_texture_integer */
+         case OPCODE_CLEARCOLOR_I:
+            CALL_ClearColorIiEXT(ctx->Exec, (n[1].i, n[2].i, n[3].i, n[4].i));
+            break;
+         case OPCODE_CLEARCOLOR_UI:
+            CALL_ClearColorIuiEXT(ctx->Exec,
+                                  (n[1].ui, n[2].ui, n[3].ui, n[4].ui));
+            break;
+         case OPCODE_TEXPARAMETER_I:
+            {
+               GLint params[4];
+               params[0] = n[3].i;
+               params[1] = n[4].i;
+               params[2] = n[5].i;
+               params[3] = n[6].i;
+               CALL_TexParameterIivEXT(ctx->Exec, (n[1].e, n[2].e, params));
+            }
+            break;
+         case OPCODE_TEXPARAMETER_UI:
+            {
+               GLuint params[4];
+               params[0] = n[3].ui;
+               params[1] = n[4].ui;
+               params[2] = n[5].ui;
+               params[3] = n[6].ui;
+               CALL_TexParameterIuivEXT(ctx->Exec, (n[1].e, n[2].e, params));
+            }
+            break;
+
+         case OPCODE_VERTEX_ATTRIB_DIVISOR:
+            /* GL_ARB_instanced_arrays */
+            CALL_VertexAttribDivisorARB(ctx->Exec, (n[1].ui, n[2].ui));
+            break;
+
+         case OPCODE_TEXTURE_BARRIER_NV:
+            CALL_TextureBarrierNV(ctx->Exec, ());
+            break;
+
+         /* GL_EXT/ARB_transform_feedback */
+         case OPCODE_BEGIN_TRANSFORM_FEEDBACK:
+            CALL_BeginTransformFeedbackEXT(ctx->Exec, (n[1].e));
+            break;
+         case OPCODE_END_TRANSFORM_FEEDBACK:
+            CALL_EndTransformFeedbackEXT(ctx->Exec, ());
+            break;
+         case OPCODE_BIND_TRANSFORM_FEEDBACK:
+            CALL_BindTransformFeedback(ctx->Exec, (n[1].e, n[2].ui));
+            break;
+         case OPCODE_PAUSE_TRANSFORM_FEEDBACK:
+            CALL_PauseTransformFeedback(ctx->Exec, ());
+            break;
+         case OPCODE_RESUME_TRANSFORM_FEEDBACK:
+            CALL_ResumeTransformFeedback(ctx->Exec, ());
+            break;
+         case OPCODE_DRAW_TRANSFORM_FEEDBACK:
+            CALL_DrawTransformFeedback(ctx->Exec, (n[1].e, n[2].ui));
+            break;
+
+
+         case OPCODE_BIND_SAMPLER:
+            CALL_BindSampler(ctx->Exec, (n[1].ui, n[2].ui));
+            break;
+         case OPCODE_SAMPLER_PARAMETERIV:
+            {
+               GLint params[4];
+               params[0] = n[3].i;
+               params[1] = n[4].i;
+               params[2] = n[5].i;
+               params[3] = n[6].i;
+               CALL_SamplerParameteriv(ctx->Exec, (n[1].ui, n[2].e, params));
+            }
+            break;
+         case OPCODE_SAMPLER_PARAMETERFV:
+            {
+               GLfloat params[4];
+               params[0] = n[3].f;
+               params[1] = n[4].f;
+               params[2] = n[5].f;
+               params[3] = n[6].f;
+               CALL_SamplerParameterfv(ctx->Exec, (n[1].ui, n[2].e, params));
+            }
+            break;
+         case OPCODE_SAMPLER_PARAMETERIIV:
+            {
+               GLint params[4];
+               params[0] = n[3].i;
+               params[1] = n[4].i;
+               params[2] = n[5].i;
+               params[3] = n[6].i;
+               CALL_SamplerParameterIiv(ctx->Exec, (n[1].ui, n[2].e, params));
+            }
+            break;
+         case OPCODE_SAMPLER_PARAMETERUIV:
+            {
+               GLuint params[4];
+               params[0] = n[3].ui;
+               params[1] = n[4].ui;
+               params[2] = n[5].ui;
+               params[3] = n[6].ui;
+               CALL_SamplerParameterIuiv(ctx->Exec, (n[1].ui, n[2].e, params));
+            }
+            break;
+
+         /* GL_ARB_geometry_shader4 */
+         case OPCODE_PROGRAM_PARAMETERI:
+            CALL_ProgramParameteriARB(ctx->Exec, (n[1].ui, n[2].e, n[3].i));
+            break;
+         case OPCODE_FRAMEBUFFER_TEXTURE:
+            CALL_FramebufferTextureARB(ctx->Exec, (n[1].e, n[2].e,
+                                                   n[3].ui, n[4].i));
+            break;
+         case OPCODE_FRAMEBUFFER_TEXTURE_FACE:
+            CALL_FramebufferTextureFaceARB(ctx->Exec, (n[1].e, n[2].e,
+                                                       n[3].ui, n[4].i, n[5].e));
+            break;
+
+         /* GL_ARB_sync */
+         case OPCODE_WAIT_SYNC:
+            {
+               union uint64_pair p;
+               p.uint32[0] = n[3].ui;
+               p.uint32[1] = n[4].ui;
+               CALL_WaitSync(ctx->Exec, (n[1].data, n[2].bf, p.uint64));
+            }
+            break;
+
+         /* GL_NV_conditional_render */
+         case OPCODE_BEGIN_CONDITIONAL_RENDER:
+            CALL_BeginConditionalRenderNV(ctx->Exec, (n[1].i, n[2].e));
+            break;
+         case OPCODE_END_CONDITIONAL_RENDER:
+            CALL_EndConditionalRenderNV(ctx->Exec, ());
+            break;
+
          case OPCODE_CONTINUE:
             n = (Node *) n[1].next;
             break;
@@ -7477,9 +8695,9 @@ execute_list(GLcontext *ctx, GLuint list)
          default:
             {
                char msg[1000];
-               _mesa_sprintf(msg, "Error in execute_list: opcode=%d",
+               _mesa_snprintf(msg, sizeof(msg), "Error in execute_list: opcode=%d",
                              (int) opcode);
-               _mesa_problem(ctx, msg);
+               _mesa_problem(ctx, "%s", msg);
             }
             done = GL_TRUE;
          }
@@ -7681,8 +8899,6 @@ _mesa_CallList(GLuint list)
    GLboolean save_compile_flag;
    GET_CURRENT_CONTEXT(ctx);
    FLUSH_CURRENT(ctx, 0);
-   /* VERY IMPORTANT:  Save the CompileFlag status, turn it off, */
-   /* execute the display list, and restore the CompileFlag. */
 
    if (MESA_VERBOSE & VERBOSE_API)
       _mesa_debug(ctx, "glCallList %d\n", list);
@@ -7692,8 +8908,12 @@ _mesa_CallList(GLuint list)
       return;
    }
 
-/*     mesa_print_display_list( list ); */
+   if (0)
+      mesa_print_display_list( list );
 
+   /* VERY IMPORTANT:  Save the CompileFlag status, turn it off,
+    * execute the display list, and restore the CompileFlag.
+    */
    save_compile_flag = ctx->CompileFlag;
    if (save_compile_flag) {
       ctx->CompileFlag = GL_FALSE;
@@ -8454,8 +9674,8 @@ exec_FogCoordPointerEXT(GLenum type, GLsizei stride, const GLvoid *ptr)
 
 /* GL_EXT_multi_draw_arrays */
 static void GLAPIENTRY
-exec_MultiDrawArraysEXT(GLenum mode, GLint * first,
-                        GLsizei * count, GLsizei primcount)
+exec_MultiDrawArraysEXT(GLenum mode, const GLint *first,
+                        const GLsizei *count, GLsizei primcount)
 {
    GET_CURRENT_CONTEXT(ctx);
    FLUSH_VERTICES(ctx, 0);
@@ -8489,8 +9709,6 @@ exec_MultiModeDrawElementsIBM(const GLenum * mode,
                                   modestride));
 }
 
-
-
 /**
  * Setup the given dispatch table to point to Mesa's display list
  * building functions.
@@ -8499,9 +9717,15 @@ exec_MultiModeDrawElementsIBM(const GLenum * mode,
  * initialized from _mesa_init_api_defaults and from the active vtxfmt
  * struct.
  */
-void
-_mesa_init_save_table(struct _glapi_table *table)
+struct _glapi_table *
+_mesa_create_save_table(void)
 {
+   struct _glapi_table *table;
+
+   table = _mesa_alloc_dispatch_table(_gloffset_COUNT);
+   if (table == NULL)
+      return NULL;
+
    _mesa_loopback_init_api_table(table);
 
    /* GL 1.0 */
@@ -8519,6 +9743,7 @@ _mesa_init_save_table(struct _glapi_table *table)
    SET_ClearStencil(table, save_ClearStencil);
    SET_ClipPlane(table, save_ClipPlane);
    SET_ColorMask(table, save_ColorMask);
+   SET_ColorMaskIndexedEXT(table, save_ColorMaskIndexed);
    SET_ColorMaterial(table, save_ColorMaterial);
    SET_CopyPixels(table, save_CopyPixels);
    SET_CullFace(table, save_CullFace);
@@ -8527,9 +9752,11 @@ _mesa_init_save_table(struct _glapi_table *table)
    SET_DepthMask(table, save_DepthMask);
    SET_DepthRange(table, save_DepthRange);
    SET_Disable(table, save_Disable);
+   SET_DisableIndexedEXT(table, save_DisableIndexed);
    SET_DrawBuffer(table, save_DrawBuffer);
    SET_DrawPixels(table, save_DrawPixels);
    SET_Enable(table, save_Enable);
+   SET_EnableIndexedEXT(table, save_EnableIndexed);
    SET_EndList(table, _mesa_EndList);
    SET_EvalMesh1(table, save_EvalMesh1);
    SET_EvalMesh2(table, save_EvalMesh2);
@@ -8923,6 +10150,28 @@ _mesa_init_save_table(struct _glapi_table *table)
    SET_GenVertexArraysAPPLE(table, _mesa_GenVertexArraysAPPLE);
    SET_IsVertexArrayAPPLE(table, _mesa_IsVertexArrayAPPLE);
 
+   /* 310. GL_EXT_framebuffer_object */
+   SET_GenFramebuffersEXT(table, _mesa_GenFramebuffersEXT);
+   SET_BindFramebufferEXT(table, _mesa_BindFramebufferEXT);
+   SET_DeleteFramebuffersEXT(table, _mesa_DeleteFramebuffersEXT);
+   SET_CheckFramebufferStatusEXT(table, _mesa_CheckFramebufferStatusEXT);
+   SET_GenRenderbuffersEXT(table, _mesa_GenRenderbuffersEXT);
+   SET_BindRenderbufferEXT(table, _mesa_BindRenderbufferEXT);
+   SET_DeleteRenderbuffersEXT(table, _mesa_DeleteRenderbuffersEXT);
+   SET_RenderbufferStorageEXT(table, _mesa_RenderbufferStorageEXT);
+   SET_FramebufferTexture1DEXT(table, _mesa_FramebufferTexture1DEXT);
+   SET_FramebufferTexture2DEXT(table, _mesa_FramebufferTexture2DEXT);
+   SET_FramebufferTexture3DEXT(table, _mesa_FramebufferTexture3DEXT);
+   SET_FramebufferRenderbufferEXT(table, _mesa_FramebufferRenderbufferEXT);
+   SET_GenerateMipmapEXT(table, _mesa_GenerateMipmapEXT);
+
+   /* 317. GL_EXT_framebuffer_multisample */
+   SET_RenderbufferStorageMultisample(table, _mesa_RenderbufferStorageMultisample);
+
+   /* GL_ARB_vertex_array_object */
+   SET_BindVertexArray(table, _mesa_BindVertexArray);
+   SET_GenVertexArrays(table, _mesa_GenVertexArrays);
+
    /* ???. GL_EXT_depth_bounds_test */
    SET_DepthBoundsEXT(table, save_DepthBoundsEXT);
 
@@ -8966,9 +10215,9 @@ _mesa_init_save_table(struct _glapi_table *table)
    SET_DeleteProgramsNV(table, _mesa_DeletePrograms);
    SET_GenProgramsNV(table, _mesa_GenPrograms);
    SET_IsProgramNV(table, _mesa_IsProgramARB);
-   SET_GetVertexAttribdvNV(table, _mesa_GetVertexAttribdvNV);
-   SET_GetVertexAttribfvNV(table, _mesa_GetVertexAttribfvNV);
-   SET_GetVertexAttribivNV(table, _mesa_GetVertexAttribivNV);
+   SET_GetVertexAttribdvARB(table, _mesa_GetVertexAttribdvARB);
+   SET_GetVertexAttribfvARB(table, _mesa_GetVertexAttribfvARB);
+   SET_GetVertexAttribivARB(table, _mesa_GetVertexAttribivARB);
    SET_GetVertexAttribPointervNV(table, _mesa_GetVertexAttribPointervNV);
    SET_ProgramEnvParameter4dARB(table, save_ProgramEnvParameter4dARB);
    SET_ProgramEnvParameter4dvARB(table, save_ProgramEnvParameter4dvARB);
@@ -8989,7 +10238,6 @@ _mesa_init_save_table(struct _glapi_table *table)
 #endif
 
    /* ARB 28. GL_ARB_vertex_buffer_object */
-#if FEATURE_ARB_vertex_buffer_object
    /* None of the extension's functions get compiled */
    SET_BindBufferARB(table, _mesa_BindBufferARB);
    SET_BufferDataARB(table, _mesa_BufferDataARB);
@@ -9002,18 +10250,13 @@ _mesa_init_save_table(struct _glapi_table *table)
    SET_IsBufferARB(table, _mesa_IsBufferARB);
    SET_MapBufferARB(table, _mesa_MapBufferARB);
    SET_UnmapBufferARB(table, _mesa_UnmapBufferARB);
-#endif
 
 #if FEATURE_queryobj
+   _mesa_init_queryobj_dispatch(table); /* glGetQuery, etc */
    SET_BeginQueryARB(table, save_BeginQueryARB);
    SET_EndQueryARB(table, save_EndQueryARB);
-   SET_GenQueriesARB(table, _mesa_GenQueriesARB);
-   SET_DeleteQueriesARB(table, _mesa_DeleteQueriesARB);
-   SET_IsQueryARB(table, _mesa_IsQueryARB);
-   SET_GetQueryivARB(table, _mesa_GetQueryivARB);
-   SET_GetQueryObjectivARB(table, _mesa_GetQueryObjectivARB);
-   SET_GetQueryObjectuivARB(table, _mesa_GetQueryObjectuivARB);
 #endif
+
    SET_DrawBuffersARB(table, save_DrawBuffersARB);
 
 #if FEATURE_EXT_framebuffer_blit
@@ -9021,6 +10264,7 @@ _mesa_init_save_table(struct _glapi_table *table)
 #endif
 
    /* GL_ARB_shader_objects */
+   _mesa_init_shader_dispatch(table); /* Plug in glCreate/Delete/Get, etc */
    SET_UseProgramObjectARB(table, save_UseProgramObjectARB);
    SET_Uniform1fARB(table, save_Uniform1fARB);
    SET_Uniform2fARB(table, save_Uniform2fARB);
@@ -9051,12 +10295,13 @@ _mesa_init_save_table(struct _glapi_table *table)
    /* ARB 30/31/32. GL_ARB_shader_objects, GL_ARB_vertex/fragment_shader */
    SET_BindAttribLocationARB(table, exec_BindAttribLocationARB);
    SET_GetAttribLocationARB(table, exec_GetAttribLocationARB);
+   SET_GetUniformLocationARB(table, exec_GetUniformLocationARB);
    /* XXX additional functions need to be implemented here! */
 
    /* 299. GL_EXT_blend_equation_separate */
    SET_BlendEquationSeparateEXT(table, save_BlendEquationSeparateEXT);
 
-   /* GL_EXT_gpu_program_parmaeters */
+   /* GL_EXT_gpu_program_parameters */
 #if FEATURE_ARB_vertex_program || FEATURE_ARB_fragment_program
    SET_ProgramEnvParameters4fvEXT(table, save_ProgramEnvParameters4fvEXT);
    SET_ProgramLocalParameters4fvEXT(table, save_ProgramLocalParameters4fvEXT);
@@ -9073,6 +10318,114 @@ _mesa_init_save_table(struct _glapi_table *table)
 
    /* 364. GL_EXT_provoking_vertex */
    SET_ProvokingVertexEXT(table, save_ProvokingVertexEXT);
+
+   /* 371. GL_APPLE_object_purgeable */
+#if FEATURE_APPLE_object_purgeable
+   SET_ObjectPurgeableAPPLE(table, _mesa_ObjectPurgeableAPPLE);
+   SET_ObjectUnpurgeableAPPLE(table, _mesa_ObjectUnpurgeableAPPLE);
+   SET_GetObjectParameterivAPPLE(table, _mesa_GetObjectParameterivAPPLE);
+#endif
+
+   /* GL_EXT_texture_integer */
+   SET_ClearColorIiEXT(table, save_ClearColorIi);
+   SET_ClearColorIuiEXT(table, save_ClearColorIui);
+   SET_TexParameterIivEXT(table, save_TexParameterIiv);
+   SET_TexParameterIuivEXT(table, save_TexParameterIuiv);
+   SET_GetTexParameterIivEXT(table, exec_GetTexParameterIiv);
+   SET_GetTexParameterIuivEXT(table, exec_GetTexParameterIuiv);
+
+   /* 377. GL_EXT_separate_shader_objects */
+   SET_UseShaderProgramEXT(table, save_UseShaderProgramEXT);
+   SET_ActiveProgramEXT(table, save_ActiveProgramEXT);
+
+   /* GL_ARB_color_buffer_float */
+   SET_ClampColorARB(table, save_ClampColorARB);
+   SET_ClampColor(table, save_ClampColorARB);
+
+   /* GL 3.0 */
+   SET_ClearBufferiv(table, save_ClearBufferiv);
+   SET_ClearBufferuiv(table, save_ClearBufferuiv);
+   SET_ClearBufferfv(table, save_ClearBufferfv);
+   SET_ClearBufferfi(table, save_ClearBufferfi);
+#if 0
+   SET_Uniform1ui(table, save_Uniform1ui);
+   SET_Uniform2ui(table, save_Uniform2ui);
+   SET_Uniform3ui(table, save_Uniform3ui);
+   SET_Uniform4ui(table, save_Uniform4ui);
+   SET_Uniform1uiv(table, save_Uniform1uiv);
+   SET_Uniform2uiv(table, save_Uniform2uiv);
+   SET_Uniform3uiv(table, save_Uniform3uiv);
+   SET_Uniform4uiv(table, save_Uniform4uiv);
+#else
+   (void) save_Uniform1ui;
+   (void) save_Uniform2ui;
+   (void) save_Uniform3ui;
+   (void) save_Uniform4ui;
+   (void) save_Uniform1uiv;
+   (void) save_Uniform2uiv;
+   (void) save_Uniform3uiv;
+   (void) save_Uniform4uiv;
+#endif
+
+#if FEATURE_EXT_transform_feedback
+   /* These are not compiled into display lists: */
+   SET_BindBufferBaseEXT(table, _mesa_BindBufferBase);
+   SET_BindBufferOffsetEXT(table, _mesa_BindBufferOffsetEXT);
+   SET_BindBufferRangeEXT(table, _mesa_BindBufferRange);
+   SET_TransformFeedbackVaryingsEXT(table, _mesa_TransformFeedbackVaryings);
+   /* These are: */
+   SET_BeginTransformFeedbackEXT(table, save_BeginTransformFeedback);
+   SET_EndTransformFeedbackEXT(table, save_EndTransformFeedback);
+   SET_BindTransformFeedback(table, save_BindTransformFeedback);
+   SET_PauseTransformFeedback(table, save_PauseTransformFeedback);
+   SET_ResumeTransformFeedback(table, save_ResumeTransformFeedback);
+   SET_DrawTransformFeedback(table, save_DrawTransformFeedback);
+#endif
+
+   /* GL_ARB_instanced_arrays */
+   SET_VertexAttribDivisorARB(table, save_VertexAttribDivisor);
+
+   /* GL_NV_texture_barrier */
+   SET_TextureBarrierNV(table, save_TextureBarrierNV);
+
+   /* GL_ARB_sampler_objects */
+   _mesa_init_sampler_object_dispatch(table); /* plug in Gen/Get/etc functions */
+   SET_BindSampler(table, save_BindSampler);
+   SET_SamplerParameteri(table, save_SamplerParameteri);
+   SET_SamplerParameterf(table, save_SamplerParameterf);
+   SET_SamplerParameteriv(table, save_SamplerParameteriv);
+   SET_SamplerParameterfv(table, save_SamplerParameterfv);
+   SET_SamplerParameterIiv(table, save_SamplerParameterIiv);
+   SET_SamplerParameterIuiv(table, save_SamplerParameterIuiv);
+
+   /* GL_ARB_draw_buffer_blend */
+   SET_BlendFunciARB(table, save_BlendFunci);
+   SET_BlendFuncSeparateiARB(table, save_BlendFuncSeparatei);
+   SET_BlendEquationiARB(table, save_BlendEquationi);
+   SET_BlendEquationSeparateiARB(table, save_BlendEquationSeparatei);
+
+   /* GL_ARB_geometry_shader4 */
+   SET_ProgramParameteriARB(table, save_ProgramParameteri);
+   SET_FramebufferTextureARB(table, save_FramebufferTexture);
+   SET_FramebufferTextureFaceARB(table, save_FramebufferTextureFace);
+
+   /* GL_NV_conditional_render */
+   SET_BeginConditionalRenderNV(table, save_BeginConditionalRender);
+   SET_EndConditionalRenderNV(table, save_EndConditionalRender);
+
+   /* GL_ARB_sync */
+   _mesa_init_sync_dispatch(table);
+   SET_WaitSync(table, save_WaitSync);
+
+   /* GL_ARB_texture_storage (no dlist support) */
+   SET_TexStorage1D(table, _mesa_TexStorage1D);
+   SET_TexStorage2D(table, _mesa_TexStorage2D);
+   SET_TexStorage3D(table, _mesa_TexStorage3D);
+   SET_TextureStorage1DEXT(table, _mesa_TextureStorage1DEXT);
+   SET_TextureStorage2DEXT(table, _mesa_TextureStorage2DEXT);
+   SET_TextureStorage3DEXT(table, _mesa_TextureStorage3DEXT);
+
+   return table;
 }
 
 
@@ -9089,14 +10442,14 @@ enum_string(GLenum k)
  * TODO: many commands aren't handled yet.
  */
 static void GLAPIENTRY
-print_list(GLcontext *ctx, GLuint list)
+print_list(struct gl_context *ctx, GLuint list)
 {
    struct gl_display_list *dlist;
    Node *n;
    GLboolean done;
 
    if (!islist(ctx, list)) {
-      _mesa_printf("%u is not a display list ID\n", list);
+      printf("%u is not a display list ID\n", list);
       return;
    }
 
@@ -9106,7 +10459,7 @@ print_list(GLcontext *ctx, GLuint list)
 
    n = dlist->Head;
 
-   _mesa_printf("START-LIST %u, address %p\n", list, (void *) n);
+   printf("START-LIST %u, address %p\n", list, (void *) n);
 
    done = n ? GL_FALSE : GL_TRUE;
    while (!done) {
@@ -9118,196 +10471,196 @@ print_list(GLcontext *ctx, GLuint list)
       else {
          switch (opcode) {
          case OPCODE_ACCUM:
-            _mesa_printf("Accum %s %g\n", enum_string(n[1].e), n[2].f);
+            printf("Accum %s %g\n", enum_string(n[1].e), n[2].f);
             break;
          case OPCODE_BITMAP:
-            _mesa_printf("Bitmap %d %d %g %g %g %g %p\n", n[1].i, n[2].i,
+            printf("Bitmap %d %d %g %g %g %g %p\n", n[1].i, n[2].i,
                          n[3].f, n[4].f, n[5].f, n[6].f, (void *) n[7].data);
             break;
          case OPCODE_CALL_LIST:
-            _mesa_printf("CallList %d\n", (int) n[1].ui);
+            printf("CallList %d\n", (int) n[1].ui);
             break;
          case OPCODE_CALL_LIST_OFFSET:
-            _mesa_printf("CallList %d + offset %u = %u\n", (int) n[1].ui,
+            printf("CallList %d + offset %u = %u\n", (int) n[1].ui,
                          ctx->List.ListBase, ctx->List.ListBase + n[1].ui);
             break;
          case OPCODE_COLOR_TABLE_PARAMETER_FV:
-            _mesa_printf("ColorTableParameterfv %s %s %f %f %f %f\n",
+            printf("ColorTableParameterfv %s %s %f %f %f %f\n",
                          enum_string(n[1].e), enum_string(n[2].e),
                          n[3].f, n[4].f, n[5].f, n[6].f);
             break;
          case OPCODE_COLOR_TABLE_PARAMETER_IV:
-            _mesa_printf("ColorTableParameteriv %s %s %d %d %d %d\n",
+            printf("ColorTableParameteriv %s %s %d %d %d %d\n",
                          enum_string(n[1].e), enum_string(n[2].e),
                          n[3].i, n[4].i, n[5].i, n[6].i);
             break;
          case OPCODE_DISABLE:
-            _mesa_printf("Disable %s\n", enum_string(n[1].e));
+            printf("Disable %s\n", enum_string(n[1].e));
             break;
          case OPCODE_ENABLE:
-            _mesa_printf("Enable %s\n", enum_string(n[1].e));
+            printf("Enable %s\n", enum_string(n[1].e));
             break;
          case OPCODE_FRUSTUM:
-            _mesa_printf("Frustum %g %g %g %g %g %g\n",
+            printf("Frustum %g %g %g %g %g %g\n",
                          n[1].f, n[2].f, n[3].f, n[4].f, n[5].f, n[6].f);
             break;
          case OPCODE_LINE_STIPPLE:
-            _mesa_printf("LineStipple %d %x\n", n[1].i, (int) n[2].us);
+            printf("LineStipple %d %x\n", n[1].i, (int) n[2].us);
             break;
          case OPCODE_LOAD_IDENTITY:
-            _mesa_printf("LoadIdentity\n");
+            printf("LoadIdentity\n");
             break;
          case OPCODE_LOAD_MATRIX:
-            _mesa_printf("LoadMatrix\n");
-            _mesa_printf("  %8f %8f %8f %8f\n",
+            printf("LoadMatrix\n");
+            printf("  %8f %8f %8f %8f\n",
                          n[1].f, n[5].f, n[9].f, n[13].f);
-            _mesa_printf("  %8f %8f %8f %8f\n",
+            printf("  %8f %8f %8f %8f\n",
                          n[2].f, n[6].f, n[10].f, n[14].f);
-            _mesa_printf("  %8f %8f %8f %8f\n",
+            printf("  %8f %8f %8f %8f\n",
                          n[3].f, n[7].f, n[11].f, n[15].f);
-            _mesa_printf("  %8f %8f %8f %8f\n",
+            printf("  %8f %8f %8f %8f\n",
                          n[4].f, n[8].f, n[12].f, n[16].f);
             break;
          case OPCODE_MULT_MATRIX:
-            _mesa_printf("MultMatrix (or Rotate)\n");
-            _mesa_printf("  %8f %8f %8f %8f\n",
+            printf("MultMatrix (or Rotate)\n");
+            printf("  %8f %8f %8f %8f\n",
                          n[1].f, n[5].f, n[9].f, n[13].f);
-            _mesa_printf("  %8f %8f %8f %8f\n",
+            printf("  %8f %8f %8f %8f\n",
                          n[2].f, n[6].f, n[10].f, n[14].f);
-            _mesa_printf("  %8f %8f %8f %8f\n",
+            printf("  %8f %8f %8f %8f\n",
                          n[3].f, n[7].f, n[11].f, n[15].f);
-            _mesa_printf("  %8f %8f %8f %8f\n",
+            printf("  %8f %8f %8f %8f\n",
                          n[4].f, n[8].f, n[12].f, n[16].f);
             break;
          case OPCODE_ORTHO:
-            _mesa_printf("Ortho %g %g %g %g %g %g\n",
+            printf("Ortho %g %g %g %g %g %g\n",
                          n[1].f, n[2].f, n[3].f, n[4].f, n[5].f, n[6].f);
             break;
          case OPCODE_POP_ATTRIB:
-            _mesa_printf("PopAttrib\n");
+            printf("PopAttrib\n");
             break;
          case OPCODE_POP_MATRIX:
-            _mesa_printf("PopMatrix\n");
+            printf("PopMatrix\n");
             break;
          case OPCODE_POP_NAME:
-            _mesa_printf("PopName\n");
+            printf("PopName\n");
             break;
          case OPCODE_PUSH_ATTRIB:
-            _mesa_printf("PushAttrib %x\n", n[1].bf);
+            printf("PushAttrib %x\n", n[1].bf);
             break;
          case OPCODE_PUSH_MATRIX:
-            _mesa_printf("PushMatrix\n");
+            printf("PushMatrix\n");
             break;
          case OPCODE_PUSH_NAME:
-            _mesa_printf("PushName %d\n", (int) n[1].ui);
+            printf("PushName %d\n", (int) n[1].ui);
             break;
          case OPCODE_RASTER_POS:
-            _mesa_printf("RasterPos %g %g %g %g\n",
+            printf("RasterPos %g %g %g %g\n",
                          n[1].f, n[2].f, n[3].f, n[4].f);
             break;
          case OPCODE_ROTATE:
-            _mesa_printf("Rotate %g %g %g %g\n",
+            printf("Rotate %g %g %g %g\n",
                          n[1].f, n[2].f, n[3].f, n[4].f);
             break;
          case OPCODE_SCALE:
-            _mesa_printf("Scale %g %g %g\n", n[1].f, n[2].f, n[3].f);
+            printf("Scale %g %g %g\n", n[1].f, n[2].f, n[3].f);
             break;
          case OPCODE_TRANSLATE:
-            _mesa_printf("Translate %g %g %g\n", n[1].f, n[2].f, n[3].f);
+            printf("Translate %g %g %g\n", n[1].f, n[2].f, n[3].f);
             break;
          case OPCODE_BIND_TEXTURE:
-            _mesa_printf("BindTexture %s %d\n",
+            printf("BindTexture %s %d\n",
                          _mesa_lookup_enum_by_nr(n[1].ui), n[2].ui);
             break;
          case OPCODE_SHADE_MODEL:
-            _mesa_printf("ShadeModel %s\n", _mesa_lookup_enum_by_nr(n[1].ui));
+            printf("ShadeModel %s\n", _mesa_lookup_enum_by_nr(n[1].ui));
             break;
          case OPCODE_MAP1:
-            _mesa_printf("Map1 %s %.3f %.3f %d %d\n",
+            printf("Map1 %s %.3f %.3f %d %d\n",
                          _mesa_lookup_enum_by_nr(n[1].ui),
                          n[2].f, n[3].f, n[4].i, n[5].i);
             break;
          case OPCODE_MAP2:
-            _mesa_printf("Map2 %s %.3f %.3f %.3f %.3f %d %d %d %d\n",
+            printf("Map2 %s %.3f %.3f %.3f %.3f %d %d %d %d\n",
                          _mesa_lookup_enum_by_nr(n[1].ui),
                          n[2].f, n[3].f, n[4].f, n[5].f,
                          n[6].i, n[7].i, n[8].i, n[9].i);
             break;
          case OPCODE_MAPGRID1:
-            _mesa_printf("MapGrid1 %d %.3f %.3f\n", n[1].i, n[2].f, n[3].f);
+            printf("MapGrid1 %d %.3f %.3f\n", n[1].i, n[2].f, n[3].f);
             break;
          case OPCODE_MAPGRID2:
-            _mesa_printf("MapGrid2 %d %.3f %.3f, %d %.3f %.3f\n",
+            printf("MapGrid2 %d %.3f %.3f, %d %.3f %.3f\n",
                          n[1].i, n[2].f, n[3].f, n[4].i, n[5].f, n[6].f);
             break;
          case OPCODE_EVALMESH1:
-            _mesa_printf("EvalMesh1 %d %d\n", n[1].i, n[2].i);
+            printf("EvalMesh1 %d %d\n", n[1].i, n[2].i);
             break;
          case OPCODE_EVALMESH2:
-            _mesa_printf("EvalMesh2 %d %d %d %d\n",
+            printf("EvalMesh2 %d %d %d %d\n",
                          n[1].i, n[2].i, n[3].i, n[4].i);
             break;
 
          case OPCODE_ATTR_1F_NV:
-            _mesa_printf("ATTR_1F_NV attr %d: %f\n", n[1].i, n[2].f);
+            printf("ATTR_1F_NV attr %d: %f\n", n[1].i, n[2].f);
             break;
          case OPCODE_ATTR_2F_NV:
-            _mesa_printf("ATTR_2F_NV attr %d: %f %f\n",
+            printf("ATTR_2F_NV attr %d: %f %f\n",
                          n[1].i, n[2].f, n[3].f);
             break;
          case OPCODE_ATTR_3F_NV:
-            _mesa_printf("ATTR_3F_NV attr %d: %f %f %f\n",
+            printf("ATTR_3F_NV attr %d: %f %f %f\n",
                          n[1].i, n[2].f, n[3].f, n[4].f);
             break;
          case OPCODE_ATTR_4F_NV:
-            _mesa_printf("ATTR_4F_NV attr %d: %f %f %f %f\n",
+            printf("ATTR_4F_NV attr %d: %f %f %f %f\n",
                          n[1].i, n[2].f, n[3].f, n[4].f, n[5].f);
             break;
          case OPCODE_ATTR_1F_ARB:
-            _mesa_printf("ATTR_1F_ARB attr %d: %f\n", n[1].i, n[2].f);
+            printf("ATTR_1F_ARB attr %d: %f\n", n[1].i, n[2].f);
             break;
          case OPCODE_ATTR_2F_ARB:
-            _mesa_printf("ATTR_2F_ARB attr %d: %f %f\n",
+            printf("ATTR_2F_ARB attr %d: %f %f\n",
                          n[1].i, n[2].f, n[3].f);
             break;
          case OPCODE_ATTR_3F_ARB:
-            _mesa_printf("ATTR_3F_ARB attr %d: %f %f %f\n",
+            printf("ATTR_3F_ARB attr %d: %f %f %f\n",
                          n[1].i, n[2].f, n[3].f, n[4].f);
             break;
          case OPCODE_ATTR_4F_ARB:
-            _mesa_printf("ATTR_4F_ARB attr %d: %f %f %f %f\n",
+            printf("ATTR_4F_ARB attr %d: %f %f %f %f\n",
                          n[1].i, n[2].f, n[3].f, n[4].f, n[5].f);
             break;
 
          case OPCODE_MATERIAL:
-            _mesa_printf("MATERIAL %x %x: %f %f %f %f\n",
+            printf("MATERIAL %x %x: %f %f %f %f\n",
                          n[1].i, n[2].i, n[3].f, n[4].f, n[5].f, n[6].f);
             break;
          case OPCODE_BEGIN:
-            _mesa_printf("BEGIN %x\n", n[1].i);
+            printf("BEGIN %x\n", n[1].i);
             break;
          case OPCODE_END:
-            _mesa_printf("END\n");
+            printf("END\n");
             break;
          case OPCODE_RECTF:
-            _mesa_printf("RECTF %f %f %f %f\n", n[1].f, n[2].f, n[3].f,
+            printf("RECTF %f %f %f %f\n", n[1].f, n[2].f, n[3].f,
                          n[4].f);
             break;
          case OPCODE_EVAL_C1:
-            _mesa_printf("EVAL_C1 %f\n", n[1].f);
+            printf("EVAL_C1 %f\n", n[1].f);
             break;
          case OPCODE_EVAL_C2:
-            _mesa_printf("EVAL_C2 %f %f\n", n[1].f, n[2].f);
+            printf("EVAL_C2 %f %f\n", n[1].f, n[2].f);
             break;
          case OPCODE_EVAL_P1:
-            _mesa_printf("EVAL_P1 %d\n", n[1].i);
+            printf("EVAL_P1 %d\n", n[1].i);
             break;
          case OPCODE_EVAL_P2:
-            _mesa_printf("EVAL_P2 %d %d\n", n[1].i, n[2].i);
+            printf("EVAL_P2 %d %d\n", n[1].i, n[2].i);
             break;
 
          case OPCODE_PROVOKING_VERTEX:
-            _mesa_printf("ProvokingVertex %s\n",
+            printf("ProvokingVertex %s\n",
                          _mesa_lookup_enum_by_nr(n[1].ui));
             break;
 
@@ -9315,26 +10668,26 @@ print_list(GLcontext *ctx, GLuint list)
              * meta opcodes/commands
              */
          case OPCODE_ERROR:
-            _mesa_printf("Error: %s %s\n",
+            printf("Error: %s %s\n",
                          enum_string(n[1].e), (const char *) n[2].data);
             break;
          case OPCODE_CONTINUE:
-            _mesa_printf("DISPLAY-LIST-CONTINUE\n");
+            printf("DISPLAY-LIST-CONTINUE\n");
             n = (Node *) n[1].next;
             break;
          case OPCODE_END_OF_LIST:
-            _mesa_printf("END-LIST %u\n", list);
+            printf("END-LIST %u\n", list);
             done = GL_TRUE;
             break;
          default:
             if (opcode < 0 || opcode > OPCODE_END_OF_LIST) {
-               _mesa_printf
+               printf
                   ("ERROR IN DISPLAY LIST: opcode = %d, address = %p\n",
                    opcode, (void *) n);
                return;
             }
             else {
-               _mesa_printf("command %d, %u operands\n", opcode,
+               printf("command %d, %u operands\n", opcode,
                             InstSize[opcode]);
             }
          }
@@ -9433,6 +10786,13 @@ _mesa_save_vtxfmt_init(GLvertexformat * vfmt)
 
    vfmt->Rectf = save_Rectf;
 
+   /* GL_ARB_draw_instanced */
+   vfmt->DrawArraysInstanced = save_DrawArraysInstancedARB;
+   vfmt->DrawElementsInstanced = save_DrawElementsInstancedARB;
+
+   /* GL_ARB_draw_elements_base_vertex */
+   vfmt->DrawElementsInstancedBaseVertex = save_DrawElementsInstancedBaseVertexARB;
+
    /* The driver is required to implement these as
     * 1) They can probably do a better job.
     * 2) A lot of new mechanisms would have to be added to this module
@@ -9481,13 +10841,13 @@ void _mesa_init_dlist_dispatch(struct _glapi_table *disp)
  * Initialize display list state for given context.
  */
 void
-_mesa_init_display_list(GLcontext *ctx)
+_mesa_init_display_list(struct gl_context *ctx)
 {
    static GLboolean tableInitialized = GL_FALSE;
 
    /* zero-out the instruction size table, just once */
    if (!tableInitialized) {
-      _mesa_bzero(InstSize, sizeof(InstSize));
+      memset(InstSize, 0, sizeof(InstSize));
       tableInitialized = GL_TRUE;
    }
 
@@ -9511,7 +10871,7 @@ _mesa_init_display_list(GLcontext *ctx)
 
 
 void
-_mesa_free_display_list_data(GLcontext *ctx)
+_mesa_free_display_list_data(struct gl_context *ctx)
 {
    free(ctx->ListExt);
    ctx->ListExt = NULL;

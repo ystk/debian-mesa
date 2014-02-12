@@ -20,12 +20,10 @@ OSMESA_LIB_NAME = libOSMesa32.so
 
 
 # Directories
-SRC_DIRS = gallium mesa glu
+SRC_DIRS = mapi/glapi glsl mesa glu
 DRIVER_DIRS = osmesa
-PROGRAM_DIRS = 
 
 
 # Dependencies
 OSMESA_LIB_DEPS = -lm -lpthread
 GLU_LIB_DEPS = -L$(TOP)/$(LIB_DIR) -l$(OSMESA_LIB)
-APP_LIB_DEPS = -lm -lpthread

@@ -31,9 +31,10 @@
 #include "main/imports.h"
 #include "main/simple_list.h"
 
-static void radeonQueryGetResult(GLcontext *ctx, struct gl_query_object *q)
+#include <inttypes.h>
+
+static void radeonQueryGetResult(struct gl_context *ctx, struct gl_query_object *q)
 {
-	radeonContextPtr radeon = RADEON_CONTEXT(ctx);
 	struct radeon_query_object *query = (struct radeon_query_object *)q;
         uint32_t *result;
 	int i;
@@ -46,42 +47,19 @@ static void radeonQueryGetResult(GLcontext *ctx, struct gl_query_object *q)
         result = query->bo->ptr;
 
 	query->Base.Result = 0;
-	if (IS_R600_CLASS(radeon->radeonScreen)) {
-		/* ZPASS EVENT writes alternating qwords
-		 * At query start we set the start offset to 0 and
-		 * hw writes zpass start counts to qwords 0, 2, 4, 6.
-		 * At query end we set the start offset to 8 and
-		 * hw writes zpass end counts to qwords 1, 3, 5, 7.
-		 * then we substract. MSB is the valid bit.
-		 */
-		for (i = 0; i < 16; i += 4) {
-			uint64_t start = (uint64_t)LE32_TO_CPU(result[i]) |
-					 (uint64_t)LE32_TO_CPU(result[i + 1]) << 32;
-			uint64_t end = (uint64_t)LE32_TO_CPU(result[i + 2]) |
-				       (uint64_t)LE32_TO_CPU(result[i + 3]) << 32;
-			if ((start & 0x8000000000000000) && (end & 0x8000000000000000)) {
-				uint64_t query_count = end - start;
-				query->Base.Result += query_count;
-
-			}
-			radeon_print(RADEON_STATE, RADEON_TRACE,
-				     "%d start: %lx, end: %lx %ld\n", i, start, end, end - start);
-		}
-	} else {
-		for (i = 0; i < query->curr_offset/sizeof(uint32_t); ++i) {
-			query->Base.Result += LE32_TO_CPU(result[i]);
-			radeon_print(RADEON_STATE, RADEON_TRACE, "result[%d] = %d\n", i, LE32_TO_CPU(result[i]));
-		}
+	for (i = 0; i < query->curr_offset/sizeof(uint32_t); ++i) {
+		query->Base.Result += LE32_TO_CPU(result[i]);
+		radeon_print(RADEON_STATE, RADEON_TRACE, "result[%d] = %d\n", i, LE32_TO_CPU(result[i]));
 	}
 
 	radeon_bo_unmap(query->bo);
 }
 
-static struct gl_query_object * radeonNewQueryObject(GLcontext *ctx, GLuint id)
+static struct gl_query_object * radeonNewQueryObject(struct gl_context *ctx, GLuint id)
 {
 	struct radeon_query_object *query;
 
-	query = _mesa_calloc(sizeof(struct radeon_query_object));
+	query = calloc(1, sizeof(struct radeon_query_object));
 
 	query->Base.Id = id;
 	query->Base.Result = 0;
@@ -93,7 +71,7 @@ static struct gl_query_object * radeonNewQueryObject(GLcontext *ctx, GLuint id)
 	return &query->Base;
 }
 
-static void radeonDeleteQuery(GLcontext *ctx, struct gl_query_object *q)
+static void radeonDeleteQuery(struct gl_context *ctx, struct gl_query_object *q)
 {
 	struct radeon_query_object *query = (struct radeon_query_object *)q;
 
@@ -103,10 +81,10 @@ static void radeonDeleteQuery(GLcontext *ctx, struct gl_query_object *q)
 		radeon_bo_unref(query->bo);
 	}
 
-	_mesa_free(query);
+	free(query);
 }
 
-static void radeonWaitQuery(GLcontext *ctx, struct gl_query_object *q)
+static void radeonWaitQuery(struct gl_context *ctx, struct gl_query_object *q)
 {
 	radeonContextPtr radeon = RADEON_CONTEXT(ctx);
 	struct radeon_query_object *query = (struct radeon_query_object *)q;
@@ -123,7 +101,7 @@ static void radeonWaitQuery(GLcontext *ctx, struct gl_query_object *q)
 }
 
 
-static void radeonBeginQuery(GLcontext *ctx, struct gl_query_object *q)
+static void radeonBeginQuery(struct gl_context *ctx, struct gl_query_object *q)
 {
 	radeonContextPtr radeon = RADEON_CONTEXT(ctx);
 	struct radeon_query_object *query = (struct radeon_query_object *)q;
@@ -146,7 +124,7 @@ static void radeonBeginQuery(GLcontext *ctx, struct gl_query_object *q)
 	radeon->hw.is_dirty = GL_TRUE;
 }
 
-void radeonEmitQueryEnd(GLcontext *ctx)
+void radeonEmitQueryEnd(struct gl_context *ctx)
 {
 	radeonContextPtr radeon = RADEON_CONTEXT(ctx);
 	struct radeon_query_object *query = radeon->query.current;
@@ -166,7 +144,7 @@ void radeonEmitQueryEnd(GLcontext *ctx)
 	radeon->vtbl.emit_query_finish(radeon);
 }
 
-static void radeonEndQuery(GLcontext *ctx, struct gl_query_object *q)
+static void radeonEndQuery(struct gl_context *ctx, struct gl_query_object *q)
 {
 	radeonContextPtr radeon = RADEON_CONTEXT(ctx);
 
@@ -179,28 +157,24 @@ static void radeonEndQuery(GLcontext *ctx, struct gl_query_object *q)
 	radeon->query.current = NULL;
 }
 
-static void radeonCheckQuery(GLcontext *ctx, struct gl_query_object *q)
+static void radeonCheckQuery(struct gl_context *ctx, struct gl_query_object *q)
 {
 	radeon_print(RADEON_STATE, RADEON_TRACE, "%s: query id %d\n", __FUNCTION__, q->Id);
-
+\
 #ifdef DRM_RADEON_GEM_BUSY
 	radeonContextPtr radeon = RADEON_CONTEXT(ctx);
 
-	if (radeon->radeonScreen->kernel_mm) {
-		struct radeon_query_object *query = (struct radeon_query_object *)q;
-		uint32_t domain;
+	struct radeon_query_object *query = (struct radeon_query_object *)q;
+	uint32_t domain;
 
-		/* Need to perform a flush, as per ARB_occlusion_query spec */
-		if (radeon_bo_is_referenced_by_cs(query->bo, radeon->cmdbuf.cs)) {
-			ctx->Driver.Flush(ctx);
-		}
+	/* Need to perform a flush, as per ARB_occlusion_query spec */
+	if (radeon_bo_is_referenced_by_cs(query->bo, radeon->cmdbuf.cs)) {
+		ctx->Driver.Flush(ctx);
+	}
 
-		if (radeon_bo_is_busy(query->bo, &domain) == 0) {
-			radeonQueryGetResult(ctx, q);
-			query->Base.Ready = GL_TRUE;
-		}
-	} else {
-		radeonWaitQuery(ctx, q);
+	if (radeon_bo_is_busy(query->bo, &domain) == 0) {
+		radeonQueryGetResult(ctx, q);
+		query->Base.Ready = GL_TRUE;
 	}
 #else
 	radeonWaitQuery(ctx, q);
@@ -217,7 +191,7 @@ void radeonInitQueryObjFunctions(struct dd_function_table *functions)
 	functions->WaitQuery = radeonWaitQuery;
 }
 
-int radeon_check_query_active(GLcontext *ctx, struct radeon_state_atom *atom)
+int radeon_check_query_active(struct gl_context *ctx, struct radeon_state_atom *atom)
 {
 	radeonContextPtr radeon = RADEON_CONTEXT(ctx);
 	struct radeon_query_object *query = radeon->query.current;
@@ -227,7 +201,7 @@ int radeon_check_query_active(GLcontext *ctx, struct radeon_state_atom *atom)
 	return atom->cmd_size;
 }
 
-void radeon_emit_queryobj(GLcontext *ctx, struct radeon_state_atom *atom)
+void radeon_emit_queryobj(struct gl_context *ctx, struct radeon_state_atom *atom)
 {
 	radeonContextPtr radeon = RADEON_CONTEXT(ctx);
 	BATCH_LOCALS(radeon);

@@ -48,79 +48,22 @@ extern "C" {
 #endif
 
 
-#if defined(PIPE_SUBSYSTEM_WINDOWS_MINIPORT)
-__inline double ceil(double val)
-{
-   double ceil_val;
-
-   if ((val - (long) val) == 0) {
-      ceil_val = val;
-   }
-   else {
-      if (val > 0) {
-         ceil_val = (long) val + 1;
-      }
-      else {
-         ceil_val = (long) val;
-      }
-   }
-
-   return ceil_val;
-}
-
-#ifndef PIPE_SUBSYSTEM_WINDOWS_CE_OGL
-__inline double floor(double val)
-{
-   double floor_val;
-
-   if ((val - (long) val) == 0) {
-      floor_val = val;
-   }
-   else {
-      if (val > 0) {
-         floor_val = (long) val;
-      }
-      else {
-         floor_val = (long) val - 1;
-      }
-   }
-
-   return floor_val;
-}
-#endif
-
-#pragma function(pow)
-__inline double __cdecl pow(double val, double exponent)
-{
-   /* XXX */
-   assert(0);
-   return 0;
-}
-
-#pragma function(log)
-__inline double __cdecl log(double val)
-{
-   /* XXX */
-   assert(0);
-   return 0;
-}
-
-#pragma function(atan2)
-__inline double __cdecl atan2(double val)
-{
-   /* XXX */
-   assert(0);
-   return 0;
-}
-#else
 #include <math.h>
 #include <stdarg.h>
+
+#ifdef PIPE_OS_UNIX
+#include <strings.h> /* for ffs */
+#endif
+
+
+#ifndef M_SQRT2
+#define M_SQRT2 1.41421356237309504880
 #endif
 
 
 #if defined(_MSC_VER) 
 
-#if _MSC_VER < 1400 && !defined(__cplusplus) || defined(PIPE_SUBSYSTEM_WINDOWS_CE)
+#if _MSC_VER < 1400 && !defined(__cplusplus)
  
 static INLINE float cosf( float f ) 
 {
@@ -168,7 +111,10 @@ static INLINE float logf( float f )
 #undef logf
 #define logf(x) ((float)log((double)(x)))
 #endif /* logf */
-#endif
+
+#define isfinite(x) _finite((double)(x))
+#define isnan(x) _isnan((double)(x))
+#endif /* _MSC_VER < 1400 && !defined(__cplusplus) */
 
 static INLINE double log2( double x )
 {
@@ -176,8 +122,41 @@ static INLINE double log2( double x )
    return log( x ) * invln2;
 }
 
+static INLINE double
+round(double x)
+{
+   return x >= 0.0 ? floor(x + 0.5) : ceil(x - 0.5);
+}
+
+static INLINE float
+roundf(float x)
+{
+   return x >= 0.0f ? floorf(x + 0.5f) : ceilf(x - 0.5f);
+}
+
 #endif /* _MSC_VER */
 
+
+#ifdef PIPE_OS_ANDROID
+
+static INLINE
+double log2(double d)
+{
+   return log(d) * (1.0 / M_LN2);
+}
+
+/* workaround a conflict with main/imports.h */
+#ifdef log2f
+#undef log2f
+#endif
+
+static INLINE
+float log2f(float f)
+{
+   return logf(f) * (float) (1.0 / M_LN2);
+}
+
+#endif
 
 
 
@@ -335,6 +314,15 @@ util_iround(float f)
 }
 
 
+/**
+ * Approximate floating point comparison
+ */
+static INLINE boolean
+util_is_approx(float a, float b, float tol)
+{
+   return fabs(b - a) <= tol;
+}
+
 
 /**
  * Test if x is NaN or +/- infinity.
@@ -345,16 +333,6 @@ util_is_inf_or_nan(float x)
    union fi tmp;
    tmp.f = x;
    return !(int)((unsigned int)((tmp.i & 0x7fffffff)-0x7f800000) >> 31);
-}
-
-
-/**
- * Test whether x is a power of two.
- */
-static INLINE boolean
-util_is_pot(unsigned x)
-{
-   return (x & (x - 1)) == 0;
 }
 
 
@@ -390,24 +368,24 @@ unsigned ffs( unsigned u )
 
    return i;
 }
-#elif defined(__MINGW32__)
-#define ffs __builtin_ffs
-#endif
-
-#ifdef __MINGW32__
+#elif defined(__MINGW32__) || defined(PIPE_OS_ANDROID)
 #define ffs __builtin_ffs
 #endif
 
 
-/* Could also binary search for the highest bit.
+/* Destructively loop over all of the bits in a mask as in:
+ *
+ * while (mymask) {
+ *   int i = u_bit_scan(&mymask);
+ *   ... process element i
+ * }
+ * 
  */
-static INLINE unsigned
-util_unsigned_logbase2(unsigned n)
+static INLINE int u_bit_scan(unsigned *mask)
 {
-   unsigned log2 = 0;
-   while (n >>= 1)
-      ++log2;
-   return log2;
+   int i = ffs(*mask) - 1;
+   *mask &= ~(1 << i);
+   return i;
 }
 
 
@@ -456,6 +434,17 @@ float_to_ubyte(float f)
    }
 }
 
+static INLINE float
+byte_to_float_tex(int8_t b)
+{
+   return (b == -128) ? -1.0F : b * 1.0F / 127.0F;
+}
+
+static INLINE int8_t
+float_to_byte_tex(float f)
+{
+   return (int8_t) (127.0F * f);
+}
 
 /**
  * Calc log base 2
@@ -463,10 +452,17 @@ float_to_ubyte(float f)
 static INLINE unsigned
 util_logbase2(unsigned n)
 {
-   unsigned log2 = 0;
-   while (n >>= 1)
-      ++log2;
-   return log2;
+#if defined(PIPE_CC_GCC) && (PIPE_CC_GCC_VERSION >= 304)
+   return ((sizeof(unsigned) * 8 - 1) - __builtin_clz(n | 1));
+#else
+   unsigned pos = 0;
+   if (n >= 1<<16) { n >>= 16; pos += 16; }
+   if (n >= 1<< 8) { n >>=  8; pos +=  8; }
+   if (n >= 1<< 4) { n >>=  4; pos +=  4; }
+   if (n >= 1<< 2) { n >>=  2; pos +=  2; }
+   if (n >= 1<< 1) {           pos +=  1; }
+   return pos;
+#endif
 }
 
 
@@ -476,17 +472,94 @@ util_logbase2(unsigned n)
 static INLINE unsigned
 util_next_power_of_two(unsigned x)
 {
-   unsigned i;
+#if defined(PIPE_CC_GCC) && (PIPE_CC_GCC_VERSION >= 304)
+   if (x <= 1)
+       return 1;
 
-   if (x == 0)
+   return (1 << ((sizeof(unsigned) * 8) - __builtin_clz(x - 1)));
+#else
+   unsigned val = x;
+
+   if (x <= 1)
       return 1;
 
-   --x;
+   if (util_is_power_of_two(x))
+      return x;
 
-   for (i = 1; i < sizeof(unsigned) * 8; i <<= 1)
-      x |= x >> i;
+   val--;
+   val = (val >> 1) | val;
+   val = (val >> 2) | val;
+   val = (val >> 4) | val;
+   val = (val >> 8) | val;
+   val = (val >> 16) | val;
+   val++;
+   return val;
+#endif
+}
 
-   return x + 1;
+
+/**
+ * Return number of bits set in n.
+ */
+static INLINE unsigned
+util_bitcount(unsigned n)
+{
+#if defined(PIPE_CC_GCC) && (PIPE_CC_GCC_VERSION >= 304)
+   return __builtin_popcount(n);
+#else
+   /* K&R classic bitcount.
+    *
+    * For each iteration, clear the LSB from the bitfield.
+    * Requires only one iteration per set bit, instead of
+    * one iteration per bit less than highest set bit.
+    */
+   unsigned bits = 0;
+   for (bits; n; bits++) {
+      n &= n - 1;
+   }
+   return bits;
+#endif
+}
+
+
+/**
+ * Convert from little endian to CPU byte order.
+ */
+
+#ifdef PIPE_ARCH_BIG_ENDIAN
+#define util_le32_to_cpu(x) util_bswap32(x)
+#define util_le16_to_cpu(x) util_bswap16(x)
+#else
+#define util_le32_to_cpu(x) (x)
+#define util_le16_to_cpu(x) (x)
+#endif
+
+
+/**
+ * Reverse byte order of a 32 bit word.
+ */
+static INLINE uint32_t
+util_bswap32(uint32_t n)
+{
+#if defined(PIPE_CC_GCC) && (PIPE_CC_GCC_VERSION >= 403)
+   return __builtin_bswap32(n);
+#else
+   return (n >> 24) |
+          ((n >> 8) & 0x0000ff00) |
+          ((n << 8) & 0x00ff0000) |
+          (n << 24);
+#endif
+}
+
+
+/**
+ * Reverse byte order of a 16 bit word.
+ */
+static INLINE uint16_t
+util_bswap16(uint16_t n)
+{
+   return (n >> 8) |
+          (n << 8);
 }
 
 
@@ -499,17 +572,37 @@ util_next_power_of_two(unsigned x)
 #define MIN2( A, B )   ( (A)<(B) ? (A) : (B) )
 #define MAX2( A, B )   ( (A)>(B) ? (A) : (B) )
 
+#define MIN3( A, B, C ) ((A) < (B) ? MIN2(A, C) : MIN2(B, C))
+#define MAX3( A, B, C ) ((A) > (B) ? MAX2(A, C) : MAX2(B, C))
 
+#define MIN4( A, B, C, D ) ((A) < (B) ? MIN3(A, C, D) : MIN3(B, C, D))
+#define MAX4( A, B, C, D ) ((A) > (B) ? MAX3(A, C, D) : MAX3(B, C, D))
+
+
+/**
+ * Align a value, only works pot alignemnts.
+ */
 static INLINE int
 align(int value, int alignment)
 {
    return (value + alignment - 1) & ~(alignment - 1);
 }
 
-static INLINE unsigned
-minify(unsigned value)
+/**
+ * Works like align but on npot alignments.
+ */
+static INLINE size_t
+util_align_npot(size_t value, size_t alignment)
 {
-    return MAX2(1, value >> 1);
+   if (value % alignment)
+      return value + (alignment - (value % alignment));
+   return value;
+}
+
+static INLINE unsigned
+u_minify(unsigned value, unsigned levels)
+{
+    return MAX2(1, value >> levels);
 }
 
 #ifndef COPY_4V
@@ -537,6 +630,18 @@ do {                                     \
    (DST)[3] = (V3);                      \
 } while (0)
 #endif
+
+
+static INLINE uint32_t util_unsigned_fixed(float value, unsigned frac_bits)
+{
+   return value < 0 ? 0 : (uint32_t)(value * (1<<frac_bits));
+}
+
+static INLINE int32_t util_signed_fixed(float value, unsigned frac_bits)
+{
+   return (int32_t)(value * (1<<frac_bits));
+}
+
 
 
 #ifdef __cplusplus

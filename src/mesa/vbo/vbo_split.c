@@ -98,7 +98,7 @@ GLboolean split_prim_inplace(GLenum mode, GLuint *first, GLuint *incr)
 
 
 
-void vbo_split_prims( GLcontext *ctx,
+void vbo_split_prims( struct gl_context *ctx,
 		      const struct gl_client_array *arrays[],
 		      const struct _mesa_prim *prim,
 		      GLuint nr_prims,
@@ -108,19 +108,20 @@ void vbo_split_prims( GLcontext *ctx,
 		      vbo_draw_func draw,
 		      const struct split_limits *limits )
 {
-   GLuint max_basevertex = prim->basevertex;
+   GLint max_basevertex = prim->basevertex;
    GLuint i;
 
    for (i = 1; i < nr_prims; i++)
       max_basevertex = MAX2(max_basevertex, prim[i].basevertex);
+
+   /* XXX max_basevertex is computed but not used, why? */
 
    if (ib) {
       if (limits->max_indices == 0) {
 	 /* Could traverse the indices, re-emitting vertices in turn.
 	  * But it's hard to see why this case would be needed - for
 	  * software tnl, it is better to convert to non-indexed
-	  * rendering after transformation is complete, as is done in
-	  * the t_dd_rendertmp.h templates.  Are there any devices
+	  * rendering after transformation is complete.  Are there any devices
 	  * with hardware tnl that cannot do indexed rendering?
 	  *
 	  * For now, this path is disabled.

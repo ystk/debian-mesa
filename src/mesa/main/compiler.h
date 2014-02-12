@@ -45,9 +45,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#if defined(__linux__) && defined(__i386__)
-#include <fpu_control.h>
-#endif
 #include <float.h>
 #include <stdarg.h>
 
@@ -60,31 +57,7 @@ extern "C" {
 /**
  * Get standard integer types
  */
-#if defined(_MSC_VER)
-   typedef __int8             int8_t;
-   typedef unsigned __int8    uint8_t;
-   typedef __int16            int16_t;
-   typedef unsigned __int16   uint16_t;
-#  ifndef __eglplatform_h_
-     typedef __int32            int32_t;
-#  endif
-   typedef unsigned __int32   uint32_t;
-   typedef __int64            int64_t;
-   typedef unsigned __int64   uint64_t;
-
-#  if defined(_WIN64)
-     typedef __int64            intptr_t;
-     typedef unsigned __int64   uintptr_t;
-#  else
-     typedef __int32            intptr_t;
-     typedef unsigned __int32   uintptr_t;
-#  endif
-
-#  define INT64_C(__val) __val##i64
-#  define UINT64_C(__val) __val##ui64
-#else
-#  include <stdint.h>
-#endif
+#include <stdint.h>
 
 
 /**
@@ -141,26 +114,29 @@ extern "C" {
 /**
  * Function inlining
  */
-#if defined(__GNUC__)
-#  define INLINE __inline__
-#elif defined(__MSC__)
-#  define INLINE __inline
-#elif defined(_MSC_VER)
-#  define INLINE __inline
-#elif defined(__ICL)
-#  define INLINE __inline
-#elif defined(__INTEL_COMPILER)
+#ifndef inline
+#  ifdef __cplusplus
+     /* C++ supports inline keyword */
+#  elif defined(__GNUC__)
+#    define inline __inline__
+#  elif defined(_MSC_VER)
+#    define inline __inline
+#  elif defined(__ICL)
+#    define inline __inline
+#  elif defined(__INTEL_COMPILER)
+     /* Intel compiler supports inline keyword */
+#  elif defined(__WATCOMC__) && (__WATCOMC__ >= 1100)
+#    define inline __inline
+#  elif defined(__SUNPRO_C) && defined(__C99FEATURES__)
+     /* C99 supports inline keyword */
+#  elif (__STDC_VERSION__ >= 199901L)
+     /* C99 supports inline keyword */
+#  else
+#    define inline
+#  endif
+#endif
+#ifndef INLINE
 #  define INLINE inline
-#elif defined(__WATCOMC__) && (__WATCOMC__ >= 1100)
-#  define INLINE __inline
-#elif defined(__SUNPRO_C) && defined(__C99FEATURES__)
-#  define INLINE inline
-#  define __inline inline
-#  define __inline__ inline
-#elif (__STDC_VERSION__ >= 199901L) /* C99 */
-#  define INLINE inline
-#else
-#  define INLINE
 #endif
 
 
@@ -173,12 +149,14 @@ extern "C" {
  * We also need to define a USED attribute, so the optimizer doesn't 
  * inline a static function that we later use in an alias. - ajax
  */
-#if defined(__GNUC__) && (__GNUC__ * 100 + __GNUC_MINOR__) >= 303
-#  define PUBLIC __attribute__((visibility("default")))
-#  define USED __attribute__((used))
-#else
-#  define PUBLIC
-#  define USED
+#ifndef PUBLIC
+#  if (defined(__GNUC__) && __GNUC__ >= 4) || (defined(__SUNPRO_C) && (__SUNPRO_C >= 0x590))
+#    define PUBLIC __attribute__((visibility("default")))
+#    define USED __attribute__((used))
+#  else
+#    define PUBLIC
+#    define USED
+#  endif
 #endif
 
 
@@ -196,10 +174,19 @@ extern "C" {
 /**
  * __builtin_expect macros
  */
-#if (!defined(__GNUC__) || __GNUC__ < 3) && (!defined(__IBMC__) || __IBMC__ < 900)
-#  define __builtin_expect(x, y) x
+#if !defined(__GNUC__)
+#  define __builtin_expect(x, y) (x)
 #endif
 
+#ifndef likely
+#  ifdef __GNUC__
+#    define likely(x)   __builtin_expect(!!(x), 1)
+#    define unlikely(x) __builtin_expect(!!(x), 0)
+#  else
+#    define likely(x)   (x)
+#    define unlikely(x) (x)
+#  endif
+#endif
 
 /**
  * The __FUNCTION__ gcc variable is generally only used for debugging.
@@ -209,7 +196,7 @@ extern "C" {
 #ifndef __FUNCTION__
 # if defined(__VMS)
 #  define __FUNCTION__ "VMS$NL:"
-# elif ((!defined __GNUC__) || (__GNUC__ < 2)) && (!defined __xlC__) && \
+# elif !defined(__GNUC__) && !defined(__xlC__) &&	\
       (!defined(_MSC_VER) || _MSC_VER < 1300)
 #  if (__STDC_VERSION__ >= 199901L) /* C99 */ || \
     (defined(__SUNPRO_C) && defined(__C99FEATURES__))
@@ -219,11 +206,23 @@ extern "C" {
 #  endif
 # endif
 #endif
+#ifndef __func__
+#  if (__STDC_VERSION__ >= 199901L) || \
+      (defined(__SUNPRO_C) && defined(__C99FEATURES__))
+       /* __func__ is part of C99 */
+#  elif defined(_MSC_VER)
+#    if _MSC_VER >= 1300
+#      define __func__ __FUNCTION__
+#    else
+#      define __func__ "<unknown>"
+#    endif
+#  endif
+#endif
 
 
 /**
- * Either define MESA_BIG_ENDIAN or MESA_LITTLE_ENDIAN.
- * Do not use them unless absolutely necessary!
+ * Either define MESA_BIG_ENDIAN or MESA_LITTLE_ENDIAN, and CPU_TO_LE32.
+ * Do not use these unless absolutely necessary!
  * Try to use a runtime test instead.
  * For now, only used by some DRI hardware drivers for color/texel packing.
  */
@@ -235,10 +234,13 @@ extern "C" {
 #include <CoreFoundation/CFByteOrder.h>
 #define CPU_TO_LE32( x )	CFSwapInt32HostToLittle( x )
 #elif (defined(_AIX) || defined(__blrts))
-#define CPU_TO_LE32( x )        x = ((x & 0x000000ff) << 24) | \
-                                    ((x & 0x0000ff00) <<  8) | \
-                                    ((x & 0x00ff0000) >>  8) | \
-                                    ((x & 0xff000000) >> 24);
+static INLINE GLuint CPU_TO_LE32(GLuint x)
+{
+   return (((x & 0x000000ff) << 24) |
+           ((x & 0x0000ff00) <<  8) |
+           ((x & 0x00ff0000) >>  8) |
+           ((x & 0xff000000) >> 24));
+}
 #else /*__linux__ */
 #include <sys/endian.h>
 #define CPU_TO_LE32( x )	bswap32( x )
@@ -309,6 +311,23 @@ extern "C" {
 #endif
 
 
+/**
+ * Static (compile-time) assertion.
+ * Basically, use COND to dimension an array.  If COND is false/zero the
+ * array size will be -1 and we'll get a compilation error.
+ */
+#define STATIC_ASSERT(COND) \
+   do { \
+      typedef int static_assertion_failed[(!!(COND))*2-1]; \
+   } while (0)
+
+
+#if (__GNUC__ >= 3)
+#define PRINTFLIKE(f, a) __attribute__ ((format(__printf__, f, a)))
+#else
+#define PRINTFLIKE(f, a)
+#endif
+
 #ifndef NULL
 #define NULL 0
 #endif
@@ -318,8 +337,7 @@ extern "C" {
  * LONGSTRING macro
  * gcc -pedantic warns about long string literals, LONGSTRING silences that.
  */
-#if !defined(__GNUC__) || (__GNUC__ < 2) || \
-    ((__GNUC__ == 2) && (__GNUC_MINOR__ <= 7))
+#if !defined(__GNUC__)
 # define LONGSTRING
 #else
 # define LONGSTRING __extension__
@@ -327,15 +345,15 @@ extern "C" {
 
 
 #ifndef M_PI
-#define M_PI (3.1415926536)
+#define M_PI (3.14159265358979323846)
 #endif
 
 #ifndef M_E
 #define M_E (2.7182818284590452354)
 #endif
 
-#ifndef ONE_DIV_LN2
-#define ONE_DIV_LN2 (1.442695040888963456)
+#ifndef M_LOG2E
+#define M_LOG2E     (1.4426950408889634074)
 #endif
 
 #ifndef ONE_DIV_SQRT_LN2

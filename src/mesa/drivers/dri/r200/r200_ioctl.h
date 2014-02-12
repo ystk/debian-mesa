@@ -38,7 +38,8 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "main/simple_list.h"
 #include "radeon_dri.h"
 
-#include "radeon_bocs_wrapper.h"
+#include "radeon_bo_gem.h"
+#include "radeon_cs_gem.h"
 
 #include "xf86drm.h"
 #include "drm.h"
@@ -54,7 +55,7 @@ extern void r200EmitVbufPrim( r200ContextPtr rmesa,
 				GLuint primitive,
 				GLuint vertex_nr );
 
-extern void r200FlushElts(GLcontext *ctx);
+extern void r200FlushElts(struct gl_context *ctx);
 
 extern GLushort *r200AllocEltsOpenEnded( r200ContextPtr rmesa,
 					   GLuint primitive,
@@ -63,11 +64,6 @@ extern GLushort *r200AllocEltsOpenEnded( r200ContextPtr rmesa,
 extern void r200EmitAOS(r200ContextPtr rmesa, GLuint nr, GLuint offset);
 
 extern void r200InitIoctlFuncs( struct dd_function_table *functions );
-
-extern void *r200AllocateMemoryMESA( __DRIscreen *screen, GLsizei size, GLfloat readfreq,
-				   GLfloat writefreq, GLfloat priority );
-extern void r200FreeMemoryMESA( __DRIscreen *screen, GLvoid *pointer );
-extern GLuint r200GetMemoryOffsetMESA( __DRIscreen *screen, const GLvoid *pointer );
 
 extern GLboolean r200IsGartMemory( r200ContextPtr rmesa, const GLvoid *pointer,
 				   GLint size );
@@ -155,23 +151,13 @@ static inline uint32_t cmdpacket3(int cmd_type)
 }
 
 #define OUT_BATCH_PACKET3(packet, num_extra) do {	      \
-    if (!b_l_rmesa->radeonScreen->kernel_mm) {		      \
-      OUT_BATCH(cmdpacket3(RADEON_CMD_PACKET3));				      \
-      OUT_BATCH(CP_PACKET3((packet), (num_extra)));	      \
-    } else {						      \
-      OUT_BATCH(CP_PACKET2);				      \
-      OUT_BATCH(CP_PACKET3((packet), (num_extra)));	      \
-    }							      \
+    OUT_BATCH(CP_PACKET2);				      \
+    OUT_BATCH(CP_PACKET3((packet), (num_extra)));	      \
   } while(0)
 
 #define OUT_BATCH_PACKET3_CLIP(packet, num_extra) do {	      \
-    if (!b_l_rmesa->radeonScreen->kernel_mm) {		      \
-      OUT_BATCH(cmdpacket3(RADEON_CMD_PACKET3_CLIP));	      \
-      OUT_BATCH(CP_PACKET3((packet), (num_extra)));	      \
-    } else {						      \
-      OUT_BATCH(CP_PACKET2);				      \
-      OUT_BATCH(CP_PACKET3((packet), (num_extra)));	      \
-    }							      \
+    OUT_BATCH(CP_PACKET2);				      \
+    OUT_BATCH(CP_PACKET3((packet), (num_extra)));	      \
   } while(0)
 
 

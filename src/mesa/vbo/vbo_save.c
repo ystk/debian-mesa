@@ -29,12 +29,15 @@
 #include "main/mtypes.h"
 #include "main/bufferobj.h"
 #include "main/imports.h"
+#include "main/mfeatures.h"
 
 #include "vbo_context.h"
 
 
+#if FEATURE_dlist
 
-static void vbo_save_callback_init( GLcontext *ctx )
+
+static void vbo_save_callback_init( struct gl_context *ctx )
 {
    ctx->Driver.NewList = vbo_save_NewList;
    ctx->Driver.EndList = vbo_save_EndList;
@@ -46,7 +49,7 @@ static void vbo_save_callback_init( GLcontext *ctx )
 
 
 
-void vbo_save_init( GLcontext *ctx )
+void vbo_save_init( struct gl_context *ctx )
 {
    struct vbo_context *vbo = vbo_context(ctx);
    struct vbo_save_context *save = &vbo->save;
@@ -60,15 +63,23 @@ void vbo_save_init( GLcontext *ctx )
       struct gl_client_array *arrays = save->arrays;
       unsigned i;
 
-      memcpy(arrays,      vbo->legacy_currval,  16 * sizeof(arrays[0]));
-      memcpy(arrays + 16, vbo->generic_currval, 16 * sizeof(arrays[0]));
-
-      for (i = 0; i < 16; ++i) {
-         arrays[i     ].BufferObj = NULL;
-         arrays[i + 16].BufferObj = NULL;
-         _mesa_reference_buffer_object(ctx, &arrays[i     ].BufferObj, 
+      memcpy(arrays, vbo->legacy_currval,
+             VERT_ATTRIB_FF_MAX * sizeof(arrays[0]));
+      for (i = 0; i < VERT_ATTRIB_FF_MAX; ++i) {
+         struct gl_client_array *array;
+         array = &arrays[VERT_ATTRIB_FF(i)];
+         array->BufferObj = NULL;
+         _mesa_reference_buffer_object(ctx, &arrays->BufferObj,
                                        vbo->legacy_currval[i].BufferObj);
-         _mesa_reference_buffer_object(ctx, &arrays[i + 16].BufferObj,
+      }
+
+      memcpy(arrays + VERT_ATTRIB_GENERIC(0), vbo->generic_currval,
+             VERT_ATTRIB_GENERIC_MAX * sizeof(arrays[0]));
+      for (i = 0; i < VERT_ATTRIB_GENERIC_MAX; ++i) {
+         struct gl_client_array *array;
+         array = &arrays[VERT_ATTRIB_GENERIC(i)];
+         array->BufferObj = NULL;
+         _mesa_reference_buffer_object(ctx, &array->BufferObj,
                                        vbo->generic_currval[i].BufferObj);
       }
    }
@@ -77,7 +88,7 @@ void vbo_save_init( GLcontext *ctx )
 }
 
 
-void vbo_save_destroy( GLcontext *ctx )
+void vbo_save_destroy( struct gl_context *ctx )
 {
    struct vbo_context *vbo = vbo_context(ctx);
    struct vbo_save_context *save = &vbo->save;
@@ -106,7 +117,7 @@ void vbo_save_destroy( GLcontext *ctx )
 
 /* Note that this can occur during the playback of a display list:
  */
-void vbo_save_fallback( GLcontext *ctx, GLboolean fallback )
+void vbo_save_fallback( struct gl_context *ctx, GLboolean fallback )
 {
    struct vbo_save_context *save = &vbo_context(ctx)->save;
 
@@ -117,3 +128,4 @@ void vbo_save_fallback( GLcontext *ctx, GLboolean fallback )
 }
 
 
+#endif /* FEATURE_dlist */

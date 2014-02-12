@@ -43,18 +43,35 @@
 #include "brw_sf.h"
 
 
-static struct brw_reg get_vert_attr(struct brw_sf_compile *c,
-				    struct brw_reg vert,
-				    GLuint attr)
+/**
+ * Determine the vert_result corresponding to the given half of the given
+ * register.  half=0 means the first half of a register, half=1 means the
+ * second half.
+ */
+static inline int vert_reg_to_vert_result(struct brw_sf_compile *c, GLuint reg,
+                                          int half)
 {
-   GLuint off = c->attr_to_idx[attr] / 2;
-   GLuint sub = c->attr_to_idx[attr] % 2;
+   int vue_slot = (reg + c->urb_entry_read_offset) * 2 + half;
+   return c->vue_map.slot_to_vert_result[vue_slot];
+}
+
+/**
+ * Determine the register corresponding to the given vert_result.
+ */
+static struct brw_reg get_vert_result(struct brw_sf_compile *c,
+                                      struct brw_reg vert,
+                                      GLuint vert_result)
+{
+   int vue_slot = c->vue_map.vert_result_to_slot[vert_result];
+   assert (vue_slot >= c->urb_entry_read_offset);
+   GLuint off = vue_slot / 2 - c->urb_entry_read_offset;
+   GLuint sub = vue_slot % 2;
 
    return brw_vec4_grf(vert.nr + off, sub * 4);
 }
 
-static GLboolean have_attr(struct brw_sf_compile *c,
-			   GLuint attr)
+static bool
+have_attr(struct brw_sf_compile *c, GLuint attr)
 {
    return (c->key.attrs & BITFIELD64_BIT(attr)) ? 1 : 0;
 }
@@ -72,8 +89,8 @@ static void copy_bfc( struct brw_sf_compile *c,
       if (have_attr(c, VERT_RESULT_COL0+i) &&
 	  have_attr(c, VERT_RESULT_BFC0+i))
 	 brw_MOV(p, 
-		 get_vert_attr(c, vert, VERT_RESULT_COL0+i), 
-		 get_vert_attr(c, vert, VERT_RESULT_BFC0+i));
+		 get_vert_result(c, vert, VERT_RESULT_COL0+i),
+		 get_vert_result(c, vert, VERT_RESULT_BFC0+i));
    }
 }
 
@@ -81,7 +98,6 @@ static void copy_bfc( struct brw_sf_compile *c,
 static void do_twoside_color( struct brw_sf_compile *c )
 {
    struct brw_compile *p = &c->func;
-   struct brw_instruction *if_insn;
    GLuint backface_conditional = c->key.frontface_ccw ? BRW_CONDITIONAL_G : BRW_CONDITIONAL_L;
 
    /* Already done in clip program:
@@ -104,7 +120,7 @@ static void do_twoside_color( struct brw_sf_compile *c )
     */
    brw_push_insn_state(p);
    brw_CMP(p, vec4(brw_null_reg()), backface_conditional, c->det, brw_imm_f(0));
-   if_insn = brw_IF(p, BRW_EXECUTE_4); 
+   brw_IF(p, BRW_EXECUTE_4);
    {
       switch (c->nr_verts) {
       case 3: copy_bfc(c, c->vert[2]);
@@ -112,7 +128,7 @@ static void do_twoside_color( struct brw_sf_compile *c )
       case 1: copy_bfc(c, c->vert[0]);
       }
    }
-   brw_ENDIF(p, if_insn);
+   brw_ENDIF(p);
    brw_pop_insn_state(p);
 }
 
@@ -135,8 +151,8 @@ static void copy_colors( struct brw_sf_compile *c,
    for (i = VERT_RESULT_COL0; i <= VERT_RESULT_COL1; i++) {
       if (have_attr(c,i))
 	 brw_MOV(p, 
-		 get_vert_attr(c, dst, i), 
-		 get_vert_attr(c, src, i));
+		 get_vert_result(c, dst, i),
+		 get_vert_result(c, src, i));
    }
 }
 
@@ -149,8 +165,9 @@ static void copy_colors( struct brw_sf_compile *c,
 static void do_flatshade_triangle( struct brw_sf_compile *c )
 {
    struct brw_compile *p = &c->func;
+   struct intel_context *intel = &p->brw->intel;
    struct brw_reg ip = brw_ip_reg();
-   GLuint nr = brw_count_bits(c->key.attrs & VERT_RESULT_COLOR_BITS);
+   GLuint nr = _mesa_bitcount_64(c->key.attrs & VERT_RESULT_COLOR_BITS);
    GLuint jmpi = 1;
 
    if (!nr)
@@ -161,7 +178,7 @@ static void do_flatshade_triangle( struct brw_sf_compile *c )
    if (c->key.primitive == SF_UNFILLED_TRIS)
       return;
 
-   if (BRW_IS_IGDNG(p->brw))
+   if (intel->gen == 5)
        jmpi = 2;
 
    brw_push_insn_state(p);
@@ -187,8 +204,9 @@ static void do_flatshade_triangle( struct brw_sf_compile *c )
 static void do_flatshade_line( struct brw_sf_compile *c )
 {
    struct brw_compile *p = &c->func;
+   struct intel_context *intel = &p->brw->intel;
    struct brw_reg ip = brw_ip_reg();
-   GLuint nr = brw_count_bits(c->key.attrs & VERT_RESULT_COLOR_BITS);
+   GLuint nr = _mesa_bitcount_64(c->key.attrs & VERT_RESULT_COLOR_BITS);
    GLuint jmpi = 1;
 
    if (!nr)
@@ -199,7 +217,7 @@ static void do_flatshade_line( struct brw_sf_compile *c )
    if (c->key.primitive == SF_UNFILLED_TRIS)
       return;
 
-   if (BRW_IS_IGDNG(p->brw))
+   if (intel->gen == 5)
        jmpi = 2;
 
    brw_push_insn_state(p);
@@ -296,7 +314,6 @@ static void invert_det( struct brw_sf_compile *c)
    brw_math(&c->func, 
 	    c->inv_det, 
 	    BRW_MATH_FUNCTION_INV,
-	    BRW_MATH_SATURATE_NONE,
 	    0, 
 	    c->det,
 	    BRW_MATH_DATA_SCALAR,
@@ -305,25 +322,27 @@ static void invert_det( struct brw_sf_compile *c)
 }
 
 
-static GLboolean calculate_masks( struct brw_sf_compile *c,
-				  GLuint reg,
-				  GLushort *pc,
-				  GLushort *pc_persp,
-				  GLushort *pc_linear)
+static bool
+calculate_masks(struct brw_sf_compile *c,
+	        GLuint reg,
+		GLushort *pc,
+		GLushort *pc_persp,
+		GLushort *pc_linear)
 {
-   GLboolean is_last_attr = (reg == c->nr_setup_regs - 1);
+   bool is_last_attr = (reg == c->nr_setup_regs - 1);
    GLbitfield64 persp_mask;
    GLbitfield64 linear_mask;
 
-   if (c->key.do_flat_shading || c->key.linear_color)
-      persp_mask = c->key.attrs & ~(FRAG_BIT_WPOS |
-                                    FRAG_BIT_COL0 |
-                                    FRAG_BIT_COL1);
+   if (c->key.do_flat_shading)
+      persp_mask = c->key.attrs & ~(BITFIELD64_BIT(VERT_RESULT_HPOS) |
+                                    BITFIELD64_BIT(VERT_RESULT_COL0) |
+                                    BITFIELD64_BIT(VERT_RESULT_COL1));
    else
-      persp_mask = c->key.attrs & ~(FRAG_BIT_WPOS);
+      persp_mask = c->key.attrs & ~(BITFIELD64_BIT(VERT_RESULT_HPOS));
 
    if (c->key.do_flat_shading)
-      linear_mask = c->key.attrs & ~(FRAG_BIT_COL0|FRAG_BIT_COL1);
+      linear_mask = c->key.attrs & ~(BITFIELD64_BIT(VERT_RESULT_COL0) |
+                                     BITFIELD64_BIT(VERT_RESULT_COL1));
    else
       linear_mask = c->key.attrs;
 
@@ -331,30 +350,59 @@ static GLboolean calculate_masks( struct brw_sf_compile *c,
    *pc_linear = 0;
    *pc = 0xf;
       
-   if (persp_mask & BITFIELD64_BIT(c->idx_to_attr[reg*2]))
+   if (persp_mask & BITFIELD64_BIT(vert_reg_to_vert_result(c, reg, 0)))
       *pc_persp = 0xf;
 
-   if (linear_mask & BITFIELD64_BIT(c->idx_to_attr[reg*2]))
+   if (linear_mask & BITFIELD64_BIT(vert_reg_to_vert_result(c, reg, 0)))
       *pc_linear = 0xf;
 
    /* Maybe only processs one attribute on the final round:
     */
-   if (reg*2+1 < c->nr_setup_attrs) {
+   if (vert_reg_to_vert_result(c, reg, 1) != BRW_VERT_RESULT_MAX) {
       *pc |= 0xf0;
 
-      if (persp_mask & BITFIELD64_BIT(c->idx_to_attr[reg*2+1]))
+      if (persp_mask & BITFIELD64_BIT(vert_reg_to_vert_result(c, reg, 1)))
 	 *pc_persp |= 0xf0;
 
-      if (linear_mask & BITFIELD64_BIT(c->idx_to_attr[reg*2+1]))
+      if (linear_mask & BITFIELD64_BIT(vert_reg_to_vert_result(c, reg, 1)))
 	 *pc_linear |= 0xf0;
    }
 
    return is_last_attr;
 }
 
+/* Calculates the predicate control for which channels of a reg
+ * (containing 2 attrs) to do point sprite coordinate replacement on.
+ */
+static uint16_t
+calculate_point_sprite_mask(struct brw_sf_compile *c, GLuint reg)
+{
+   int vert_result1, vert_result2;
+   uint16_t pc = 0;
+
+   vert_result1 = vert_reg_to_vert_result(c, reg, 0);
+   if (vert_result1 >= VERT_RESULT_TEX0 && vert_result1 <= VERT_RESULT_TEX7) {
+      if (c->key.point_sprite_coord_replace & (1 << (vert_result1 - VERT_RESULT_TEX0)))
+	 pc |= 0x0f;
+   }
+   if (vert_result1 == BRW_VERT_RESULT_PNTC)
+      pc |= 0x0f;
+
+   vert_result2 = vert_reg_to_vert_result(c, reg, 1);
+   if (vert_result2 >= VERT_RESULT_TEX0 && vert_result2 <= VERT_RESULT_TEX7) {
+      if (c->key.point_sprite_coord_replace & (1 << (vert_result2 -
+                                                     VERT_RESULT_TEX0)))
+         pc |= 0xf0;
+   }
+   if (vert_result2 == BRW_VERT_RESULT_PNTC)
+      pc |= 0xf0;
+
+   return pc;
+}
 
 
-void brw_emit_tri_setup( struct brw_sf_compile *c, GLboolean allocate)
+
+void brw_emit_tri_setup(struct brw_sf_compile *c, bool allocate)
 {
    struct brw_compile *p = &c->func;
    GLuint i;
@@ -382,7 +430,7 @@ void brw_emit_tri_setup( struct brw_sf_compile *c, GLboolean allocate)
       struct brw_reg a1 = offset(c->vert[1], i);
       struct brw_reg a2 = offset(c->vert[2], i);
       GLushort pc, pc_persp, pc_linear;
-      GLboolean last = calculate_masks(c, i, &pc, &pc_persp, &pc_linear);
+      bool last = calculate_masks(c, i, &pc, &pc_persp, &pc_linear);
 
       if (pc_persp)
       {
@@ -442,7 +490,7 @@ void brw_emit_tri_setup( struct brw_sf_compile *c, GLboolean allocate)
 
 
 
-void brw_emit_line_setup( struct brw_sf_compile *c, GLboolean allocate)
+void brw_emit_line_setup(struct brw_sf_compile *c, bool allocate)
 {
    struct brw_compile *p = &c->func;
    GLuint i;
@@ -466,7 +514,7 @@ void brw_emit_line_setup( struct brw_sf_compile *c, GLboolean allocate)
       struct brw_reg a0 = offset(c->vert[0], i);
       struct brw_reg a1 = offset(c->vert[1], i);
       GLushort pc, pc_persp, pc_linear;
-      GLboolean last = calculate_masks(c, i, &pc, &pc_persp, &pc_linear);
+      bool last = calculate_masks(c, i, &pc, &pc_persp, &pc_linear);
 
       if (pc_persp)
       {
@@ -514,7 +562,7 @@ void brw_emit_line_setup( struct brw_sf_compile *c, GLboolean allocate)
    } 
 }
 
-void brw_emit_point_sprite_setup( struct brw_sf_compile *c, GLboolean allocate)
+void brw_emit_point_sprite_setup(struct brw_sf_compile *c, bool allocate)
 {
    struct brw_compile *p = &c->func;
    GLuint i;
@@ -527,81 +575,86 @@ void brw_emit_point_sprite_setup( struct brw_sf_compile *c, GLboolean allocate)
    copy_z_inv_w(c);
    for (i = 0; i < c->nr_setup_regs; i++)
    {
-      struct brw_sf_point_tex *tex = &c->point_attrs[c->idx_to_attr[2*i]];
       struct brw_reg a0 = offset(c->vert[0], i);
-      GLushort pc, pc_persp, pc_linear;
-      GLboolean last = calculate_masks(c, i, &pc, &pc_persp, &pc_linear);
-            
-      if (pc_persp)
-      {				
-	  if (!tex->CoordReplace) {
-	      brw_set_predicate_control_flag_value(p, pc_persp);
-	      brw_MUL(p, a0, a0, c->inv_w[0]);
-	  }
+      GLushort pc, pc_persp, pc_linear, pc_coord_replace;
+      bool last = calculate_masks(c, i, &pc, &pc_persp, &pc_linear);
+
+      pc_coord_replace = calculate_point_sprite_mask(c, i);
+      pc_persp &= ~pc_coord_replace;
+
+      if (pc_persp) {
+	 brw_set_predicate_control_flag_value(p, pc_persp);
+	 brw_MUL(p, a0, a0, c->inv_w[0]);
       }
 
-      if (tex->CoordReplace) {
-	  /* Caculate 1.0/PointWidth */
-	  brw_math(&c->func,
+      /* Point sprite coordinate replacement: A texcoord with this
+       * enabled gets replaced with the value (x, y, 0, 1) where x and
+       * y vary from 0 to 1 across the horizontal and vertical of the
+       * point.
+       */
+      if (pc_coord_replace) {
+	 brw_set_predicate_control_flag_value(p, pc_coord_replace);
+	 /* Caculate 1.0/PointWidth */
+	 brw_math(&c->func,
 		  c->tmp,
 		  BRW_MATH_FUNCTION_INV,
-		  BRW_MATH_SATURATE_NONE,
 		  0,
 		  c->dx0,
 		  BRW_MATH_DATA_SCALAR,
 		  BRW_MATH_PRECISION_FULL);
 
-	  if (c->key.sprite_origin_lower_left) {
-	   	brw_MUL(p, c->m1Cx, c->tmp, c->inv_w[0]);
-		brw_MOV(p, vec1(suboffset(c->m1Cx, 1)), brw_imm_f(0.0));
-	  	brw_MUL(p, c->m2Cy, c->tmp, negate(c->inv_w[0]));
-		brw_MOV(p, vec1(suboffset(c->m2Cy, 0)), brw_imm_f(0.0));
-	  } else {
-	   	brw_MUL(p, c->m1Cx, c->tmp, c->inv_w[0]);
-		brw_MOV(p, vec1(suboffset(c->m1Cx, 1)), brw_imm_f(0.0));
-	  	brw_MUL(p, c->m2Cy, c->tmp, c->inv_w[0]);
-		brw_MOV(p, vec1(suboffset(c->m2Cy, 0)), brw_imm_f(0.0));
-	  }
-      } else {
-	  brw_MOV(p, c->m1Cx, brw_imm_ud(0));
-	  brw_MOV(p, c->m2Cy, brw_imm_ud(0));
-      }
+	 brw_set_access_mode(p, BRW_ALIGN_16);
 
-      {
-	 brw_set_predicate_control_flag_value(p, pc); 
-	 if (tex->CoordReplace) {
-	     if (c->key.sprite_origin_lower_left) {
-		 brw_MUL(p, c->m3C0, c->inv_w[0], brw_imm_f(1.0));
-		 brw_MOV(p, vec1(suboffset(c->m3C0, 0)), brw_imm_f(0.0));
-	     }
-	     else
-		 brw_MOV(p, c->m3C0, brw_imm_f(0.0));
+	 /* dA/dx, dA/dy */
+	 brw_MOV(p, c->m1Cx, brw_imm_f(0.0));
+	 brw_MOV(p, c->m2Cy, brw_imm_f(0.0));
+	 brw_MOV(p, brw_writemask(c->m1Cx, WRITEMASK_X), c->tmp);
+	 if (c->key.sprite_origin_lower_left) {
+	    brw_MOV(p, brw_writemask(c->m2Cy, WRITEMASK_Y), negate(c->tmp));
 	 } else {
-	 	brw_MOV(p, c->m3C0, a0); /* constant value */
+	    brw_MOV(p, brw_writemask(c->m2Cy, WRITEMASK_Y), c->tmp);
 	 }
 
-	 /* Copy m0..m3 to URB. 
-	  */
-	 brw_urb_WRITE(p, 
-		       brw_null_reg(),
-		       0,
-		       brw_vec8_grf(0, 0),
-		       0, 	/* allocate */
-		       1,	/* used */
-		       4, 	/* msg len */
-		       0,	/* response len */
-		       last, 	/* eot */
-		       last, 	/* writes complete */
-		       i*4,	/* urb destination offset */
-		       BRW_URB_SWIZZLE_TRANSPOSE);
+	 /* attribute constant offset */
+	 brw_MOV(p, c->m3C0, brw_imm_f(0.0));
+	 if (c->key.sprite_origin_lower_left) {
+	    brw_MOV(p, brw_writemask(c->m3C0, WRITEMASK_YW), brw_imm_f(1.0));
+	 } else {
+	    brw_MOV(p, brw_writemask(c->m3C0, WRITEMASK_W), brw_imm_f(1.0));
+	 }
+
+	 brw_set_access_mode(p, BRW_ALIGN_1);
       }
+
+      if (pc & ~pc_coord_replace) {
+	 brw_set_predicate_control_flag_value(p, pc & ~pc_coord_replace);
+	 brw_MOV(p, c->m1Cx, brw_imm_ud(0));
+	 brw_MOV(p, c->m2Cy, brw_imm_ud(0));
+	 brw_MOV(p, c->m3C0, a0); /* constant value */
+      }
+
+
+      brw_set_predicate_control_flag_value(p, pc);
+      /* Copy m0..m3 to URB. */
+      brw_urb_WRITE(p,
+		    brw_null_reg(),
+		    0,
+		    brw_vec8_grf(0, 0),
+		    0, 	/* allocate */
+		    1,	/* used */
+		    4, 	/* msg len */
+		    0,	/* response len */
+		    last, 	/* eot */
+		    last, 	/* writes complete */
+		    i*4,	/* urb destination offset */
+		    BRW_URB_SWIZZLE_TRANSPOSE);
    }
 }
 
 /* Points setup - several simplifications as all attributes are
  * constant across the face of the point (point sprites excluded!)
  */
-void brw_emit_point_setup( struct brw_sf_compile *c, GLboolean allocate)
+void brw_emit_point_setup(struct brw_sf_compile *c, bool allocate)
 {
    struct brw_compile *p = &c->func;
    GLuint i;
@@ -620,7 +673,7 @@ void brw_emit_point_setup( struct brw_sf_compile *c, GLboolean allocate)
    {
       struct brw_reg a0 = offset(c->vert[0], i);
       GLushort pc, pc_persp, pc_linear;
-      GLboolean last = calculate_masks(c, i, &pc, &pc_persp, &pc_linear);
+      bool last = calculate_masks(c, i, &pc, &pc_persp, &pc_linear);
             
       if (pc_persp)
       {				
@@ -666,7 +719,7 @@ void brw_emit_anyprim_setup( struct brw_sf_compile *c )
    struct brw_reg payload_prim = brw_uw1_reg(BRW_GENERAL_REGISTER_FILE, 1, 0);
    struct brw_reg payload_attr = get_element_ud(brw_vec1_reg(BRW_GENERAL_REGISTER_FILE, 1, 0), 0); 
    struct brw_reg primmask;
-   struct brw_instruction *jmp;
+   int jmp;
    struct brw_reg v1_null_ud = vec1(retype(brw_null_reg(), BRW_REGISTER_TYPE_UD));
    
    GLuint saveflag;
@@ -687,11 +740,11 @@ void brw_emit_anyprim_setup( struct brw_sf_compile *c )
 					       (1<<_3DPRIM_POLYGON) |
 					       (1<<_3DPRIM_RECTLIST) |
 					       (1<<_3DPRIM_TRIFAN_NOSTIPPLE)));
-   jmp = brw_JMPI(p, ip, ip, brw_imm_d(0));
+   jmp = brw_JMPI(p, ip, ip, brw_imm_d(0)) - p->store;
    {
       saveflag = p->flag_value;
       brw_push_insn_state(p); 
-      brw_emit_tri_setup( c, GL_FALSE );
+      brw_emit_tri_setup( c, false );
       brw_pop_insn_state(p);
       p->flag_value = saveflag;
       /* note - thread killed in subroutine, so must
@@ -708,11 +761,11 @@ void brw_emit_anyprim_setup( struct brw_sf_compile *c )
 					       (1<<_3DPRIM_LINESTRIP_CONT) |
 					       (1<<_3DPRIM_LINESTRIP_BF) |
 					       (1<<_3DPRIM_LINESTRIP_CONT_BF)));
-   jmp = brw_JMPI(p, ip, ip, brw_imm_d(0));
+   jmp = brw_JMPI(p, ip, ip, brw_imm_d(0)) - p->store;
    {
       saveflag = p->flag_value;
       brw_push_insn_state(p); 
-      brw_emit_line_setup( c, GL_FALSE );
+      brw_emit_line_setup( c, false );
       brw_pop_insn_state(p);
       p->flag_value = saveflag;
       /* note - thread killed in subroutine */
@@ -721,17 +774,17 @@ void brw_emit_anyprim_setup( struct brw_sf_compile *c )
 
    brw_set_conditionalmod(p, BRW_CONDITIONAL_Z);
    brw_AND(p, v1_null_ud, payload_attr, brw_imm_ud(1<<BRW_SPRITE_POINT_ENABLE));
-   jmp = brw_JMPI(p, ip, ip, brw_imm_d(0));
+   jmp = brw_JMPI(p, ip, ip, brw_imm_d(0)) - p->store;
    {
       saveflag = p->flag_value;
       brw_push_insn_state(p); 
-      brw_emit_point_sprite_setup( c, GL_FALSE );
+      brw_emit_point_sprite_setup( c, false );
       brw_pop_insn_state(p);
       p->flag_value = saveflag;
    }
    brw_land_fwd_jump(p, jmp); 
 
-   brw_emit_point_setup( c, GL_FALSE );
+   brw_emit_point_setup( c, false );
 }
 
 

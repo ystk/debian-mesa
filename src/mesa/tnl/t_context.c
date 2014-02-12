@@ -34,6 +34,7 @@
 #include "main/light.h"
 #include "math/m_translate.h"
 #include "math/m_xform.h"
+#include "main/state.h"
 
 #include "tnl.h"
 #include "t_context.h"
@@ -42,7 +43,7 @@
 #include "vbo/vbo.h"
 
 GLboolean
-_tnl_CreateContext( GLcontext *ctx )
+_tnl_CreateContext( struct gl_context *ctx )
 {
    TNLcontext *tnl;
 
@@ -90,7 +91,7 @@ _tnl_CreateContext( GLcontext *ctx )
 
 
 void
-_tnl_DestroyContext( GLcontext *ctx )
+_tnl_DestroyContext( struct gl_context *ctx )
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
 
@@ -102,11 +103,12 @@ _tnl_DestroyContext( GLcontext *ctx )
 
 
 void
-_tnl_InvalidateState( GLcontext *ctx, GLuint new_state )
+_tnl_InvalidateState( struct gl_context *ctx, GLuint new_state )
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    const struct gl_vertex_program *vp = ctx->VertexProgram._Current;
    const struct gl_fragment_program *fp = ctx->FragmentProgram._Current;
+   GLuint i;
 
    if (new_state & (_NEW_HINT | _NEW_PROGRAM)) {
       ASSERT(tnl->AllowVertexFog || tnl->AllowPixelFog);
@@ -119,60 +121,45 @@ _tnl_InvalidateState( GLcontext *ctx, GLuint new_state )
    /* Calculate tnl->render_inputs.  This bitmask indicates which vertex
     * attributes need to be emitted to the rasterizer.
     */
-   if (ctx->Visual.rgbMode) {
-      GLuint i;
+   tnl->render_inputs_bitset = BITFIELD64_BIT(_TNL_ATTRIB_POS);
 
-      RENDERINPUTS_ZERO( tnl->render_inputs_bitset );
-      RENDERINPUTS_SET( tnl->render_inputs_bitset, _TNL_ATTRIB_POS );
-
-      if (!fp || (fp->Base.InputsRead & FRAG_BIT_COL0)) {
-         RENDERINPUTS_SET( tnl->render_inputs_bitset, _TNL_ATTRIB_COLOR0 );
-      }
-
-      if (NEED_SECONDARY_COLOR(ctx))
-         RENDERINPUTS_SET( tnl->render_inputs_bitset, _TNL_ATTRIB_COLOR1 );
-
-      for (i = 0; i < ctx->Const.MaxTextureCoordUnits; i++) {
-         if (ctx->Texture._EnabledCoordUnits & (1 << i) ||
-             (fp && fp->Base.InputsRead & FRAG_BIT_TEX(i))) {
-            RENDERINPUTS_SET( tnl->render_inputs_bitset, _TNL_ATTRIB_TEX(i) );
-         }
-      }
-   }
-   else {
-      RENDERINPUTS_SET( tnl->render_inputs_bitset, _TNL_ATTRIB_POS );
-      RENDERINPUTS_SET( tnl->render_inputs_bitset, _TNL_ATTRIB_COLOR_INDEX );
+   if (!fp || (fp->Base.InputsRead & FRAG_BIT_COL0)) {
+     tnl->render_inputs_bitset |= BITFIELD64_BIT(_TNL_ATTRIB_COLOR0);
    }
 
-   if (ctx->Fog.Enabled) {
-      /* fixed-function fog */
-      RENDERINPUTS_SET( tnl->render_inputs_bitset, _TNL_ATTRIB_FOG );
+   if (_mesa_need_secondary_color(ctx))
+     tnl->render_inputs_bitset |= BITFIELD64_BIT(_TNL_ATTRIB_COLOR1);
+
+   for (i = 0; i < ctx->Const.MaxTextureCoordUnits; i++) {
+     if (ctx->Texture._EnabledCoordUnits & (1 << i) ||
+	 (fp && fp->Base.InputsRead & FRAG_BIT_TEX(i))) {
+       tnl->render_inputs_bitset |= BITFIELD64_BIT(_TNL_ATTRIB_TEX(i));
+     }
    }
-   else if (fp) {
-      if (fp->FogOption != GL_NONE || (fp->Base.InputsRead & FRAG_BIT_FOGC)) {
-         /* fragment program needs fog coord */
-         RENDERINPUTS_SET( tnl->render_inputs_bitset, _TNL_ATTRIB_FOG );
-      }
+
+   if (ctx->Fog.Enabled
+       || (fp != NULL && (fp->Base.InputsRead & FRAG_BIT_FOGC) != 0)) {
+      /* Either fixed-function fog or a fragment program needs fog coord.
+       */
+      tnl->render_inputs_bitset |= BITFIELD64_BIT(_TNL_ATTRIB_FOG);
    }
 
    if (ctx->Polygon.FrontMode != GL_FILL || 
        ctx->Polygon.BackMode != GL_FILL)
-      RENDERINPUTS_SET( tnl->render_inputs_bitset, _TNL_ATTRIB_EDGEFLAG );
+      tnl->render_inputs_bitset |= BITFIELD64_BIT(_TNL_ATTRIB_EDGEFLAG);
 
    if (ctx->RenderMode == GL_FEEDBACK)
-      RENDERINPUTS_SET( tnl->render_inputs_bitset, _TNL_ATTRIB_TEX0 );
+      tnl->render_inputs_bitset |= BITFIELD64_BIT(_TNL_ATTRIB_TEX0);
 
-   if (ctx->Point._Attenuated ||
-       (ctx->VertexProgram._Enabled && ctx->VertexProgram.PointSizeEnabled))
-      RENDERINPUTS_SET( tnl->render_inputs_bitset, _TNL_ATTRIB_POINTSIZE );
+   if (ctx->Point._Attenuated || ctx->VertexProgram.PointSizeEnabled)
+      tnl->render_inputs_bitset |= BITFIELD64_BIT(_TNL_ATTRIB_POINTSIZE);
 
    /* check for varying vars which are written by the vertex program */
    if (vp) {
       GLuint i;
       for (i = 0; i < MAX_VARYING; i++) {
 	 if (vp->Base.OutputsWritten & BITFIELD64_BIT(VERT_RESULT_VAR0 + i)) {
-            RENDERINPUTS_SET(tnl->render_inputs_bitset,
-                             _TNL_ATTRIB_GENERIC(i));
+            tnl->render_inputs_bitset |= BITFIELD64_BIT(_TNL_ATTRIB_GENERIC(i));
          }
       }
    }
@@ -180,7 +167,7 @@ _tnl_InvalidateState( GLcontext *ctx, GLuint new_state )
 
 
 void
-_tnl_wakeup( GLcontext *ctx )
+_tnl_wakeup( struct gl_context *ctx )
 {
    /* Assume we haven't been getting state updates either:
     */
@@ -203,14 +190,14 @@ _tnl_wakeup( GLcontext *ctx )
  * we should "Divide-by-W".  Software renders will want that.
  */
 void
-_tnl_need_projected_coords( GLcontext *ctx, GLboolean mode )
+_tnl_need_projected_coords( struct gl_context *ctx, GLboolean mode )
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    tnl->NeedNdcCoords = mode;
 }
 
 void
-_tnl_allow_vertex_fog( GLcontext *ctx, GLboolean value )
+_tnl_allow_vertex_fog( struct gl_context *ctx, GLboolean value )
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    tnl->AllowVertexFog = value;
@@ -220,7 +207,7 @@ _tnl_allow_vertex_fog( GLcontext *ctx, GLboolean value )
 }
 
 void
-_tnl_allow_pixel_fog( GLcontext *ctx, GLboolean value )
+_tnl_allow_pixel_fog( struct gl_context *ctx, GLboolean value )
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    tnl->AllowPixelFog = value;

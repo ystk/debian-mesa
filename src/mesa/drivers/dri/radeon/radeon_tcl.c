@@ -46,7 +46,6 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "radeon_context.h"
 #include "radeon_state.h"
 #include "radeon_ioctl.h"
-#include "radeon_tex.h"
 #include "radeon_tcl.h"
 #include "radeon_swtcl.h"
 #include "radeon_maos.h"
@@ -165,7 +164,7 @@ static GLushort *radeonAllocElts( r100ContextPtr rmesa, GLuint nr )
  * discrete and there are no intervening state changes.  (Somewhat
  * duplicates changes to DrawArrays code)
  */
-static void radeonEmitPrim( GLcontext *ctx, 
+static void radeonEmitPrim( struct gl_context *ctx, 
 		       GLenum prim, 
 		       GLuint hwprim, 
 		       GLuint start, 
@@ -208,8 +207,8 @@ static void radeonEmitPrim( GLcontext *ctx,
 #ifdef MESA_BIG_ENDIAN
 /* We could do without (most of) this ugliness if dest was always 32 bit word aligned... */
 #define EMIT_ELT(dest, offset, x) do {				\
-	int off = offset + ( ( (GLuint)dest & 0x2 ) >> 1 );	\
-	GLushort *des = (GLushort *)( (GLuint)dest & ~0x2 );	\
+	int off = offset + ( ( (uintptr_t)dest & 0x2 ) >> 1 );	\
+	GLushort *des = (GLushort *)( (uintptr_t)dest & ~0x2 );	\
 	(des)[ off + 1 - 2 * ( off & 1 ) ] = (GLushort)(x); 	\
 	(void)rmesa; } while (0)
 #else
@@ -229,7 +228,7 @@ static void radeonEmitPrim( GLcontext *ctx,
 /*                          External entrypoints                     */
 /**********************************************************************/
 
-void radeonEmitPrimitive( GLcontext *ctx, 
+void radeonEmitPrimitive( struct gl_context *ctx, 
 			  GLuint first,
 			  GLuint last,
 			  GLuint flags )
@@ -237,7 +236,7 @@ void radeonEmitPrimitive( GLcontext *ctx,
    tcl_render_tab_verts[flags&PRIM_MODE_MASK]( ctx, first, last, flags );
 }
 
-void radeonEmitEltPrimitive( GLcontext *ctx, 
+void radeonEmitEltPrimitive( struct gl_context *ctx, 
 			     GLuint first,
 			     GLuint last,
 			     GLuint flags )
@@ -245,13 +244,17 @@ void radeonEmitEltPrimitive( GLcontext *ctx,
    tcl_render_tab_elts[flags&PRIM_MODE_MASK]( ctx, first, last, flags );
 }
 
-void radeonTclPrimitive( GLcontext *ctx, 
+void radeonTclPrimitive( struct gl_context *ctx, 
 			 GLenum prim,
 			 int hw_prim )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    GLuint se_cntl;
    GLuint newprim = hw_prim | RADEON_CP_VC_CNTL_TCL_ENABLE;
+
+   radeon_prepare_render(&rmesa->radeon);
+   if (rmesa->radeon.NewGLState)
+      radeonValidateState( ctx );
 
    if (newprim != rmesa->tcl.hw_primitive ||
        !discrete_prim[hw_prim&0xf]) {
@@ -325,7 +328,7 @@ radeonInitStaticFogData( void )
  * Fog blend factors are in the range [0,1].
  */
 float
-radeonComputeFogBlendFactor( GLcontext *ctx, GLfloat fogcoord )
+radeonComputeFogBlendFactor( struct gl_context *ctx, GLfloat fogcoord )
 {
    GLfloat end  = ctx->Fog.End;
    GLfloat d, temp;
@@ -360,7 +363,7 @@ radeonComputeFogBlendFactor( GLcontext *ctx, GLfloat fogcoord )
  * Predict total emit size for next rendering operation so there is no flush in middle of rendering
  * Prediction has to aim towards the best possible value that is worse than worst case scenario
  */
-static GLuint radeonEnsureEmitSize( GLcontext * ctx , GLuint inputs )
+static GLuint radeonEnsureEmitSize( struct gl_context * ctx , GLuint inputs )
 {
   r100ContextPtr rmesa = R100_CONTEXT(ctx);
   TNLcontext *tnl = TNL_CONTEXT(ctx);
@@ -398,8 +401,6 @@ static GLuint radeonEnsureEmitSize( GLcontext * ctx , GLuint inputs )
     /* predict size for elements */
     for (i = 0; i < VB->PrimitiveCount; ++i)
     {
-      if (!VB->Primitive[i].count)
-	continue;
       /* If primitive.count is less than MAX_CONVERSION_SIZE
 	 rendering code may decide convert to elts.
 	 In that case we have to make pessimistic prediction.
@@ -407,6 +408,8 @@ static GLuint radeonEnsureEmitSize( GLcontext * ctx , GLuint inputs )
       const GLuint elts = ELTS_BUFSZ(nr_aos);
       const GLuint index = INDEX_BUFSZ;
       const GLuint vbuf = VBUF_BUFSZ;
+      if (!VB->Primitive[i].count)
+	continue;
       if ( (!VB->Elts && VB->Primitive[i].count >= MAX_CONVERSION_SIZE)
 	  || vbuf > index + elts)
 	space_required += vbuf;
@@ -431,7 +434,7 @@ static GLuint radeonEnsureEmitSize( GLcontext * ctx , GLuint inputs )
 
 /* TCL render.
  */
-static GLboolean radeon_run_tcl_render( GLcontext *ctx,
+static GLboolean radeon_run_tcl_render( struct gl_context *ctx,
 					struct tnl_pipeline_stage *stage )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
@@ -439,6 +442,7 @@ static GLboolean radeon_run_tcl_render( GLcontext *ctx,
    struct vertex_buffer *VB = &tnl->vb;
    GLuint inputs = VERT_BIT_POS | VERT_BIT_COLOR0;
    GLuint i;
+   GLuint emit_end;
 
    /* TODO: separate this from the swtnl pipeline 
     */
@@ -474,7 +478,7 @@ static GLboolean radeon_run_tcl_render( GLcontext *ctx,
    }
 
    radeonReleaseArrays( ctx, ~0 );
-   GLuint emit_end = radeonEnsureEmitSize( ctx, inputs )
+   emit_end = radeonEnsureEmitSize( ctx, inputs )
      + rmesa->radeon.cmdbuf.cs->cdw;
    radeonEmitArrays( ctx, inputs );
 
@@ -528,7 +532,7 @@ const struct tnl_pipeline_stage _radeon_tcl_stage =
  */
 
 
-static void transition_to_swtnl( GLcontext *ctx )
+static void transition_to_swtnl( struct gl_context *ctx )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    TNLcontext *tnl = TNL_CONTEXT(ctx);
@@ -557,7 +561,7 @@ static void transition_to_swtnl( GLcontext *ctx )
 }
 
 
-static void transition_to_hwtnl( GLcontext *ctx )
+static void transition_to_hwtnl( struct gl_context *ctx )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    TNLcontext *tnl = TNL_CONTEXT(ctx);
@@ -617,7 +621,7 @@ static char *getFallbackString(GLuint bit)
 
 
 
-void radeonTclFallback( GLcontext *ctx, GLuint bit, GLboolean mode )
+void radeonTclFallback( struct gl_context *ctx, GLuint bit, GLboolean mode )
 {
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
    GLuint oldfallback = rmesa->radeon.TclFallback;

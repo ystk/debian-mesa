@@ -25,7 +25,6 @@
 
 #include "main/glheader.h"
 #include "main/colormac.h"
-#include "main/context.h"
 #include "main/macros.h"
 #include "s_context.h"
 #include "s_feedback.h"
@@ -52,8 +51,8 @@
  * or just the glPointSize value.
  * Must also clamp to user-defined range and implmentation limits.
  */
-static INLINE GLfloat
-get_size(const GLcontext *ctx, const SWvertex *vert, GLboolean smoothed)
+static inline GLfloat
+get_size(const struct gl_context *ctx, const SWvertex *vert, GLboolean smoothed)
 {
    GLfloat size;
 
@@ -81,7 +80,7 @@ get_size(const GLcontext *ctx, const SWvertex *vert, GLboolean smoothed)
  * Draw a point sprite
  */
 static void
-sprite_point(GLcontext *ctx, const SWvertex *vert)
+sprite_point(struct gl_context *ctx, const SWvertex *vert)
 {
    SWcontext *swrast = SWRAST_CONTEXT(ctx);
    SWspan span;
@@ -125,16 +124,16 @@ sprite_point(GLcontext *ctx, const SWvertex *vert)
       GLfloat s, r, dsdx;
 
       /* texcoord / pointcoord interpolants */
-      s = 0.0;
-      dsdx = 1.0 / size;
+      s = 0.0F;
+      dsdx = 1.0F / size;
       if (ctx->Point.SpriteOrigin == GL_LOWER_LEFT) {
-         dtdy = 1.0 / size;
-         t0 = 0.5 * dtdy;
+         dtdy = 1.0F / size;
+         t0 = 0.5F * dtdy;
       }
       else {
          /* GL_UPPER_LEFT */
-         dtdy = -1.0 / size;
-         t0 = 1.0 + 0.5 * dtdy;
+         dtdy = -1.0F / size;
+         t0 = 1.0F + 0.5F * dtdy;
       }
 
       ATTRIB_LOOP_BEGIN
@@ -241,10 +240,9 @@ sprite_point(GLcontext *ctx, const SWvertex *vert)
  * Draw smooth/antialiased point.  RGB or CI mode.
  */
 static void
-smooth_point(GLcontext *ctx, const SWvertex *vert)
+smooth_point(struct gl_context *ctx, const SWvertex *vert)
 {
    SWcontext *swrast = SWRAST_CONTEXT(ctx);
-   const GLboolean ciMode = !ctx->Visual.rgbMode;
    SWspan span;
    GLfloat size, alphaAtten;
 
@@ -335,10 +333,6 @@ smooth_point(GLcontext *ctx, const SWvertex *vert)
                if (dist2 >= rmin2) {
                   /* compute partial coverage */
                   coverage = 1.0F - (dist2 - rmin2) * cscale;
-                  if (ciMode) {
-                     /* coverage in [0,15] */
-                     coverage *= 15.0;
-                  }
                }
                else {
                   /* full coverage */
@@ -366,10 +360,9 @@ smooth_point(GLcontext *ctx, const SWvertex *vert)
  * Draw large (size >= 1) non-AA point.  RGB or CI mode.
  */
 static void
-large_point(GLcontext *ctx, const SWvertex *vert)
+large_point(struct gl_context *ctx, const SWvertex *vert)
 {
    SWcontext *swrast = SWRAST_CONTEXT(ctx);
-   const GLboolean ciMode = !ctx->Visual.rgbMode;
    SWspan span;
    GLfloat size;
 
@@ -389,22 +382,15 @@ large_point(GLcontext *ctx, const SWvertex *vert)
    span.arrayMask = SPAN_XY;
    span.facing = swrast->PointLineFacing;
 
-   if (ciMode) {
-      span.interpMask = SPAN_Z | SPAN_INDEX;
-      span.index = FloatToFixed(vert->attrib[FRAG_ATTRIB_CI][0]);
-      span.indexStep = 0;
-   }
-   else {
-      span.interpMask = SPAN_Z | SPAN_RGBA;
-      span.red   = ChanToFixed(vert->color[0]);
-      span.green = ChanToFixed(vert->color[1]);
-      span.blue  = ChanToFixed(vert->color[2]);
-      span.alpha = ChanToFixed(vert->color[3]);
-      span.redStep = 0;
-      span.greenStep = 0;
-      span.blueStep = 0;
-      span.alphaStep = 0;
-   }
+   span.interpMask = SPAN_Z | SPAN_RGBA;
+   span.red   = ChanToFixed(vert->color[0]);
+   span.green = ChanToFixed(vert->color[1]);
+   span.blue  = ChanToFixed(vert->color[2]);
+   span.alpha = ChanToFixed(vert->color[3]);
+   span.redStep = 0;
+   span.greenStep = 0;
+   span.blueStep = 0;
+   span.alphaStep = 0;
 
    /* need these for fragment programs */
    span.attrStart[FRAG_ATTRIB_WPOS][3] = 1.0F;
@@ -463,10 +449,9 @@ large_point(GLcontext *ctx, const SWvertex *vert)
  * Draw size=1, single-pixel point
  */
 static void
-pixel_point(GLcontext *ctx, const SWvertex *vert)
+pixel_point(struct gl_context *ctx, const SWvertex *vert)
 {
    SWcontext *swrast = SWRAST_CONTEXT(ctx);
-   const GLboolean ciMode = !ctx->Visual.rgbMode;
    /*
     * Note that unlike the other functions, we put single-pixel points
     * into a special span array in order to render as many points as
@@ -480,10 +465,7 @@ pixel_point(GLcontext *ctx, const SWvertex *vert)
    /* Span init */
    span->interpMask = 0;
    span->arrayMask = SPAN_XY | SPAN_Z;
-   if (ciMode)
-      span->arrayMask |= SPAN_INDEX;
-   else
-      span->arrayMask |= SPAN_RGBA;
+   span->arrayMask |= SPAN_RGBA;
    /*span->arrayMask |= SPAN_LAMBDA;*/
    span->arrayAttribs = swrast->_ActiveAttribMask; /* we'll produce these vals */
 
@@ -497,10 +479,7 @@ pixel_point(GLcontext *ctx, const SWvertex *vert)
        (swrast->_RasterMask & (BLEND_BIT | LOGIC_OP_BIT | MASKING_BIT)) ||
        span->facing != swrast->PointLineFacing) {
       if (span->end > 0) {
-         if (ciMode)
-            _swrast_write_index_span(ctx, span);
-         else
-            _swrast_write_rgba_span(ctx, span);
+	 _swrast_write_rgba_span(ctx, span);
          span->end = 0;
       }
    }
@@ -510,15 +489,11 @@ pixel_point(GLcontext *ctx, const SWvertex *vert)
    span->facing = swrast->PointLineFacing;
 
    /* fragment attributes */
-   if (ciMode) {
-      span->array->index[count] = (GLuint) vert->attrib[FRAG_ATTRIB_CI][0];
-   }
-   else {
-      span->array->rgba[count][RCOMP] = vert->color[0];
-      span->array->rgba[count][GCOMP] = vert->color[1];
-      span->array->rgba[count][BCOMP] = vert->color[2];
-      span->array->rgba[count][ACOMP] = vert->color[3];
-   }
+   span->array->rgba[count][RCOMP] = vert->color[0];
+   span->array->rgba[count][GCOMP] = vert->color[1];
+   span->array->rgba[count][BCOMP] = vert->color[2];
+   span->array->rgba[count][ACOMP] = vert->color[3];
+
    ATTRIB_LOOP_BEGIN
       COPY_4V(span->array->attribs[attr][count], vert->attrib[attr]);
    ATTRIB_LOOP_END
@@ -538,7 +513,7 @@ pixel_point(GLcontext *ctx, const SWvertex *vert)
  * primary color.
  */
 void
-_swrast_add_spec_terms_point(GLcontext *ctx, const SWvertex *v0)
+_swrast_add_spec_terms_point(struct gl_context *ctx, const SWvertex *v0)
 {
    SWvertex *ncv0 = (SWvertex *) v0; /* cast away const */
    GLfloat rSum, gSum, bSum;
@@ -564,7 +539,7 @@ _swrast_add_spec_terms_point(GLcontext *ctx, const SWvertex *v0)
  * Examine current state to determine which point drawing function to use.
  */
 void
-_swrast_choose_point(GLcontext *ctx)
+_swrast_choose_point(struct gl_context *ctx)
 {
    SWcontext *swrast = SWRAST_CONTEXT(ctx);
    const GLfloat size = CLAMP(ctx->Point.Size,

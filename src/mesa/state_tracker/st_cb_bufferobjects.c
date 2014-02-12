@@ -36,13 +36,12 @@
 #include "main/arrayobj.h"
 #include "main/bufferobj.h"
 
-#include "st_inlines.h"
 #include "st_context.h"
 #include "st_cb_bufferobjects.h"
 
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
-#include "pipe/p_inlines.h"
+#include "util/u_inlines.h"
 
 
 /**
@@ -52,14 +51,14 @@
  * internal structure where somehow shared.
  */
 static struct gl_buffer_object *
-st_bufferobj_alloc(GLcontext *ctx, GLuint name, GLenum target)
+st_bufferobj_alloc(struct gl_context *ctx, GLuint name, GLenum target)
 {
    struct st_buffer_object *st_obj = ST_CALLOC_STRUCT(st_buffer_object);
 
    if (!st_obj)
       return NULL;
 
-   _mesa_initialize_buffer_object(&st_obj->Base, name, target);
+   _mesa_initialize_buffer_object(ctx, &st_obj->Base, name, target);
 
    return &st_obj->Base;
 }
@@ -71,16 +70,17 @@ st_bufferobj_alloc(GLcontext *ctx, GLuint name, GLenum target)
  * Called via glDeleteBuffersARB().
  */
 static void
-st_bufferobj_free(GLcontext *ctx, struct gl_buffer_object *obj)
+st_bufferobj_free(struct gl_context *ctx, struct gl_buffer_object *obj)
 {
    struct st_buffer_object *st_obj = st_buffer_object(obj);
 
    assert(obj->RefCount == 0);
+   assert(st_obj->transfer == NULL);
 
    if (st_obj->buffer) 
-      pipe_buffer_reference(&st_obj->buffer, NULL);
+      pipe_resource_reference(&st_obj->buffer, NULL);
 
-   _mesa_free(st_obj);
+   free(st_obj);
 }
 
 
@@ -92,8 +92,7 @@ st_bufferobj_free(GLcontext *ctx, struct gl_buffer_object *obj)
  * Called via glBufferSubDataARB().
  */
 static void
-st_bufferobj_subdata(GLcontext *ctx,
-		     GLenum target,
+st_bufferobj_subdata(struct gl_context *ctx,
 		     GLintptrARB offset,
 		     GLsizeiptrARB size,
 		     const GLvoid * data, struct gl_buffer_object *obj)
@@ -116,8 +115,20 @@ st_bufferobj_subdata(GLcontext *ctx,
    if (!data)
       return;
 
-   st_cond_flush_pipe_buffer_write(st_context(ctx), st_obj->buffer,
-				   offset, size, data);
+   if (!st_obj->buffer) {
+      /* we probably ran out of memory during buffer allocation */
+      return;
+   }
+
+   /* Now that transfers are per-context, we don't have to figure out
+    * flushing here.  Usually drivers won't need to flush in this case
+    * even if the buffer is currently referenced by hardware - they
+    * just queue the upload as dma rather than mapping the underlying
+    * buffer directly.
+    */
+   pipe_buffer_write(st_context(ctx)->pipe,
+		     st_obj->buffer,
+		     offset, size, data);
 }
 
 
@@ -125,8 +136,7 @@ st_bufferobj_subdata(GLcontext *ctx,
  * Called via glGetBufferSubDataARB().
  */
 static void
-st_bufferobj_get_subdata(GLcontext *ctx,
-                         GLenum target,
+st_bufferobj_get_subdata(struct gl_context *ctx,
                          GLintptrARB offset,
                          GLsizeiptrARB size,
                          GLvoid * data, struct gl_buffer_object *obj)
@@ -141,8 +151,13 @@ st_bufferobj_get_subdata(GLcontext *ctx,
    if (!size)
       return;
 
-   st_cond_flush_pipe_buffer_read(st_context(ctx), st_obj->buffer,
-				  offset, size, data);
+   if (!st_obj->buffer) {
+      /* we probably ran out of memory during buffer allocation */
+      return;
+   }
+
+   pipe_buffer_read(st_context(ctx)->pipe, st_obj->buffer,
+                    offset, size, data);
 }
 
 
@@ -154,7 +169,7 @@ st_bufferobj_get_subdata(GLcontext *ctx,
  * \return GL_TRUE for success, GL_FALSE if out of memory
  */
 static GLboolean
-st_bufferobj_data(GLcontext *ctx,
+st_bufferobj_data(struct gl_context *ctx,
 		  GLenum target,
 		  GLsizeiptrARB size,
 		  const GLvoid * data,
@@ -164,7 +179,7 @@ st_bufferobj_data(GLcontext *ctx,
    struct st_context *st = st_context(ctx);
    struct pipe_context *pipe = st->pipe;
    struct st_buffer_object *st_obj = st_buffer_object(obj);
-   unsigned buffer_usage;
+   unsigned bind, pipe_usage;
 
    st_obj->Base.Size = size;
    st_obj->Base.Usage = usage;
@@ -172,30 +187,52 @@ st_bufferobj_data(GLcontext *ctx,
    switch(target) {
    case GL_PIXEL_PACK_BUFFER_ARB:
    case GL_PIXEL_UNPACK_BUFFER_ARB:
-      buffer_usage = PIPE_BUFFER_USAGE_PIXEL;
+      bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW;
       break;
    case GL_ARRAY_BUFFER_ARB:
-      buffer_usage = PIPE_BUFFER_USAGE_VERTEX;
+      bind = PIPE_BIND_VERTEX_BUFFER;
       break;
    case GL_ELEMENT_ARRAY_BUFFER_ARB:
-      buffer_usage = PIPE_BUFFER_USAGE_INDEX;
+      bind = PIPE_BIND_INDEX_BUFFER;
       break;
    default:
-      buffer_usage = 0;
+      bind = 0;
    }
 
-   pipe_buffer_reference( &st_obj->buffer, NULL );
+   switch (usage) {
+   case GL_STATIC_DRAW:
+   case GL_STATIC_READ:
+   case GL_STATIC_COPY:
+      pipe_usage = PIPE_USAGE_STATIC;
+      break;
+   case GL_DYNAMIC_DRAW:
+   case GL_DYNAMIC_READ:
+   case GL_DYNAMIC_COPY:
+      pipe_usage = PIPE_USAGE_DYNAMIC;
+      break;
+   case GL_STREAM_DRAW:
+   case GL_STREAM_READ:
+   case GL_STREAM_COPY:
+      pipe_usage = PIPE_USAGE_STREAM;
+      break;
+   default:
+      pipe_usage = PIPE_USAGE_DEFAULT;
+   }
+
+   pipe_resource_reference( &st_obj->buffer, NULL );
 
    if (size != 0) {
-      st_obj->buffer = pipe_buffer_create(pipe->screen, 32, buffer_usage, size);
+      st_obj->buffer = pipe_buffer_create(pipe->screen, bind,
+                                          pipe_usage, size);
 
       if (!st_obj->buffer) {
+         /* out of memory */
+         st_obj->Base.Size = 0;
          return GL_FALSE;
       }
 
       if (data)
-         st_no_flush_pipe_buffer_write(st_context(ctx), st_obj->buffer, 0,
-				       size, data);
+         pipe_buffer_write(pipe, st_obj->buffer, 0, size, data);
       return GL_TRUE;
    }
 
@@ -204,96 +241,55 @@ st_bufferobj_data(GLcontext *ctx,
 
 
 /**
- * Called via glMapBufferARB().
- */
-static void *
-st_bufferobj_map(GLcontext *ctx, GLenum target, GLenum access,
-                 struct gl_buffer_object *obj)
-{
-   struct st_buffer_object *st_obj = st_buffer_object(obj);
-   uint flags;
-
-   switch (access) {
-   case GL_WRITE_ONLY:
-      flags = PIPE_BUFFER_USAGE_CPU_WRITE;
-      break;
-   case GL_READ_ONLY:
-      flags = PIPE_BUFFER_USAGE_CPU_READ;
-      break;
-   case GL_READ_WRITE:
-      /* fall-through */
-   default:
-      flags = PIPE_BUFFER_USAGE_CPU_READ | PIPE_BUFFER_USAGE_CPU_WRITE;
-      break;      
-   }
-
-   obj->Pointer = st_cond_flush_pipe_buffer_map(st_context(ctx),
-						st_obj->buffer,
-						flags);
-   if (obj->Pointer) {
-      obj->Offset = 0;
-      obj->Length = obj->Size;
-   }
-   return obj->Pointer;
-}
-
-
-/**
- * Dummy data whose's pointer is used for zero length ranges.
- */
-static long
-st_bufferobj_zero_length_range = 0;
-
-
-/**
  * Called via glMapBufferRange().
  */
 static void *
-st_bufferobj_map_range(GLcontext *ctx, GLenum target, 
+st_bufferobj_map_range(struct gl_context *ctx,
                        GLintptr offset, GLsizeiptr length, GLbitfield access,
                        struct gl_buffer_object *obj)
 {
    struct pipe_context *pipe = st_context(ctx)->pipe;
    struct st_buffer_object *st_obj = st_buffer_object(obj);
-   uint flags = 0x0;
+   enum pipe_transfer_usage flags = 0x0;
 
    if (access & GL_MAP_WRITE_BIT)
-      flags |= PIPE_BUFFER_USAGE_CPU_WRITE;
+      flags |= PIPE_TRANSFER_WRITE;
 
    if (access & GL_MAP_READ_BIT)
-      flags |= PIPE_BUFFER_USAGE_CPU_READ;
+      flags |= PIPE_TRANSFER_READ;
 
    if (access & GL_MAP_FLUSH_EXPLICIT_BIT)
-      flags |= PIPE_BUFFER_USAGE_FLUSH_EXPLICIT;
+      flags |= PIPE_TRANSFER_FLUSH_EXPLICIT;
+
+   if (access & GL_MAP_INVALIDATE_BUFFER_BIT) {
+      flags |= PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE;
+   }
+   else if (access & GL_MAP_INVALIDATE_RANGE_BIT) {
+      if (offset == 0 && length == obj->Size)
+         flags |= PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE;
+      else
+         flags |= PIPE_TRANSFER_DISCARD_RANGE;
+   }
    
    if (access & GL_MAP_UNSYNCHRONIZED_BIT)
-      flags |= PIPE_BUFFER_USAGE_UNSYNCHRONIZED;
+      flags |= PIPE_TRANSFER_UNSYNCHRONIZED;
 
    /* ... other flags ...
     */
 
    if (access & MESA_MAP_NOWAIT_BIT)
-      flags |= PIPE_BUFFER_USAGE_DONTBLOCK;
+      flags |= PIPE_TRANSFER_DONTBLOCK;
 
    assert(offset >= 0);
    assert(length >= 0);
    assert(offset < obj->Size);
    assert(offset + length <= obj->Size);
 
-   /*
-    * We go out of way here to hide the degenerate yet valid case of zero
-    * length range from the pipe driver.
-    */
-   if (!length) {
-      obj->Pointer = &st_bufferobj_zero_length_range;
-   }
-   else {
-      obj->Pointer = pipe_buffer_map_range(pipe->screen, st_obj->buffer, offset, length, flags);
-      if (obj->Pointer) {
-         obj->Pointer = (ubyte *) obj->Pointer + offset;
-      }
-   }
-   
+   obj->Pointer = pipe_buffer_map_range(pipe,
+                                        st_obj->buffer,
+                                        offset, length,
+                                        flags,
+                                        &st_obj->transfer);
    if (obj->Pointer) {
       obj->Offset = offset;
       obj->Length = length;
@@ -305,7 +301,7 @@ st_bufferobj_map_range(GLcontext *ctx, GLenum target,
 
 
 static void
-st_bufferobj_flush_mapped_range(GLcontext *ctx, GLenum target, 
+st_bufferobj_flush_mapped_range(struct gl_context *ctx,
                                 GLintptr offset, GLsizeiptr length,
                                 struct gl_buffer_object *obj)
 {
@@ -316,11 +312,12 @@ st_bufferobj_flush_mapped_range(GLcontext *ctx, GLenum target,
    assert(offset >= 0);
    assert(length >= 0);
    assert(offset + length <= obj->Length);
+   assert(obj->Pointer);
    
    if (!length)
       return;
 
-   pipe_buffer_flush_mapped_range(pipe->screen, st_obj->buffer, 
+   pipe_buffer_flush_mapped_range(pipe, st_obj->transfer, 
                                   obj->Offset + offset, length);
 }
 
@@ -329,14 +326,15 @@ st_bufferobj_flush_mapped_range(GLcontext *ctx, GLenum target,
  * Called via glUnmapBufferARB().
  */
 static GLboolean
-st_bufferobj_unmap(GLcontext *ctx, GLenum target, struct gl_buffer_object *obj)
+st_bufferobj_unmap(struct gl_context *ctx, struct gl_buffer_object *obj)
 {
    struct pipe_context *pipe = st_context(ctx)->pipe;
    struct st_buffer_object *st_obj = st_buffer_object(obj);
 
-   if(obj->Length)
-      pipe_buffer_unmap(pipe->screen, st_obj->buffer);
+   if (obj->Length)
+      pipe_buffer_unmap(pipe, st_obj->transfer);
 
+   st_obj->transfer = NULL;
    obj->Pointer = NULL;
    obj->Offset = 0;
    obj->Length = 0;
@@ -348,7 +346,7 @@ st_bufferobj_unmap(GLcontext *ctx, GLenum target, struct gl_buffer_object *obj)
  * Called via glCopyBufferSubData().
  */
 static void
-st_copy_buffer_subdata(GLcontext *ctx,
+st_copy_buffer_subdata(struct gl_context *ctx,
                        struct gl_buffer_object *src,
                        struct gl_buffer_object *dst,
                        GLintptr readOffset, GLintptr writeOffset,
@@ -357,7 +355,7 @@ st_copy_buffer_subdata(GLcontext *ctx,
    struct pipe_context *pipe = st_context(ctx)->pipe;
    struct st_buffer_object *srcObj = st_buffer_object(src);
    struct st_buffer_object *dstObj = st_buffer_object(dst);
-   ubyte *srcPtr, *dstPtr;
+   struct pipe_box box;
 
    if(!size)
       return;
@@ -366,21 +364,23 @@ st_copy_buffer_subdata(GLcontext *ctx,
    assert(!src->Pointer);
    assert(!dst->Pointer);
 
-   srcPtr = (ubyte *) pipe_buffer_map_range(pipe->screen,
-                                            srcObj->buffer,
-                                            readOffset, size,
-                                            PIPE_BUFFER_USAGE_CPU_READ);
+   u_box_1d(readOffset, size, &box);
 
-   dstPtr = (ubyte *) pipe_buffer_map_range(pipe->screen,
-                                            dstObj->buffer,
-                                            writeOffset, size,
-                                            PIPE_BUFFER_USAGE_CPU_WRITE);
+   pipe->resource_copy_region(pipe, dstObj->buffer, 0, writeOffset, 0, 0,
+                              srcObj->buffer, 0, &box);
+}
 
-   if (srcPtr && dstPtr)
-      _mesa_memcpy(dstPtr + writeOffset, srcPtr + readOffset, size);
 
-   pipe_buffer_unmap(pipe->screen, srcObj->buffer);
-   pipe_buffer_unmap(pipe->screen, dstObj->buffer);
+/* TODO: if buffer wasn't created with appropriate usage flags, need
+ * to recreate it now and copy contents -- or possibly create a
+ * gallium entrypoint to extend the usage flags and let the driver
+ * decide if a copy is necessary.
+ */
+void
+st_bufferobj_validate_usage(struct st_context *st,
+			    struct st_buffer_object *obj,
+			    unsigned usage)
+{
 }
 
 
@@ -392,7 +392,6 @@ st_init_bufferobject_functions(struct dd_function_table *functions)
    functions->BufferData = st_bufferobj_data;
    functions->BufferSubData = st_bufferobj_subdata;
    functions->GetBufferSubData = st_bufferobj_get_subdata;
-   functions->MapBuffer = st_bufferobj_map;
    functions->MapBufferRange = st_bufferobj_map_range;
    functions->FlushMappedBufferRange = st_bufferobj_flush_mapped_range;
    functions->UnmapBuffer = st_bufferobj_unmap;

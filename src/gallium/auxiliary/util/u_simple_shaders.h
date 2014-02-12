@@ -35,6 +35,7 @@
 
 struct pipe_context;
 struct pipe_shader_state;
+struct pipe_stream_output_info;
 
 
 #ifdef __cplusplus
@@ -48,18 +49,39 @@ util_make_vertex_passthrough_shader(struct pipe_context *pipe,
                                     const uint *semantic_names,
                                     const uint *semantic_indexes);
 
+extern void *
+util_make_vertex_passthrough_shader_with_so(struct pipe_context *pipe,
+                                    uint num_attribs,
+                                    const uint *semantic_names,
+                                    const uint *semantic_indexes,
+                                    const struct pipe_stream_output_info *so);
+
 
 extern void *
 util_make_fragment_tex_shader_writemask(struct pipe_context *pipe, 
-                                        unsigned writemask );
+                                        unsigned tex_target,
+                                        unsigned interp_mode,
+                                        unsigned writemask);
 
 extern void *
-util_make_fragment_tex_shader(struct pipe_context *pipe);
+util_make_fragment_tex_shader(struct pipe_context *pipe, unsigned tex_target,
+                              unsigned interp_mode);
+
+
+extern void *
+util_make_fragment_tex_shader_writedepth(struct pipe_context *pipe,
+                                         unsigned tex_target,
+                                         unsigned interp_mode);
 
 
 extern void *
 util_make_fragment_passthrough_shader(struct pipe_context *pipe);
 
+
+extern void *
+util_make_fragment_cloneinput_shader(struct pipe_context *pipe, int num_cbufs,
+                                     int input_semantic,
+                                     int input_interpolate);
 
 #ifdef __cplusplus
 }

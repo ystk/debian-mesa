@@ -36,14 +36,15 @@
 #include "main/glheader.h"
 #include "main/mtypes.h"
 #include "main/macros.h"
+#include "main/mfeatures.h"
 #include "main/enums.h"
 #include "main/ffvertex_prog.h"
-#include "shader/program.h"
-#include "shader/prog_cache.h"
-#include "shader/prog_instruction.h"
-#include "shader/prog_parameter.h"
-#include "shader/prog_print.h"
-#include "shader/prog_statevars.h"
+#include "program/program.h"
+#include "program/prog_cache.h"
+#include "program/prog_instruction.h"
+#include "program/prog_parameter.h"
+#include "program/prog_print.h"
+#include "program/prog_statevars.h"
 
 
 /** Max of number of lights and texture coord units */
@@ -60,13 +61,14 @@ struct state_key {
    unsigned rescale_normals:1;
 
    unsigned fog_source_is_depth:1;
+   unsigned fog_distance_mode:2;
    unsigned separate_specular:1;
    unsigned point_attenuated:1;
    unsigned point_array:1;
    unsigned texture_enabled_global:1;
    unsigned fragprog_inputs_read:12;
 
-   unsigned varying_vp_inputs;
+   GLbitfield64 varying_vp_inputs;
 
    struct {
       unsigned light_enabled:1;
@@ -75,6 +77,7 @@ struct state_key {
       unsigned light_attenuated:1;
       unsigned texunit_really_enabled:1;
       unsigned texmat_enabled:1;
+      unsigned coord_replace:1;
       unsigned texgen_enabled:4;
       unsigned texgen_mode0:4;
       unsigned texgen_mode1:4;
@@ -106,29 +109,44 @@ static GLuint translate_texgen( GLboolean enabled, GLenum mode )
    }
 }
 
+#define FDM_EYE_RADIAL    0
+#define FDM_EYE_PLANE     1
+#define FDM_EYE_PLANE_ABS 2
 
+static GLuint translate_fog_distance_mode( GLenum mode )
+{
+   switch (mode) {
+   case GL_EYE_RADIAL_NV:
+      return FDM_EYE_RADIAL;
+   case GL_EYE_PLANE:
+      return FDM_EYE_PLANE;
+   default: /* shouldn't happen; fall through to a sensible default */
+   case GL_EYE_PLANE_ABSOLUTE_NV:
+      return FDM_EYE_PLANE_ABS;
+   }
+}
 
-static GLboolean check_active_shininess( GLcontext *ctx,
+static GLboolean check_active_shininess( struct gl_context *ctx,
                                          const struct state_key *key,
                                          GLuint side )
 {
-   GLuint bit = 1 << (MAT_ATTRIB_FRONT_SHININESS + side);
+   GLuint attr = MAT_ATTRIB_FRONT_SHININESS + side;
 
    if ((key->varying_vp_inputs & VERT_BIT_COLOR0) &&
-       (key->light_color_material_mask & bit))
+       (key->light_color_material_mask & (1 << attr)))
       return GL_TRUE;
 
-   if (key->varying_vp_inputs & (bit << 16))
+   if (key->varying_vp_inputs & VERT_ATTRIB_GENERIC(attr))
       return GL_TRUE;
 
-   if (ctx->Light.Material.Attrib[MAT_ATTRIB_FRONT_SHININESS + side][0] != 0.0F)
+   if (ctx->Light.Material.Attrib[attr][0] != 0.0F)
       return GL_TRUE;
 
    return GL_FALSE;
 }
 
 
-static void make_state_key( GLcontext *ctx, struct state_key *key )
+static void make_state_key( struct gl_context *ctx, struct state_key *key )
 {
    const struct gl_fragment_program *fp;
    GLuint i;
@@ -203,14 +221,16 @@ static void make_state_key( GLcontext *ctx, struct state_key *key )
    if (ctx->Transform.RescaleNormals)
       key->rescale_normals = 1;
 
-   if (ctx->Fog.FogCoordinateSource == GL_FRAGMENT_DEPTH_EXT)
+   if (ctx->Fog.FogCoordinateSource == GL_FRAGMENT_DEPTH_EXT) {
       key->fog_source_is_depth = 1;
+      key->fog_distance_mode = translate_fog_distance_mode(ctx->Fog.FogDistanceMode);
+   }
 
    if (ctx->Point._Attenuated)
       key->point_attenuated = 1;
 
 #if FEATURE_point_size_array
-   if (ctx->Array.ArrayObj->PointSize.Enabled)
+   if (ctx->Array.ArrayObj->VertexAttrib[VERT_ATTRIB_POINT_SIZE].Enabled)
       key->point_array = 1;
 #endif
 
@@ -224,6 +244,10 @@ static void make_state_key( GLcontext *ctx, struct state_key *key )
 
       if (texUnit->_ReallyEnabled)
 	 key->unit[i].texunit_really_enabled = 1;
+
+      if (ctx->Point.PointSprite)
+	 if (ctx->Point.CoordReplace[i])
+	    key->unit[i].coord_replace = 1;
 
       if (ctx->Texture._TexMatEnabled & ENABLE_TEXMAT(i))
 	 key->unit[i].texmat_enabled = 1;
@@ -357,7 +381,7 @@ static struct ureg get_temp( struct tnl_program *p )
    int bit = _mesa_ffs( ~p->temp_in_use );
    if (!bit) {
       _mesa_problem(NULL, "%s: out of temporaries\n", __FILE__);
-      _mesa_exit(1);
+      exit(1);
    }
 
    if ((GLuint) bit > p->program->Base.NumTemporaries)
@@ -421,10 +445,10 @@ static struct ureg register_param5(struct tnl_program *p,
  */
 static struct ureg register_input( struct tnl_program *p, GLuint input )
 {
-   assert(input < 32);
+   assert(input < VERT_ATTRIB_MAX);
 
-   if (p->state->varying_vp_inputs & (1<<input)) {
-      p->program->Base.InputsRead |= (1<<input);
+   if (p->state->varying_vp_inputs & VERT_BIT(input)) {
+      p->program->Base.InputsRead |= VERT_BIT(input);
       return make_ureg(PROGRAM_INPUT, input);
    }
    else {
@@ -449,13 +473,13 @@ static struct ureg register_const4f( struct tnl_program *p,
 			      GLfloat s2,
 			      GLfloat s3)
 {
-   GLfloat values[4];
+   gl_constant_value values[4];
    GLint idx;
    GLuint swizzle;
-   values[0] = s0;
-   values[1] = s1;
-   values[2] = s2;
-   values[3] = s3;
+   values[0].f = s0;
+   values[1].f = s1;
+   values[2].f = s2;
+   values[3].f = s3;
    idx = _mesa_add_unnamed_constant( p->program->Base.Parameters, values, 4,
                                      &swizzle );
    ASSERT(swizzle == SWIZZLE_NOOP);
@@ -523,7 +547,6 @@ static void emit_dst( struct prog_dst_register *dst,
    dst->CondMask = COND_TR;  /* always pass cond test */
    dst->CondSwizzle = SWIZZLE_NOOP;
    dst->CondSrc = 0;
-   dst->pad = 0;
    /* Check that bitfield sizes aren't exceeded */
    ASSERT(dst->Index == reg.idx);
 }
@@ -537,10 +560,10 @@ static void debug_insn( struct prog_instruction *inst, const char *fn,
 
       if (fn != last_fn) {
 	 last_fn = fn;
-	 _mesa_printf("%s:\n", fn);
+	 printf("%s:\n", fn);
       }
 
-      _mesa_printf("%d:\t", line);
+      printf("%d:\t", line);
       _mesa_print_instruction(inst);
    }
 }
@@ -848,7 +871,7 @@ static void set_material_flags( struct tnl_program *p )
 	 p->color_materials = p->state->light_color_material_mask;
    }
 
-   p->materials |= (p->state->varying_vp_inputs >> 16);
+   p->materials |= (p->state->varying_vp_inputs >> VERT_ATTRIB_GENERIC0);
 }
 
 
@@ -926,7 +949,7 @@ static struct ureg calculate_light_attenuation( struct tnl_program *p,
 {
    struct ureg attenuation = register_param3(p, STATE_LIGHT, i,
 					     STATE_ATTENUATION);
-   struct ureg att = get_temp(p);
+   struct ureg att = undef;
 
    /* Calculate spot attenuation:
     */
@@ -935,6 +958,8 @@ static struct ureg calculate_light_attenuation( struct tnl_program *p,
 						  STATE_LIGHT_SPOT_DIR_NORMALIZED, i);
       struct ureg spot = get_temp(p);
       struct ureg slt = get_temp(p);
+
+      att = get_temp(p);
 
       emit_op2(p, OPCODE_DP3, spot, 0, negate(VPpli), spot_dir_norm);
       emit_op2(p, OPCODE_SLT, slt, 0, swizzle1(spot_dir_norm,W), spot);
@@ -945,9 +970,13 @@ static struct ureg calculate_light_attenuation( struct tnl_program *p,
       release_temp(p, slt);
    }
 
-   /* Calculate distance attenuation:
+   /* Calculate distance attenuation(See formula (2.4) at glspec 2.1 page 62):
+    *
+    * Skip the calucation when _dist_ is undefined(light_eyepos3_is_zero)
     */
-   if (p->state->unit[i].light_attenuated) {
+   if (p->state->unit[i].light_attenuated && !is_undef(dist)) {
+      if (is_undef(att))
+         att = get_temp(p);
       /* 1/d,d,d,1/d */
       emit_op1(p, OPCODE_RCP, dist, WRITEMASK_YZ, dist);
       /* 1,d,d*d,1/d */
@@ -1090,73 +1119,54 @@ static void build_lighting( struct tnl_program *p )
       if (p->state->unit[i].light_enabled) {
 	 struct ureg half = undef;
 	 struct ureg att = undef, VPpli = undef;
+	 struct ureg dist = undef;
 
 	 count++;
+         if (p->state->unit[i].light_eyepos3_is_zero) {
+             VPpli = register_param3(p, STATE_INTERNAL,
+                                     STATE_LIGHT_POSITION_NORMALIZED, i);
+         } else {
+            struct ureg Ppli = register_param3(p, STATE_INTERNAL,
+                                               STATE_LIGHT_POSITION, i);
+            struct ureg V = get_eye_position(p);
 
-	 if (p->state->unit[i].light_eyepos3_is_zero) {
-	    /* Can used precomputed constants in this case.
-	     * Attenuation never applies to infinite lights.
-	     */
-	    VPpli = register_param3(p, STATE_INTERNAL,
-				    STATE_LIGHT_POSITION_NORMALIZED, i);
+            VPpli = get_temp(p);
+            dist = get_temp(p);
 
-            if (!p->state->material_shininess_is_zero) {
-               if (p->state->light_local_viewer) {
-                  struct ureg eye_hat = get_eye_position_normalized(p);
-                  half = get_temp(p);
-                  emit_op2(p, OPCODE_SUB, half, 0, VPpli, eye_hat);
-                  emit_normalize_vec3(p, half, half);
-               }
-               else {
-                  half = register_param3(p, STATE_INTERNAL,
-                                         STATE_LIGHT_HALF_VECTOR, i);
-               }
-            }
-	 }
-	 else {
-	    struct ureg Ppli = register_param3(p, STATE_INTERNAL,
-					       STATE_LIGHT_POSITION, i);
-	    struct ureg V = get_eye_position(p);
-	    struct ureg dist = get_temp(p);
+            /* Calculate VPpli vector
+             */
+            emit_op2(p, OPCODE_SUB, VPpli, 0, Ppli, V);
 
-	    VPpli = get_temp(p);
+            /* Normalize VPpli.  The dist value also used in
+             * attenuation below.
+             */
+            emit_op2(p, OPCODE_DP3, dist, 0, VPpli, VPpli);
+            emit_op1(p, OPCODE_RSQ, dist, 0, dist);
+            emit_op2(p, OPCODE_MUL, VPpli, 0, VPpli, dist);
+         }
 
-	    /* Calculate VPpli vector
-	     */
-	    emit_op2(p, OPCODE_SUB, VPpli, 0, Ppli, V);
+         /* Calculate attenuation:
+          */
+         att = calculate_light_attenuation(p, i, VPpli, dist);
+         release_temp(p, dist);
 
-	    /* Normalize VPpli.  The dist value also used in
-	     * attenuation below.
-	     */
-	    emit_op2(p, OPCODE_DP3, dist, 0, VPpli, VPpli);
-	    emit_op1(p, OPCODE_RSQ, dist, 0, dist);
-	    emit_op2(p, OPCODE_MUL, VPpli, 0, VPpli, dist);
-
-	    /* Calculate attenuation:
-	     */
-	    if (!p->state->unit[i].light_spotcutoff_is_180 ||
-		p->state->unit[i].light_attenuated) {
-	       att = calculate_light_attenuation(p, i, VPpli, dist);
-	    }
-
-	    /* Calculate viewer direction, or use infinite viewer:
-	     */
-            if (!p->state->material_shininess_is_zero) {
+	 /* Calculate viewer direction, or use infinite viewer:
+	  */
+         if (!p->state->material_shininess_is_zero) {
+            if (p->state->light_local_viewer) {
+               struct ureg eye_hat = get_eye_position_normalized(p);
                half = get_temp(p);
-
-               if (p->state->light_local_viewer) {
-                  struct ureg eye_hat = get_eye_position_normalized(p);
-                  emit_op2(p, OPCODE_SUB, half, 0, VPpli, eye_hat);
-               }
-               else {
-                  struct ureg z_dir = swizzle(get_identity_param(p),X,Y,W,Z);
-                  emit_op2(p, OPCODE_ADD, half, 0, VPpli, z_dir);
-               }
-
+               emit_op2(p, OPCODE_SUB, half, 0, VPpli, eye_hat);
+               emit_normalize_vec3(p, half, half);
+            } else if (p->state->unit[i].light_eyepos3_is_zero) {
+               half = register_param3(p, STATE_INTERNAL,
+                                      STATE_LIGHT_HALF_VECTOR, i);
+            } else {
+               struct ureg z_dir = swizzle(get_identity_param(p),X,Y,W,Z);
+               half = get_temp(p);
+               emit_op2(p, OPCODE_ADD, half, 0, VPpli, z_dir);
                emit_normalize_vec3(p, half, half);
             }
-
-	    release_temp(p, dist);
 	 }
 
 	 /* Calculate dot products:
@@ -1303,14 +1313,31 @@ static void build_fog( struct tnl_program *p )
    struct ureg input;
 
    if (p->state->fog_source_is_depth) {
-      input = get_eye_position_z(p);
+
+      switch (p->state->fog_distance_mode) {
+      case FDM_EYE_RADIAL: /* Z = sqrt(Xe*Xe + Ye*Ye + Ze*Ze) */
+	input = get_eye_position(p);
+	emit_op2(p, OPCODE_DP3, fog, WRITEMASK_X, input, input);
+	emit_op1(p, OPCODE_RSQ, fog, WRITEMASK_X, fog);
+	emit_op1(p, OPCODE_RCP, fog, WRITEMASK_X, fog);
+	break;
+      case FDM_EYE_PLANE: /* Z = Ze */
+	input = get_eye_position_z(p);
+	emit_op1(p, OPCODE_MOV, fog, WRITEMASK_X, input);
+	break;
+      case FDM_EYE_PLANE_ABS: /* Z = abs(Ze) */
+	input = get_eye_position_z(p);
+	emit_op1(p, OPCODE_ABS, fog, WRITEMASK_X, input);
+	break;
+      default: assert(0); break; /* can't happen */
+      }
+
    }
    else {
       input = swizzle1(register_input(p, VERT_ATTRIB_FOG), X);
+      emit_op1(p, OPCODE_ABS, fog, WRITEMASK_X, input);
    }
 
-   /* result.fog = {abs(f),0,0,1}; */
-   emit_op1(p, OPCODE_ABS, fog, WRITEMASK_X, input);
    emit_op1(p, OPCODE_MOV, fog, WRITEMASK_YZW, get_identity_param(p));
 }
 
@@ -1385,6 +1412,9 @@ static void build_texture_transform( struct tnl_program *p )
 
       if (!(p->state->fragprog_inputs_read & FRAG_BIT_TEX(i)))
 	 continue;
+
+      if (p->state->unit[i].coord_replace)
+  	 continue;
 
       if (p->state->unit[i].texgen_enabled ||
 	  p->state->unit[i].texmat_enabled) {
@@ -1497,7 +1527,7 @@ static void build_texture_transform( struct tnl_program *p )
 static void build_atten_pointsize( struct tnl_program *p )
 {
    struct ureg eye = get_eye_position_z(p);
-   struct ureg state_size = register_param1(p, STATE_POINT_SIZE);
+   struct ureg state_size = register_param2(p, STATE_INTERNAL, STATE_POINT_SIZE_CLAMPED);
    struct ureg state_attenuation = register_param1(p, STATE_POINT_ATTENUATION);
    struct ureg out = register_output(p, VERT_RESULT_PSIZ);
    struct ureg ut = get_temp(p);
@@ -1578,7 +1608,7 @@ static void build_tnl_program( struct tnl_program *p )
    /* Disassemble:
     */
    if (DISASSEM) {
-      _mesa_printf ("\n");
+      printf ("\n");
    }
 }
 
@@ -1591,7 +1621,7 @@ create_new_program( const struct state_key *key,
 {
    struct tnl_program p;
 
-   _mesa_memset(&p, 0, sizeof(p));
+   memset(&p, 0, sizeof(p));
    p.state = key;
    p.program = program;
    p.eye_position = undef;
@@ -1631,7 +1661,7 @@ create_new_program( const struct state_key *key,
  * XXX move this into core mesa (main/)
  */
 struct gl_vertex_program *
-_mesa_get_fixed_func_vertex_program(GLcontext *ctx)
+_mesa_get_fixed_func_vertex_program(struct gl_context *ctx)
 {
    struct gl_vertex_program *prog;
    struct state_key key;
@@ -1648,7 +1678,7 @@ _mesa_get_fixed_func_vertex_program(GLcontext *ctx)
    if (!prog) {
       /* OK, we'll have to build a new one */
       if (0)
-         _mesa_printf("Build new TNL program\n");
+         printf("Build new TNL program\n");
 
       prog = (struct gl_vertex_program *)
          ctx->Driver.NewProgram(ctx, GL_VERTEX_PROGRAM_ARB, 0);

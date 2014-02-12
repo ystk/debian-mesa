@@ -25,7 +25,6 @@
 
 #include "main/glheader.h"
 #include "main/colormac.h"
-#include "main/context.h"
 #include "main/feedback.h"
 #include "main/light.h"
 #include "main/macros.h"
@@ -85,7 +84,7 @@ viewclip_point_z( const GLfloat v[] )
  * \return zero if the point was clipped, or one otherwise.
  */
 static GLuint
-userclip_point( GLcontext *ctx, const GLfloat v[] )
+userclip_point( struct gl_context *ctx, const GLfloat v[] )
 {
    GLuint p;
 
@@ -106,26 +105,23 @@ userclip_point( GLcontext *ctx, const GLfloat v[] )
 
 
 /**
- * Compute lighting for the raster position.  Both RGB and CI modes computed.
+ * Compute lighting for the raster position.  RGB modes computed.
  * \param ctx the context
  * \param vertex vertex location
  * \param normal normal vector
  * \param Rcolor returned color
  * \param Rspec returned specular color (if separate specular enabled)
- * \param Rindex returned color index
  */
 static void
-shade_rastpos(GLcontext *ctx,
+shade_rastpos(struct gl_context *ctx,
               const GLfloat vertex[4],
               const GLfloat normal[3],
               GLfloat Rcolor[4],
-              GLfloat Rspec[4],
-              GLfloat *Rindex)
+              GLfloat Rspec[4])
 {
    /*const*/ GLfloat (*base)[3] = ctx->Light._BaseColor;
    const struct gl_light *light;
    GLfloat diffuseColor[4], specularColor[4];  /* for RGB mode only */
-   GLfloat diffuseCI = 0.0, specularCI = 0.0;  /* for CI mode only */
 
    _mesa_validate_all_lighting_tables( ctx );
 
@@ -193,7 +189,6 @@ shade_rastpos(GLcontext *ctx,
       /* Ambient + diffuse */
       COPY_3V(diffuseContrib, light->_MatAmbient[0]);
       ACC_SCALE_SCALAR_3V(diffuseContrib, n_dot_VP, light->_MatDiffuse[0]);
-      diffuseCI += n_dot_VP * light->_dli * attenuation;
 
       /* Specular */
       {
@@ -234,8 +229,6 @@ shade_rastpos(GLcontext *ctx,
                   ACC_SCALE_SCALAR_3V( diffuseContrib, spec_coef,
                                        light->_MatSpecular[0]);
                }
-               /*assert(light->_sli > 0.0);*/
-               specularCI += spec_coef * light->_sli * attenuation;
 	    }
 	 }
       }
@@ -244,28 +237,14 @@ shade_rastpos(GLcontext *ctx,
       ACC_SCALE_SCALAR_3V( specularColor, attenuation, specularContrib );
    }
 
-   if (ctx->Visual.rgbMode) {
-      Rcolor[0] = CLAMP(diffuseColor[0], 0.0F, 1.0F);
-      Rcolor[1] = CLAMP(diffuseColor[1], 0.0F, 1.0F);
-      Rcolor[2] = CLAMP(diffuseColor[2], 0.0F, 1.0F);
-      Rcolor[3] = CLAMP(diffuseColor[3], 0.0F, 1.0F);
-      Rspec[0] = CLAMP(specularColor[0], 0.0F, 1.0F);
-      Rspec[1] = CLAMP(specularColor[1], 0.0F, 1.0F);
-      Rspec[2] = CLAMP(specularColor[2], 0.0F, 1.0F);
-      Rspec[3] = CLAMP(specularColor[3], 0.0F, 1.0F);
-   }
-   else {
-      GLfloat *ind = ctx->Light.Material.Attrib[MAT_ATTRIB_FRONT_INDEXES];
-      GLfloat d_a = ind[MAT_INDEX_DIFFUSE] - ind[MAT_INDEX_AMBIENT];
-      GLfloat s_a = ind[MAT_INDEX_SPECULAR] - ind[MAT_INDEX_AMBIENT];
-      GLfloat i = (ind[MAT_INDEX_AMBIENT]
-		   + diffuseCI * (1.0F-specularCI) * d_a
-		   + specularCI * s_a);
-      if (i > ind[MAT_INDEX_SPECULAR]) {
-	 i = ind[MAT_INDEX_SPECULAR];
-      }
-      *Rindex = i;
-   }
+   Rcolor[0] = CLAMP(diffuseColor[0], 0.0F, 1.0F);
+   Rcolor[1] = CLAMP(diffuseColor[1], 0.0F, 1.0F);
+   Rcolor[2] = CLAMP(diffuseColor[2], 0.0F, 1.0F);
+   Rcolor[3] = CLAMP(diffuseColor[3], 0.0F, 1.0F);
+   Rspec[0] = CLAMP(specularColor[0], 0.0F, 1.0F);
+   Rspec[1] = CLAMP(specularColor[1], 0.0F, 1.0F);
+   Rspec[2] = CLAMP(specularColor[2], 0.0F, 1.0F);
+   Rspec[3] = CLAMP(specularColor[3], 0.0F, 1.0F);
 }
 
 
@@ -279,7 +258,7 @@ shade_rastpos(GLcontext *ctx,
  * \param texcoord  incoming texcoord and resulting texcoord
  */
 static void
-compute_texgen(GLcontext *ctx, const GLfloat vObj[4], const GLfloat vEye[4],
+compute_texgen(struct gl_context *ctx, const GLfloat vObj[4], const GLfloat vEye[4],
                const GLfloat normal[3], GLuint unit, GLfloat texcoord[4])
 {
    const struct gl_texture_unit *texUnit = &ctx->Texture.Unit[unit];
@@ -389,7 +368,7 @@ compute_texgen(GLcontext *ctx, const GLfloat vObj[4], const GLfloat vEye[4],
  * \param vObj  vertex position in object space
  */
 void
-_tnl_RasterPos(GLcontext *ctx, const GLfloat vObj[4])
+_tnl_RasterPos(struct gl_context *ctx, const GLfloat vObj[4])
 {
    if (ctx->VertexProgram._Enabled) {
       /* XXX implement this */
@@ -469,21 +448,14 @@ _tnl_RasterPos(GLcontext *ctx, const GLfloat vObj[4])
          /* lighting */
          shade_rastpos( ctx, vObj, norm,
                         ctx->Current.RasterColor,
-                        ctx->Current.RasterSecondaryColor,
-                        &ctx->Current.RasterIndex );
+                        ctx->Current.RasterSecondaryColor );
       }
       else {
-         /* use current color or index */
-         if (ctx->Visual.rgbMode) {
-            COPY_4FV(ctx->Current.RasterColor,
-                     ctx->Current.Attrib[VERT_ATTRIB_COLOR0]);
-            COPY_4FV(ctx->Current.RasterSecondaryColor,
-                     ctx->Current.Attrib[VERT_ATTRIB_COLOR1]);
-         }
-         else {
-            ctx->Current.RasterIndex
-               = ctx->Current.Attrib[VERT_ATTRIB_COLOR_INDEX][0];
-         }
+         /* use current color */
+	 COPY_4FV(ctx->Current.RasterColor,
+		  ctx->Current.Attrib[VERT_ATTRIB_COLOR0]);
+	 COPY_4FV(ctx->Current.RasterSecondaryColor,
+		  ctx->Current.Attrib[VERT_ATTRIB_COLOR1]);
       }
 
       /* texture coords */

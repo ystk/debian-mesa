@@ -37,6 +37,7 @@
 static const char *stw_extension_string = 
    "WGL_ARB_extensions_string "
    "WGL_ARB_multisample "
+   "WGL_ARB_pbuffer "
    "WGL_ARB_pixel_format "
 /*   "WGL_EXT_swap_interval " */
    "WGL_EXT_extensions_string";
@@ -46,7 +47,9 @@ WINGDIAPI const char * APIENTRY
 wglGetExtensionsStringARB(
    HDC hdc )
 {
-   (void) hdc;
+   if (!hdc) {
+      return NULL;
+   }
 
    return stw_extension_string;
 }

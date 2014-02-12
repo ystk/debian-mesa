@@ -36,7 +36,7 @@
 
 #include "pipe/p_compiler.h"
 #include "util/u_debug.h"
-#include "pipe/p_thread.h"
+#include "os/os_thread.h"
 #include "util/u_memory.h"
 #include "util/u_double_list.h"
 #include "util/u_time.h"
@@ -65,7 +65,7 @@ struct pb_cache_buffer
    struct pb_cache_manager *mgr;
 
    /** Caching time interval */
-   struct util_time start, end;
+   int64_t start, end;
 
    struct list_head head;
 };
@@ -112,7 +112,7 @@ _pb_cache_buffer_destroy(struct pb_cache_buffer *buf)
    LIST_DEL(&buf->head);
    assert(mgr->numDelayed);
    --mgr->numDelayed;
-   assert(!pipe_is_referenced(&buf->base.base.reference));
+   assert(!pipe_is_referenced(&buf->base.reference));
    pb_reference(&buf->buffer, NULL);
    FREE(buf);
 }
@@ -126,16 +126,16 @@ _pb_cache_buffer_list_check_free(struct pb_cache_manager *mgr)
 {
    struct list_head *curr, *next;
    struct pb_cache_buffer *buf;
-   struct util_time now;
+   int64_t now;
    
-   util_time_get(&now);
+   now = os_time_get();
    
    curr = mgr->delayed.next;
    next = curr->next;
    while(curr != &mgr->delayed) {
       buf = LIST_ENTRY(struct pb_cache_buffer, curr, head);
 
-      if(!util_time_timeout(&buf->start, &buf->end, &now))
+      if(!os_time_timeout(buf->start, buf->end, now))
 	 break;
 	 
       _pb_cache_buffer_destroy(buf);
@@ -153,12 +153,12 @@ pb_cache_buffer_destroy(struct pb_buffer *_buf)
    struct pb_cache_manager *mgr = buf->mgr;
 
    pipe_mutex_lock(mgr->mutex);
-   assert(!pipe_is_referenced(&buf->base.base.reference));
+   assert(!pipe_is_referenced(&buf->base.reference));
    
    _pb_cache_buffer_list_check_free(mgr);
    
-   util_time_get(&buf->start);
-   util_time_add(&buf->start, mgr->usecs, &buf->end);
+   buf->start = os_time_get();
+   buf->end = buf->start + mgr->usecs;
    LIST_ADDTAIL(&buf->head, &mgr->delayed);
    ++mgr->numDelayed;
    pipe_mutex_unlock(mgr->mutex);
@@ -167,10 +167,10 @@ pb_cache_buffer_destroy(struct pb_buffer *_buf)
 
 static void *
 pb_cache_buffer_map(struct pb_buffer *_buf, 
-                  unsigned flags)
+		    unsigned flags, void *flush_ctx)
 {
    struct pb_cache_buffer *buf = pb_cache_buffer(_buf);   
-   return pb_map(buf->buffer, flags);
+   return pb_map(buf->buffer, flags, flush_ctx);
 }
 
 
@@ -222,25 +222,37 @@ pb_cache_buffer_vtbl = {
 };
 
 
-static INLINE boolean
+static INLINE int
 pb_cache_is_buffer_compat(struct pb_cache_buffer *buf,  
                           pb_size size,
                           const struct pb_desc *desc)
 {
-   if(buf->base.base.size < size)
-      return FALSE;
+   if(buf->base.size < size)
+      return 0;
 
    /* be lenient with size */
-   if(buf->base.base.size >= 2*size)
-      return FALSE;
+   if(buf->base.size >= 2*size)
+      return 0;
    
-   if(!pb_check_alignment(desc->alignment, buf->base.base.alignment))
-      return FALSE;
+   if(!pb_check_alignment(desc->alignment, buf->base.alignment))
+      return 0;
    
-   if(!pb_check_usage(desc->usage, buf->base.base.usage))
-      return FALSE;
-   
-   return TRUE;
+   if(!pb_check_usage(desc->usage, buf->base.usage))
+      return 0;
+
+   if (buf->mgr->provider->is_buffer_busy) {
+      if (buf->mgr->provider->is_buffer_busy(buf->mgr->provider, buf->buffer))
+         return -1;
+   } else {
+      void *ptr = pb_map(buf->buffer, PB_USAGE_DONTBLOCK, NULL);
+
+      if (!ptr)
+         return -1;
+
+      pb_unmap(buf->buffer);
+   }
+
+   return 1;
 }
 
 
@@ -253,8 +265,9 @@ pb_cache_manager_create_buffer(struct pb_manager *_mgr,
    struct pb_cache_buffer *buf;
    struct pb_cache_buffer *curr_buf;
    struct list_head *curr, *next;
-   struct util_time now;
-   
+   int64_t now;
+   int ret = 0;
+
    pipe_mutex_lock(mgr->mutex);
 
    buf = NULL;
@@ -262,28 +275,33 @@ pb_cache_manager_create_buffer(struct pb_manager *_mgr,
    next = curr->next;
    
    /* search in the expired buffers, freeing them in the process */
-   util_time_get(&now);
+   now = os_time_get();
    while(curr != &mgr->delayed) {
       curr_buf = LIST_ENTRY(struct pb_cache_buffer, curr, head);
-      if(!buf && pb_cache_is_buffer_compat(curr_buf, size, desc))
-	 buf = curr_buf;
-      else if(util_time_timeout(&curr_buf->start, &curr_buf->end, &now))
-	 _pb_cache_buffer_destroy(curr_buf);
+      if(!buf && (ret = pb_cache_is_buffer_compat(curr_buf, size, desc) > 0))
+         buf = curr_buf;
+      else if(os_time_timeout(curr_buf->start, curr_buf->end, now))
+         _pb_cache_buffer_destroy(curr_buf);
       else
          /* This buffer (and all hereafter) are still hot in cache */
+         break;
+      if (ret == -1)
          break;
       curr = next; 
       next = curr->next;
    }
 
    /* keep searching in the hot buffers */
-   if(!buf) {
+   if(!buf && ret != -1) {
       while(curr != &mgr->delayed) {
          curr_buf = LIST_ENTRY(struct pb_cache_buffer, curr, head);
-         if(pb_cache_is_buffer_compat(curr_buf, size, desc)) {
+         ret = pb_cache_is_buffer_compat(curr_buf, size, desc);
+         if (ret > 0) {
             buf = curr_buf;
             break;
          }
+         if (ret == -1)
+            break;
          /* no need to check the timeout here */
          curr = next;
          next = curr->next;
@@ -292,9 +310,10 @@ pb_cache_manager_create_buffer(struct pb_manager *_mgr,
    
    if(buf) {
       LIST_DEL(&buf->head);
+      --mgr->numDelayed;
       pipe_mutex_unlock(mgr->mutex);
       /* Increase refcount */
-      pb_reference((struct pb_buffer**)&buf, &buf->base);
+      pipe_reference_init(&buf->base.reference, 1);
       return &buf->base;
    }
    
@@ -305,20 +324,27 @@ pb_cache_manager_create_buffer(struct pb_manager *_mgr,
       return NULL;
    
    buf->buffer = mgr->provider->create_buffer(mgr->provider, size, desc);
+
+   /* Empty the cache and try again. */
+   if (!buf->buffer) {
+      mgr->base.flush(&mgr->base);
+      buf->buffer = mgr->provider->create_buffer(mgr->provider, size, desc);
+   }
+
    if(!buf->buffer) {
       FREE(buf);
       return NULL;
    }
    
-   assert(pipe_is_referenced(&buf->buffer->base.reference));
-   assert(pb_check_alignment(desc->alignment, buf->buffer->base.alignment));
-   assert(pb_check_usage(desc->usage, buf->buffer->base.usage));
-   assert(buf->buffer->base.size >= size);
+   assert(pipe_is_referenced(&buf->buffer->reference));
+   assert(pb_check_alignment(desc->alignment, buf->buffer->alignment));
+   assert(pb_check_usage(desc->usage, buf->buffer->usage));
+   assert(buf->buffer->size >= size);
    
-   pipe_reference_init(&buf->base.base.reference, 1);
-   buf->base.base.alignment = buf->buffer->base.alignment;
-   buf->base.base.usage = buf->buffer->base.usage;
-   buf->base.base.size = buf->buffer->base.size;
+   pipe_reference_init(&buf->base.reference, 1);
+   buf->base.alignment = buf->buffer->alignment;
+   buf->base.usage = buf->buffer->usage;
+   buf->base.size = buf->buffer->size;
    
    buf->base.vtbl = &pb_cache_buffer_vtbl;
    buf->mgr = mgr;

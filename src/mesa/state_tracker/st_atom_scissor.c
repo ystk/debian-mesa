@@ -44,7 +44,8 @@ static void
 update_scissor( struct st_context *st )
 {
    struct pipe_scissor_state scissor;
-   const struct gl_framebuffer *fb = st->ctx->DrawBuffer;
+   const struct gl_context *ctx = st->ctx;
+   const struct gl_framebuffer *fb = ctx->DrawBuffer;
    GLint miny, maxy;
 
    scissor.minx = 0;
@@ -52,15 +53,15 @@ update_scissor( struct st_context *st )
    scissor.maxx = fb->Width;
    scissor.maxy = fb->Height;
 
-   if (st->ctx->Scissor.Enabled) {
+   if (ctx->Scissor.Enabled) {
       /* need to be careful here with xmax or ymax < 0 */
-      GLint xmax = MAX2(0, st->ctx->Scissor.X + st->ctx->Scissor.Width);
-      GLint ymax = MAX2(0, st->ctx->Scissor.Y + st->ctx->Scissor.Height);
+      GLint xmax = MAX2(0, ctx->Scissor.X + ctx->Scissor.Width);
+      GLint ymax = MAX2(0, ctx->Scissor.Y + ctx->Scissor.Height);
 
-      if (st->ctx->Scissor.X > (GLint)scissor.minx)
-         scissor.minx = st->ctx->Scissor.X;
-      if (st->ctx->Scissor.Y > (GLint)scissor.miny)
-         scissor.miny = st->ctx->Scissor.Y;
+      if (ctx->Scissor.X > (GLint)scissor.minx)
+         scissor.minx = ctx->Scissor.X;
+      if (ctx->Scissor.Y > (GLint)scissor.miny)
+         scissor.miny = ctx->Scissor.Y;
 
       if (xmax < (GLint) scissor.maxx)
          scissor.maxx = xmax;
@@ -72,12 +73,15 @@ update_scissor( struct st_context *st )
          scissor.minx = scissor.miny = scissor.maxx = scissor.maxy = 0;
    }
 
-   /* Now invert Y.  Pipe drivers use the convention Y=0=top for surfaces
+   /* Now invert Y if needed.
+    * Gallium drivers use the convention Y=0=top for surfaces.
     */
-   miny = fb->Height - scissor.maxy;
-   maxy = fb->Height - scissor.miny;
-   scissor.miny = miny;
-   scissor.maxy = maxy;
+   if (st_fb_orientation(fb) == Y_0_TOP) {
+      miny = fb->Height - scissor.maxy;
+      maxy = fb->Height - scissor.miny;
+      scissor.miny = miny;
+      scissor.maxy = maxy;
+   }
 
    if (memcmp(&scissor, &st->state.scissor, sizeof(scissor)) != 0) {
       /* state has changed */

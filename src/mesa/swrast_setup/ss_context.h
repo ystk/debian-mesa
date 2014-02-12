@@ -28,15 +28,14 @@
 #ifndef SS_CONTEXT_H
 #define SS_CONTEXT_H
 
-#include "main/mtypes.h"
+#include "main/glheader.h"
 #include "swrast/swrast.h"
-#include "swrast_setup.h"
 #include "tnl/t_context.h"
 
 typedef struct {
    GLuint NewState;
    GLenum render_prim;
-   DECLARE_RENDERINPUTS(last_index_bitset);
+   GLbitfield64 last_index_bitset;
    SWvertex *verts;
    GLboolean intColors;
 } SScontext;

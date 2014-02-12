@@ -32,7 +32,7 @@
 #include "main/glheader.h"
 #include "main/macros.h"
 #include "main/enums.h"
-#include "shader/program.h"
+#include "program/program.h"
 
 #include "intel_batchbuffer.h"
 
@@ -45,6 +45,7 @@
 
 static void brw_clip_line_alloc_regs( struct brw_clip_compile *c )
 {
+   struct intel_context *intel = &c->func.brw->intel;
    GLuint i = 0,j;
 
    /* Register usage is static, precompute here:
@@ -84,7 +85,7 @@ static void brw_clip_line_alloc_regs( struct brw_clip_compile *c )
       i++;
    }
 
-   if (c->need_ff_sync) {
+   if (intel->needs_ff_sync) {
       c->reg.ff_sync = retype(brw_vec1_grf(i, 0), BRW_REGISTER_TYPE_UD);
       i++;
    }
@@ -125,17 +126,15 @@ static void brw_clip_line_alloc_regs( struct brw_clip_compile *c )
 static void clip_and_emit_line( struct brw_clip_compile *c )
 {
    struct brw_compile *p = &c->func;
+   struct brw_context *brw = p->brw;
    struct brw_indirect vtx0     = brw_indirect(0, 0);
    struct brw_indirect vtx1      = brw_indirect(1, 0);
    struct brw_indirect newvtx0   = brw_indirect(2, 0);
    struct brw_indirect newvtx1   = brw_indirect(3, 0);
    struct brw_indirect plane_ptr = brw_indirect(4, 0);
-   struct brw_instruction *plane_loop;
-   struct brw_instruction *plane_active;
-   struct brw_instruction *is_negative;
-   struct brw_instruction *is_neg2 = NULL;
-   struct brw_instruction *not_culled;
    struct brw_reg v1_null_ud = retype(vec1(brw_null_reg()), BRW_REGISTER_TYPE_UD);
+   GLuint hpos_offset = brw_vert_result_to_offset(&c->vue_map,
+                                                  VERT_RESULT_HPOS);
 
    brw_MOV(p, get_addr_reg(vtx0),      brw_address(c->reg.vertex[0]));
    brw_MOV(p, get_addr_reg(vtx1),      brw_address(c->reg.vertex[1]));
@@ -151,7 +150,7 @@ static void clip_and_emit_line( struct brw_clip_compile *c )
    brw_clip_init_clipmask(c);
 
    /* -ve rhw workaround */
-   if (BRW_IS_965(p->brw)) {
+   if (brw->has_negative_rhw_bug) {
       brw_set_conditionalmod(p, BRW_CONDITIONAL_NZ);
       brw_AND(p, brw_null_reg(), get_element_ud(c->reg.R0, 2),
               brw_imm_ud(1<<20));
@@ -160,14 +159,14 @@ static void clip_and_emit_line( struct brw_clip_compile *c )
 
    brw_set_predicate_control(p, BRW_PREDICATE_NONE);
 
-   plane_loop = brw_DO(p, BRW_EXECUTE_1);
+   brw_DO(p, BRW_EXECUTE_1);
    {
       /* if (planemask & 1)
        */
       brw_set_conditionalmod(p, BRW_CONDITIONAL_NZ);
       brw_AND(p, v1_null_ud, c->reg.planemask, brw_imm_ud(1));
       
-      plane_active = brw_IF(p, BRW_EXECUTE_1);
+      brw_IF(p, BRW_EXECUTE_1);
       {
 	 if (c->key.nr_userclip)
 	    brw_MOV(p, c->reg.plane_equation, deref_4f(plane_ptr, 0));
@@ -176,25 +175,25 @@ static void clip_and_emit_line( struct brw_clip_compile *c )
 
 	 /* dp = DP4(vtx->position, plane) 
 	  */
-	 brw_DP4(p, vec4(c->reg.dp0), deref_4f(vtx0, c->offset[VERT_RESULT_HPOS]), c->reg.plane_equation);
+	 brw_DP4(p, vec4(c->reg.dp0), deref_4f(vtx0, hpos_offset), c->reg.plane_equation);
 
 	 /* if (IS_NEGATIVE(dp1)) 
 	  */
 	 brw_set_conditionalmod(p, BRW_CONDITIONAL_L);
-	 brw_DP4(p, vec4(c->reg.dp1), deref_4f(vtx1, c->offset[VERT_RESULT_HPOS]), c->reg.plane_equation);
-	 is_negative = brw_IF(p, BRW_EXECUTE_1);
+	 brw_DP4(p, vec4(c->reg.dp1), deref_4f(vtx1, hpos_offset), c->reg.plane_equation);
+	 brw_IF(p, BRW_EXECUTE_1);
 	 {
              /*
               * Both can be negative on GM965/G965 due to RHW workaround
               * if so, this object should be rejected.
               */
-             if (BRW_IS_965(p->brw)) {
+             if (brw->has_negative_rhw_bug) {
                  brw_CMP(p, vec1(brw_null_reg()), BRW_CONDITIONAL_LE, c->reg.dp0, brw_imm_f(0.0));
-                 is_neg2 = brw_IF(p, BRW_EXECUTE_1);
+                 brw_IF(p, BRW_EXECUTE_1);
                  {
                      brw_clip_kill_thread(c);
                  }
-                 brw_ENDIF(p, is_neg2);
+                 brw_ENDIF(p);
              }
 
              brw_ADD(p, c->reg.t, c->reg.dp1, negate(c->reg.dp0));
@@ -205,7 +204,7 @@ static void clip_and_emit_line( struct brw_clip_compile *c )
              brw_MOV(p, c->reg.t1, c->reg.t);
              brw_set_predicate_control(p, BRW_PREDICATE_NONE);
 	 } 
-	 is_negative = brw_ELSE(p, is_negative);
+	 brw_ELSE(p);
 	 {
              /* Coming back in.  We know that both cannot be negative
               * because the line would have been culled in that case.
@@ -213,9 +212,9 @@ static void clip_and_emit_line( struct brw_clip_compile *c )
 
              /* If both are positive, do nothing */
              /* Only on GM965/G965 */
-             if (BRW_IS_965(p->brw)) {
+             if (brw->has_negative_rhw_bug) {
                  brw_CMP(p, vec1(brw_null_reg()), BRW_CONDITIONAL_L, c->reg.dp0, brw_imm_f(0.0));
-                 is_neg2 = brw_IF(p, BRW_EXECUTE_1);
+                 brw_IF(p, BRW_EXECUTE_1);
              }
 
              {
@@ -228,13 +227,13 @@ static void clip_and_emit_line( struct brw_clip_compile *c )
                  brw_set_predicate_control(p, BRW_PREDICATE_NONE);
              }
 
-             if (BRW_IS_965(p->brw)) {
-                 brw_ENDIF(p, is_neg2);
+             if (brw->has_negative_rhw_bug) {
+                 brw_ENDIF(p);
              }
          }
-	 brw_ENDIF(p, is_negative);	 
+	 brw_ENDIF(p);
       }
-      brw_ENDIF(p, plane_active);
+      brw_ENDIF(p);
       
       /* plane_ptr++;
        */
@@ -245,19 +244,23 @@ static void clip_and_emit_line( struct brw_clip_compile *c )
       brw_set_conditionalmod(p, BRW_CONDITIONAL_NZ);
       brw_SHR(p, c->reg.planemask, c->reg.planemask, brw_imm_ud(1));
    }
-   brw_WHILE(p, plane_loop);
+   brw_WHILE(p);
 
    brw_ADD(p, c->reg.t, c->reg.t0, c->reg.t1);
    brw_CMP(p, vec1(brw_null_reg()), BRW_CONDITIONAL_L, c->reg.t, brw_imm_f(1.0));
-   not_culled = brw_IF(p, BRW_EXECUTE_1);
+   brw_IF(p, BRW_EXECUTE_1);
    {
-      brw_clip_interp_vertex(c, newvtx0, vtx0, vtx1, c->reg.t0, GL_FALSE);
-      brw_clip_interp_vertex(c, newvtx1, vtx1, vtx0, c->reg.t1, GL_FALSE);
+      brw_clip_interp_vertex(c, newvtx0, vtx0, vtx1, c->reg.t0, false);
+      brw_clip_interp_vertex(c, newvtx1, vtx1, vtx0, c->reg.t1, false);
 
-      brw_clip_emit_vue(c, newvtx0, 1, 0, (_3DPRIM_LINESTRIP << 2) | R02_PRIM_START);
-      brw_clip_emit_vue(c, newvtx1, 0, 1, (_3DPRIM_LINESTRIP << 2) | R02_PRIM_END); 
+      brw_clip_emit_vue(c, newvtx0, 1, 0,
+                        (_3DPRIM_LINESTRIP << URB_WRITE_PRIM_TYPE_SHIFT)
+                        | URB_WRITE_PRIM_START);
+      brw_clip_emit_vue(c, newvtx1, 0, 1,
+                        (_3DPRIM_LINESTRIP << URB_WRITE_PRIM_TYPE_SHIFT)
+                        | URB_WRITE_PRIM_END);
    }
-   brw_ENDIF(p, not_culled);
+   brw_ENDIF(p);
    brw_clip_kill_thread(c);
 }
 

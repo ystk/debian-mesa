@@ -24,7 +24,7 @@
  **********************************************************/
 
 #include "draw/draw_context.h"
-#include "pipe/p_inlines.h"
+#include "util/u_inlines.h"
 #include "pipe/p_defines.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
@@ -36,16 +36,17 @@
 /* Hardware frontwinding is always set up as SVGA3D_FRONTWINDING_CW.
  */
 static SVGA3dFace svga_translate_cullmode( unsigned mode,
-                                           unsigned front_winding )
+                                           unsigned front_ccw )
 {
+   const int hw_front_ccw = 0;  /* hardware is always CW */
    switch (mode) {
-   case PIPE_WINDING_NONE:
+   case PIPE_FACE_NONE:
       return SVGA3D_FACE_NONE;
-   case PIPE_WINDING_CCW:
-      return SVGA3D_FACE_BACK;
-   case PIPE_WINDING_CW:
-      return SVGA3D_FACE_FRONT;
-   case PIPE_WINDING_BOTH:
+   case PIPE_FACE_FRONT:
+      return front_ccw == hw_front_ccw ? SVGA3D_FACE_FRONT : SVGA3D_FACE_BACK;
+   case PIPE_FACE_BACK:
+      return front_ccw == hw_front_ccw ? SVGA3D_FACE_BACK : SVGA3D_FACE_FRONT;
+   case PIPE_FACE_FRONT_AND_BACK:
       return SVGA3D_FACE_FRONT_BACK;
    default:
       assert(0);
@@ -63,47 +64,53 @@ static void *
 svga_create_rasterizer_state(struct pipe_context *pipe,
                              const struct pipe_rasterizer_state *templ)
 {
+   struct svga_context *svga = svga_context(pipe);
    struct svga_rasterizer_state *rast = CALLOC_STRUCT( svga_rasterizer_state );
+
    /* need this for draw module. */
    rast->templ = *templ;
 
-   /* light_twoside          - XXX: need fragment shader varient */
+   /* light_twoside          - XXX: need fragment shader variant */
    /* poly_smooth            - XXX: no fallback available */
    /* poly_stipple_enable    - draw module */
+   /* sprite_coord_enable    - ? */
+   /* point_quad_rasterization - ? */
    /* point_size_per_vertex  - ? */
    /* sprite_coord_mode      - ??? */
-   /* bypass_vs_viewport_and_clip        - handled by viewport setup */
    /* flatshade_first        - handled by index translation */
    /* gl_rasterization_rules - XXX - viewport code */
    /* line_width             - draw module */
    /* fill_cw, fill_ccw      - draw module or index translation */
 
    rast->shademode = svga_translate_flatshade( templ->flatshade );
-   rast->cullmode = svga_translate_cullmode( templ->cull_mode, 
-                                             templ->front_winding );
+   rast->cullmode = svga_translate_cullmode( templ->cull_face, 
+                                             templ->front_ccw );
    rast->scissortestenable = templ->scissor;
    rast->multisampleantialias = templ->multisample;
    rast->antialiasedlineenable = templ->line_smooth;
    rast->lastpixel = templ->line_last_pixel;
-   rast->pointspriteenable = templ->point_sprite;
+   rast->pointsprite = templ->sprite_coord_enable != 0x0;
    rast->pointsize = templ->point_size;
-   rast->pointsize_min = templ->point_size_min;
-   rast->pointsize_max = templ->point_size_max;
    rast->hw_unfilled = PIPE_POLYGON_MODE_FILL;
 
    /* Use swtnl + decomposition implement these:
     */
-   if (templ->poly_stipple_enable)
+   if (templ->poly_stipple_enable) {
       rast->need_pipeline |= SVGA_PIPELINE_FLAG_TRIS;
+      rast->need_pipeline_tris_str = "poly stipple";
+   }
 
-   if (templ->line_width != 1.0 &&
-       templ->line_width != 0.0)
+   if (templ->line_width >= 1.5f &&
+       !svga->debug.no_line_width) {
       rast->need_pipeline |= SVGA_PIPELINE_FLAG_LINES;
+      rast->need_pipeline_lines_str = "line width";
+   }
 
    if (templ->line_stipple_enable) {
-      /* LinePattern not implemented on all backends. 
+      /* XXX: LinePattern not implemented on all backends, and there is no
+       * mechanism to query it.
        */
-      if (0) {
+      if (!svga->debug.force_hw_line_stipple) {
          SVGA3dLinePattern lp;
          lp.repeat = templ->line_stipple_factor + 1;
          lp.pattern = templ->line_stipple_pattern;
@@ -111,47 +118,56 @@ svga_create_rasterizer_state(struct pipe_context *pipe,
       }
       else {
          rast->need_pipeline |= SVGA_PIPELINE_FLAG_LINES;
+         rast->need_pipeline_lines_str = "line stipple";
       }
    } 
 
-   if (templ->point_smooth)
+   if (templ->point_smooth) {
       rast->need_pipeline |= SVGA_PIPELINE_FLAG_POINTS;
+      rast->need_pipeline_points_str = "smooth points";
+   }
+
+   if (templ->line_smooth) {
+      rast->need_pipeline |= SVGA_PIPELINE_FLAG_LINES;
+      rast->need_pipeline_lines_str = "smooth lines";
+   }
 
    {
-      boolean offset_cw = templ->offset_cw;
-      boolean offset_ccw = templ->offset_ccw;
-      boolean offset  = 0;
-      int fill_cw = templ->fill_cw;
-      int fill_ccw = templ->fill_ccw;
+      int fill_front = templ->fill_front;
+      int fill_back = templ->fill_back;
       int fill = PIPE_POLYGON_MODE_FILL;
+      boolean offset_front = util_get_offset(templ, fill_front);
+      boolean offset_back = util_get_offset(templ, fill_back);
+      boolean offset  = 0;
 
-      switch (templ->cull_mode) {
-      case PIPE_WINDING_BOTH:
+      switch (templ->cull_face) {
+      case PIPE_FACE_FRONT_AND_BACK:
          offset = 0;
          fill = PIPE_POLYGON_MODE_FILL;
          break;
 
-      case PIPE_WINDING_CW:
-         offset = offset_ccw;
-         fill = fill_ccw;
+      case PIPE_FACE_FRONT:
+         offset = offset_front;
+         fill = fill_front;
          break;
 
-      case PIPE_WINDING_CCW:
-         offset = offset_cw;
-         fill = fill_cw;
+      case PIPE_FACE_BACK:
+         offset = offset_back;
+         fill = fill_back;
          break;
 
-      case PIPE_WINDING_NONE:
-         if (fill_cw != fill_ccw || offset_cw != offset_ccw) 
+      case PIPE_FACE_NONE:
+         if (fill_front != fill_back || offset_front != offset_back) 
          {
             /* Always need the draw module to work out different
              * front/back fill modes:
              */
             rast->need_pipeline |= SVGA_PIPELINE_FLAG_TRIS;
+            rast->need_pipeline_tris_str = "different front/back fillmodes";
          }
          else {
-            offset = offset_ccw;
-            fill = fill_ccw;
+            offset = offset_front;
+            fill = fill_front;
          }
          break;
 
@@ -168,10 +184,11 @@ svga_create_rasterizer_state(struct pipe_context *pipe,
           (templ->flatshade ||
            templ->light_twoside ||
            offset ||
-           templ->cull_mode != PIPE_WINDING_NONE)) 
+           templ->cull_face != PIPE_FACE_NONE)) 
       {
          fill = PIPE_POLYGON_MODE_FILL;
          rast->need_pipeline |= SVGA_PIPELINE_FLAG_TRIS;
+         rast->need_pipeline_tris_str = "unfilled primitives with no index manipulation";
       }
 
       /* If we are decomposing to lines, and lines need the pipeline,
@@ -182,6 +199,7 @@ svga_create_rasterizer_state(struct pipe_context *pipe,
       {
          fill = PIPE_POLYGON_MODE_FILL;
          rast->need_pipeline |= SVGA_PIPELINE_FLAG_TRIS;
+         rast->need_pipeline_tris_str = "decomposing lines";
       }
 
       /* Similarly for points:
@@ -191,6 +209,7 @@ svga_create_rasterizer_state(struct pipe_context *pipe,
       {
          fill = PIPE_POLYGON_MODE_FILL;
          rast->need_pipeline |= SVGA_PIPELINE_FLAG_TRIS;
+         rast->need_pipeline_tris_str = "decomposing points";
       }
 
       if (offset) {
@@ -200,9 +219,6 @@ svga_create_rasterizer_state(struct pipe_context *pipe,
 
       rast->hw_unfilled = fill;
    }
-
-
-
 
    if (rast->need_pipeline & SVGA_PIPELINE_FLAG_TRIS) {
       /* Turn off stuff which will get done in the draw module:
@@ -221,10 +237,11 @@ static void svga_bind_rasterizer_state( struct pipe_context *pipe,
    struct svga_context *svga = svga_context(pipe);
    struct svga_rasterizer_state *raster = (struct svga_rasterizer_state *)state;
 
+
+   draw_set_rasterizer_state(svga->swtnl.draw, raster ? &raster->templ : NULL,
+                             state);
    svga->curr.rast = raster;
 
-   draw_set_rasterizer_state(svga->swtnl.draw, raster ? &raster->templ : NULL);
-   
    svga->dirty |= SVGA_NEW_RAST;
 }
 

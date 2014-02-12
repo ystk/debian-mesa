@@ -1,7 +1,8 @@
+# src/gallium/winsys/Makefile
 TOP = ../../../..
 include $(TOP)/configs/current
 
-SUBDIRS = $(GALLIUM_WINSYS_DIRS)
+SUBDIRS = $(GALLIUM_STATE_TRACKERS_DIRS) $(GALLIUM_WINSYS_DIRS)
 
 default install clean:
 	@for dir in $(SUBDIRS) ; do \

@@ -28,7 +28,6 @@
 
 #include "main/glheader.h"
 #include "main/colormac.h"
-#include "main/context.h"
 #include "main/macros.h"
 #include "main/imports.h"
 #include "main/mtypes.h"
@@ -95,7 +94,7 @@ init_static_data( void )
  * Fog blend factors are in the range [0,1].
  */
 static void
-compute_fog_blend_factors(GLcontext *ctx, GLvector4f *out, const GLvector4f *in)
+compute_fog_blend_factors(struct gl_context *ctx, GLvector4f *out, const GLvector4f *in)
 {
    GLfloat end  = ctx->Fog.End;
    GLfloat *v = in->start;
@@ -141,7 +140,7 @@ compute_fog_blend_factors(GLcontext *ctx, GLvector4f *out, const GLvector4f *in)
 
 
 static GLboolean
-run_fog_stage(GLcontext *ctx, struct tnl_pipeline_stage *stage)
+run_fog_stage(struct gl_context *ctx, struct tnl_pipeline_stage *stage)
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    struct vertex_buffer *VB = &tnl->vb;
@@ -156,7 +155,7 @@ run_fog_stage(GLcontext *ctx, struct tnl_pipeline_stage *stage)
       GLuint i;
       GLfloat *coord;
       /* Fog is computed from vertex or fragment Z values */
-      /* source = VB->ObjPtr or VB->EyePtr coords */
+      /* source = VB->AttribPtr[_TNL_ATTRIB_POS] or VB->EyePtr coords */
       /* dest = VB->AttribPtr[_TNL_ATTRIB_FOG] = fog stage private storage */
       VB->AttribPtr[_TNL_ATTRIB_FOG] = &store->fogcoord;
 
@@ -176,11 +175,12 @@ run_fog_stage(GLcontext *ctx, struct tnl_pipeline_stage *stage)
 	 /* Full eye coords weren't required, just calculate the
 	  * eye Z values.
 	  */
-	 _mesa_dotprod_tab[VB->ObjPtr->size]( (GLfloat *) input->data,
-					      4 * sizeof(GLfloat),
-					      VB->ObjPtr, plane );
+	 _mesa_dotprod_tab[VB->AttribPtr[_TNL_ATTRIB_POS]->size]
+	    ( (GLfloat *) input->data,
+	      4 * sizeof(GLfloat),
+	      VB->AttribPtr[_TNL_ATTRIB_POS], plane );
 
-	 input->count = VB->ObjPtr->count;
+	 input->count = VB->AttribPtr[_TNL_ATTRIB_POS]->count;
 
 	 /* make sure coords are really positive
 	    NOTE should avoid going through array twice */
@@ -213,7 +213,7 @@ run_fog_stage(GLcontext *ctx, struct tnl_pipeline_stage *stage)
       /* input->count may be one if glFogCoord was only called once
        * before glBegin.  But we need to compute fog for all vertices.
        */
-      input->count = VB->ObjPtr->count;
+      input->count = VB->AttribPtr[_TNL_ATTRIB_POS]->count;
 
       VB->AttribPtr[_TNL_ATTRIB_FOG] = &store->fogcoord;  /* dest data */
    }
@@ -227,7 +227,6 @@ run_fog_stage(GLcontext *ctx, struct tnl_pipeline_stage *stage)
       VB->AttribPtr[_TNL_ATTRIB_FOG] = input;
    }
 
-   VB->FogCoordPtr = VB->AttribPtr[_TNL_ATTRIB_FOG];
    return GL_TRUE;
 }
 
@@ -236,7 +235,7 @@ run_fog_stage(GLcontext *ctx, struct tnl_pipeline_stage *stage)
 /* Called the first time stage->run() is invoked.
  */
 static GLboolean
-alloc_fog_data(GLcontext *ctx, struct tnl_pipeline_stage *stage)
+alloc_fog_data(struct gl_context *ctx, struct tnl_pipeline_stage *stage)
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    struct fog_stage_data *store;

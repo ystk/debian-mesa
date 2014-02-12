@@ -46,38 +46,38 @@
 #include "intel_reg.h"
 
 static struct gl_sync_object *
-intel_new_sync_object(GLcontext *ctx, GLuint id)
+intel_new_sync_object(struct gl_context *ctx, GLuint id)
 {
    struct intel_sync_object *sync;
 
-   sync = _mesa_calloc(sizeof(struct intel_sync_object));
+   sync = calloc(1, sizeof(struct intel_sync_object));
 
    return &sync->Base;
 }
 
 static void
-intel_delete_sync_object(GLcontext *ctx, struct gl_sync_object *s)
+intel_delete_sync_object(struct gl_context *ctx, struct gl_sync_object *s)
 {
    struct intel_sync_object *sync = (struct intel_sync_object *)s;
 
    drm_intel_bo_unreference(sync->bo);
-   _mesa_free(sync);
+   free(sync);
 }
 
 static void
-intel_fence_sync(GLcontext *ctx, struct gl_sync_object *s,
+intel_fence_sync(struct gl_context *ctx, struct gl_sync_object *s,
 	       GLenum condition, GLbitfield flags)
 {
    struct intel_context *intel = intel_context(ctx);
    struct intel_sync_object *sync = (struct intel_sync_object *)s;
 
    assert(condition == GL_SYNC_GPU_COMMANDS_COMPLETE);
-   intel_batchbuffer_emit_mi_flush(intel->batch);
+   intel_batchbuffer_emit_mi_flush(intel);
 
-   sync->bo = intel->batch->buf;
+   sync->bo = intel->batch.bo;
    drm_intel_bo_reference(sync->bo);
 
-   intelFlush(ctx);
+   intel_flush(ctx);
 }
 
 /* We ignore the user-supplied timeout.  This is weaselly -- we're allowed to
@@ -87,7 +87,7 @@ intel_fence_sync(GLcontext *ctx, struct gl_sync_object *s,
  * The fix would be a new kernel function to do the GTT transition with a
  * timeout.
  */
-static void intel_client_wait_sync(GLcontext *ctx, struct gl_sync_object *s,
+static void intel_client_wait_sync(struct gl_context *ctx, struct gl_sync_object *s,
 				 GLbitfield flags, GLuint64 timeout)
 {
    struct intel_sync_object *sync = (struct intel_sync_object *)s;
@@ -105,12 +105,12 @@ static void intel_client_wait_sync(GLcontext *ctx, struct gl_sync_object *s,
  * any batchbuffers coming after this waitsync will naturally not occur until
  * the previous one is done.
  */
-static void intel_server_wait_sync(GLcontext *ctx, struct gl_sync_object *s,
+static void intel_server_wait_sync(struct gl_context *ctx, struct gl_sync_object *s,
 				 GLbitfield flags, GLuint64 timeout)
 {
 }
 
-static void intel_check_sync(GLcontext *ctx, struct gl_sync_object *s)
+static void intel_check_sync(struct gl_context *ctx, struct gl_sync_object *s)
 {
    struct intel_sync_object *sync = (struct intel_sync_object *)s;
 

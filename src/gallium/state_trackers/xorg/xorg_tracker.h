@@ -47,7 +47,8 @@
 #endif
 
 #include "pipe/p_screen.h"
-#include "state_tracker/drm_api.h"
+#include "util/u_inlines.h"
+#include "util/u_debug.h"
 
 #define DRV_ERROR(msg)	xf86DrvMsg(pScrn->scrnIndex, X_ERROR, msg);
 
@@ -74,13 +75,19 @@ typedef struct _CustomizerRec
 {
     Bool dirty_throttling;
     Bool swap_throttling;
-    Bool (*winsys_screen_init)(struct _CustomizerRec *cust, int fd);
+    Bool no_3d;
+    Bool unhidden_hw_cursor_update;
+    Bool (*winsys_pre_init) (struct _CustomizerRec *cust, int fd);
+    Bool (*winsys_screen_init)(struct _CustomizerRec *cust);
     Bool (*winsys_screen_close)(struct _CustomizerRec *cust);
     Bool (*winsys_enter_vt)(struct _CustomizerRec *cust);
     Bool (*winsys_leave_vt)(struct _CustomizerRec *cust);
     void (*winsys_context_throttle)(struct _CustomizerRec *cust,
 				    struct pipe_context *pipe,
 				    enum xorg_throttling_reason reason);
+    Bool (*winsys_check_fb_size) (struct _CustomizerRec *cust,
+				  unsigned long pitch,
+				  unsigned long height);
 } CustomizerRec, *CustomizerPtr;
 
 typedef struct _modesettingRec
@@ -102,11 +109,12 @@ typedef struct _modesettingRec
     Bool swapThrottling;
     Bool dirtyThrottling;
     CloseScreenProcPtr CloseScreen;
+    Bool no3D;
+    Bool from_3D;
+    Bool isMaster;
 
     /* Broken-out options. */
     OptionInfoPtr Options;
-
-    unsigned int SaveGeneration;
 
     void (*blockHandler)(int, pointer, pointer, pointer);
     struct pipe_fence_handle *fence[XORG_NR_FENCES];
@@ -121,14 +129,14 @@ typedef struct _modesettingRec
     /* kms */
     struct kms_driver *kms;
     struct kms_bo *root_bo;
+    uint16_t lut_r[256], lut_g[256], lut_b[256];
 
     /* gallium */
-    struct drm_api *api;
     struct pipe_screen *screen;
     struct pipe_context *ctx;
     boolean d_depth_bits_last;
     boolean ds_depth_bits_last;
-    struct pipe_texture *root_texture;
+    struct pipe_resource *root_texture;
 
     /* exa */
     struct exa_context *exa;
@@ -149,14 +157,12 @@ CustomizerPtr xorg_customizer(ScrnInfoPtr pScrn);
 
 Bool xorg_has_gallium(ScrnInfoPtr pScrn);
 
+void xorg_flush(ScreenPtr pScreen);
 /***********************************************************************
  * xorg_exa.c
  */
-struct pipe_texture *
+struct pipe_resource *
 xorg_exa_get_texture(PixmapPtr pPixmap);
-
-unsigned
-xorg_exa_get_pixmap_handle(PixmapPtr pPixmap, unsigned *stride);
 
 int
 xorg_exa_set_displayed_usage(PixmapPtr pPixmap);
@@ -165,9 +171,9 @@ int
 xorg_exa_set_shared_usage(PixmapPtr pPixmap);
 
 Bool
-xorg_exa_set_texture(PixmapPtr pPixmap, struct  pipe_texture *tex);
+xorg_exa_set_texture(PixmapPtr pPixmap, struct  pipe_resource *tex);
 
-struct pipe_texture *
+struct pipe_resource *
 xorg_exa_create_root_texture(ScrnInfoPtr pScrn,
 			     int width, int height,
 			     int depth, int bpp);
@@ -205,12 +211,22 @@ xorg_crtc_cursor_destroy(xf86CrtcPtr crtc);
 void
 xorg_output_init(ScrnInfoPtr pScrn);
 
+unsigned
+xorg_output_get_id(xf86OutputPtr output);
+
 
 /***********************************************************************
  * xorg_xv.c
  */
 void
 xorg_xv_init(ScreenPtr pScreen);
+
+
+/***********************************************************************
+ * xorg_xvmc.c
+ */
+void
+xorg_xvmc_init(ScreenPtr pScreen, char *name);
 
 
 #endif /* _XORG_TRACKER_H_ */

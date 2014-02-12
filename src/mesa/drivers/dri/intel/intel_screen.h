@@ -28,80 +28,116 @@
 #ifndef _INTEL_INIT_H_
 #define _INTEL_INIT_H_
 
+#include <stdbool.h>
 #include <sys/time.h>
 #include "dri_util.h"
 #include "intel_bufmgr.h"
 #include "i915_drm.h"
 #include "xmlconfig.h"
 
-/* XXX: change name or eliminate to avoid conflict with "struct
- * intel_region"!!!
+/**
+ * \brief Does X driver support DRI2BufferHiz and DRI2BufferStencil?
+ *
+ * (Here, "X driver" referes to the DDX driver, xf86-video-intel).
+ *
+ * The DRI2 protocol does not allow us to query the X driver's version nor
+ * query for a list of buffer formats that the driver supports. So, to
+ * determine if the X driver supports DRI2BufferHiz and DRI2BufferStencil we
+ * must resort to a handshake.
+ *
+ * If the hardware lacks support for separate stencil (and consequently, lacks
+ * support for hiz also), then the X driver's separate stencil and hiz support
+ * is irrelevant and the handshake never occurs.
+ *
+ * Complications
+ * -------------
+ * The handshake is complicated by a bug in xf86-video-intel 2.15. Even though
+ * that version of the X driver did not supppot requests for DRI2BufferHiz or
+ * DRI2BufferStencil, if requested one it still allocated and returned one.
+ * The returned buffer, however, was incorrectly X tiled.
+ *
+ * How the handshake works
+ * -----------------------
+ * Initially, intel_screen.dri2_has_hiz is set to unknown. The first time the
+ * user requests a depth and stencil buffer, intelCreateBuffers() creates a
+ * framebuffer with separate depth and stencil attachments (with formats
+ * x8_z24 and s8).
+ *
+ * Eventually, intel_update_renderbuffers() makes a DRI2 request for
+ * DRI2BufferStencil and DRI2BufferHiz. If the stencil buffer's tiling is
+ * I915_TILING_NONE [1], then we joyfully set intel_screen.dri2_has_hiz to
+ * true and continue as if nothing happend.
+ *
+ * [1] The stencil buffer is actually W tiled. However, we request from the
+ *     kernel a non-tiled buffer because the GTT is incapable of W fencing.
+ *
+ * If the buffers are X tiled, however, the handshake has failed and we must
+ * clean up.
+ *    1. Angrily set intel_screen.dri2_has_hiz to false.
+ *    2. Discard the framebuffer's depth and stencil attachments.
+ *    3. Attach a packed depth/stencil buffer to the framebuffer (with format
+ *       s8_z24).
+ *    4. Make a DRI2 request for the new buffer, using attachment type
+ *       DRI2BufferDepthStencil).
+ *
+ * Future Considerations
+ * ---------------------
+ * On a sunny day in the far future, when we are certain that no one has an
+ * xf86-video-intel installed without hiz and separate stencil support, then
+ * this enumerant and the handshake should die.
  */
-typedef struct
-{
-   drm_handle_t handle;
-   drmSize size;                /* region size in bytes */
-   char *map;                   /* memory map */
-   int offset;                  /* from start of video mem, in bytes */
-   unsigned int bo_handle;	/* buffer object id if available, or -1 */
-   /**
-    * Flags if the region is tiled.
-    *
-    * Not included is Y versus X tiling.
-    */
-   GLboolean tiled;
-} intelRegion;
+enum intel_dri2_has_hiz {
+   INTEL_DRI2_HAS_HIZ_UNKNOWN,
+   INTEL_DRI2_HAS_HIZ_TRUE,
+   INTEL_DRI2_HAS_HIZ_FALSE,
+};
 
-typedef struct
+struct intel_screen
 {
-   intelRegion front;
-   intelRegion back;
-   intelRegion depth;
-   intelRegion tex;
-
    int deviceID;
-   int width;
-   int height;
-   int pitch;                   /* common row stride, in pixels */
+   int gen;
 
    int logTextureGranularity;
 
-   __DRIscreenPrivate *driScrnPriv;
+   __DRIscreen *driScrnPriv;
 
-   volatile drm_i915_sarea_t *sarea;
+   bool no_hw;
+   GLuint relaxed_relocations;
 
-   int drmMinor;
+   /*
+    * The hardware hiz and separate stencil fields are needed in intel_screen,
+    * rather than solely in intel_context, because glXCreatePbuffer and
+    * glXCreatePixmap are not passed a GLXContext.
+    */
+   bool hw_has_separate_stencil;
+   bool hw_must_use_separate_stencil;
+   bool hw_has_hiz;
+   enum intel_dri2_has_hiz dri2_has_hiz;
 
-   int irq_active;
+   bool kernel_has_gen7_sol_reset;
 
-   GLboolean no_hw;
+   bool hw_has_llc;
+   bool hw_has_swizzling;
 
-   GLboolean no_vbo;
-   int ttm;
+   bool no_vbo;
    dri_bufmgr *bufmgr;
-   GLboolean kernel_exec_fencing;
+   struct _mesa_HashTable *named_regions;
 
    /**
    * Configuration cache with default values for all contexts
    */
    driOptionCache optionCache;
-} intelScreenPrivate;
+};
 
+extern bool intelMapScreenRegions(__DRIscreen * sPriv);
 
+extern void intelDestroyContext(__DRIcontext * driContextPriv);
 
-extern GLboolean intelMapScreenRegions(__DRIscreenPrivate * sPriv);
-
-extern void intelUnmapScreenRegions(intelScreenPrivate * intelScreen);
-
-extern void intelDestroyContext(__DRIcontextPrivate * driContextPriv);
-
-extern GLboolean intelUnbindContext(__DRIcontextPrivate * driContextPriv);
+extern GLboolean intelUnbindContext(__DRIcontext * driContextPriv);
 
 extern GLboolean
-intelMakeCurrent(__DRIcontextPrivate * driContextPriv,
-                 __DRIdrawablePrivate * driDrawPriv,
-                 __DRIdrawablePrivate * driReadPriv);
-
-extern struct intel_context *intelScreenContext(intelScreenPrivate *intelScreen);
+intelMakeCurrent(__DRIcontext * driContextPriv,
+                 __DRIdrawable * driDrawPriv,
+                 __DRIdrawable * driReadPriv);
 
 #endif

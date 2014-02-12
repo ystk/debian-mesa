@@ -32,7 +32,9 @@
 
 #include "main/glheader.h"
 #include "main/macros.h"
+#include "main/mtypes.h"
 #include "main/enums.h"
+#include "main/fbobject.h"
 
 #include "intel_batchbuffer.h"
 
@@ -43,63 +45,61 @@
 #include "brw_sf.h"
 #include "brw_state.h"
 
+#include "glsl/ralloc.h"
+
 static void compile_sf_prog( struct brw_context *brw,
 			     struct brw_sf_prog_key *key )
 {
-   GLcontext *ctx = &brw->intel.ctx;
+   struct intel_context *intel = &brw->intel;
    struct brw_sf_compile c;
    const GLuint *program;
+   void *mem_ctx;
    GLuint program_size;
-   GLuint i, idx;
+   GLuint i;
 
    memset(&c, 0, sizeof(c));
 
+   mem_ctx = ralloc_context(NULL);
    /* Begin the compilation:
     */
-   brw_init_compile(brw, &c.func);
+   brw_init_compile(brw, &c.func, mem_ctx);
 
    c.key = *key;
-   c.nr_attrs = brw_count_bits(c.key.attrs);
-   c.nr_attr_regs = (c.nr_attrs+1)/2;
-   c.nr_setup_attrs = brw_count_bits(c.key.attrs);
-   c.nr_setup_regs = (c.nr_setup_attrs+1)/2;
+   brw_compute_vue_map(&c.vue_map, intel, c.key.userclip_active, c.key.attrs);
+   if (c.key.do_point_coord) {
+      /*
+       * gl_PointCoord is a FS instead of VS builtin variable, thus it's
+       * not included in c.vue_map generated in VS stage. Here we add
+       * it manually to let SF shader generate the needed interpolation
+       * coefficient for FS shader.
+       */
+      c.vue_map.vert_result_to_slot[BRW_VERT_RESULT_PNTC] = c.vue_map.num_slots;
+      c.vue_map.slot_to_vert_result[c.vue_map.num_slots++] = BRW_VERT_RESULT_PNTC;
+   }
+   c.urb_entry_read_offset = brw_sf_compute_urb_entry_read_offset(intel);
+   c.nr_attr_regs = (c.vue_map.num_slots + 1)/2 - c.urb_entry_read_offset;
+   c.nr_setup_regs = c.nr_attr_regs;
 
    c.prog_data.urb_read_length = c.nr_attr_regs;
    c.prog_data.urb_entry_size = c.nr_setup_regs * 2;
 
-   /* Construct map from attribute number to position in the vertex.
-    */
-   for (i = idx = 0; i < VERT_RESULT_MAX; i++) 
-      if (c.key.attrs & BITFIELD64_BIT(i)) {
-	 c.attr_to_idx[i] = idx;
-	 c.idx_to_attr[idx] = i;
-	 if (i >= VERT_RESULT_TEX0 && i <= VERT_RESULT_TEX7) {
-            c.point_attrs[i].CoordReplace = 
-               ctx->Point.CoordReplace[i - VERT_RESULT_TEX0];
-	 }
-         else {
-            c.point_attrs[i].CoordReplace = GL_FALSE;
-         }
-	 idx++;
-      }
-   
    /* Which primitive?  Or all three? 
     */
    switch (key->primitive) {
    case SF_TRIANGLES:
       c.nr_verts = 3;
-      brw_emit_tri_setup( &c, GL_TRUE );
+      brw_emit_tri_setup( &c, true );
       break;
    case SF_LINES:
       c.nr_verts = 2;
-      brw_emit_line_setup( &c, GL_TRUE );
+      brw_emit_line_setup( &c, true );
       break;
    case SF_POINTS:
       c.nr_verts = 1;
       if (key->do_point_sprite)
-	  brw_emit_point_sprite_setup( &c, GL_TRUE );
+	  brw_emit_point_sprite_setup( &c, true );
       else
-	  brw_emit_point_setup( &c, GL_TRUE );
+	  brw_emit_point_setup( &c, true );
       break;
    case SF_UNFILLED_TRIS:
       c.nr_verts = 3;
@@ -114,23 +114,31 @@ static void compile_sf_prog( struct brw_context *brw,
     */
    program = brw_get_program(&c.func, &program_size);
 
-   /* Upload
-    */
-   dri_bo_unreference(brw->sf.prog_bo);
-   brw->sf.prog_bo = brw_upload_cache( &brw->cache, BRW_SF_PROG,
-				       &c.key, sizeof(c.key),
-				       NULL, 0,
-				       program, program_size,
-				       &c.prog_data,
-				       &brw->sf.prog_data );
+   if (unlikely(INTEL_DEBUG & DEBUG_SF)) {
+      printf("sf:\n");
+      for (i = 0; i < program_size / sizeof(struct brw_instruction); i++)
+	 brw_disasm(stdout, &((struct brw_instruction *)program)[i],
+		    intel->gen);
+      printf("\n");
+   }
+
+   brw_upload_cache(&brw->cache, BRW_SF_PROG,
+		    &c.key, sizeof(c.key),
+		    program, program_size,
+		    &c.prog_data, sizeof(c.prog_data),
+		    &brw->sf.prog_offset, &brw->sf.prog_data);
+   ralloc_free(mem_ctx);
 }
 
 /* Calculate interpolants for triangle and line rasterization.
  */
-static void upload_sf_prog(struct brw_context *brw)
+static void
+brw_upload_sf_prog(struct brw_context *brw)
 {
-   GLcontext *ctx = &brw->intel.ctx;
+   struct gl_context *ctx = &brw->intel.ctx;
    struct brw_sf_prog_key key;
+   /* _NEW_BUFFERS */
+   bool render_to_fbo = _mesa_is_user_fbo(ctx->DrawBuffer);
 
    memset(&key, 0, sizeof(key));
 
@@ -160,41 +168,56 @@ static void upload_sf_prog(struct brw_context *brw)
       break;
    }
 
+   /* _NEW_TRANSFORM */
+   key.userclip_active = (ctx->Transform.ClipPlanesEnabled != 0);
+
+   /* _NEW_POINT */
    key.do_point_sprite = ctx->Point.PointSprite;
-   key.sprite_origin_lower_left = (ctx->Point.SpriteOrigin == GL_LOWER_LEFT);
+   if (key.do_point_sprite) {
+      int i;
+
+      for (i = 0; i < 8; i++) {
+	 if (ctx->Point.CoordReplace[i])
+	    key.point_sprite_coord_replace |= (1 << i);
+      }
+   }
+   if (brw->fragment_program->Base.InputsRead & BITFIELD64_BIT(FRAG_ATTRIB_PNTC))
+      key.do_point_coord = 1;
+   /*
+    * Window coordinates in a FBO are inverted, which means point
+    * sprite origin must be inverted, too.
+    */
+   if ((ctx->Point.SpriteOrigin == GL_LOWER_LEFT) != render_to_fbo)
+      key.sprite_origin_lower_left = true;
+
    /* _NEW_LIGHT */
    key.do_flat_shading = (ctx->Light.ShadeModel == GL_FLAT);
    key.do_twoside_color = (ctx->Light.Enabled && ctx->Light.Model.TwoSide);
-
-   /* _NEW_HINT */
-   key.linear_color = (ctx->Hint.PerspectiveCorrection == GL_FASTEST);
 
    /* _NEW_POLYGON */
    if (key.do_twoside_color) {
       /* If we're rendering to a FBO, we have to invert the polygon
        * face orientation, just as we invert the viewport in
-       * sf_unit_create_from_key().  ctx->DrawBuffer->Name will be
-       * nonzero if we're rendering to such an FBO.
+       * sf_unit_create_from_key().
        */
-      key.frontface_ccw = (ctx->Polygon.FrontFace == GL_CCW) ^ (ctx->DrawBuffer->Name != 0);
+      key.frontface_ccw = (ctx->Polygon.FrontFace == GL_CCW) != render_to_fbo;
    }
 
-   dri_bo_unreference(brw->sf.prog_bo);
-   brw->sf.prog_bo = brw_search_cache(&brw->cache, BRW_SF_PROG,
-				      &key, sizeof(key),
-				      NULL, 0,
-				      &brw->sf.prog_data);
-   if (brw->sf.prog_bo == NULL)
+   if (!brw_search_cache(&brw->cache, BRW_SF_PROG,
+			 &key, sizeof(key),
+			 &brw->sf.prog_offset, &brw->sf.prog_data)) {
       compile_sf_prog( brw, &key );
+   }
 }
 
 
 const struct brw_tracked_state brw_sf_prog = {
    .dirty = {
-      .mesa  = (_NEW_HINT | _NEW_LIGHT | _NEW_POLYGON | _NEW_POINT),
+      .mesa  = (_NEW_HINT | _NEW_LIGHT | _NEW_POLYGON | _NEW_POINT |
+                _NEW_TRANSFORM | _NEW_BUFFERS),
       .brw   = (BRW_NEW_REDUCED_PRIMITIVE),
       .cache = CACHE_NEW_VS_PROG
    },
-   .prepare = upload_sf_prog
+   .emit = brw_upload_sf_prog
 };
 

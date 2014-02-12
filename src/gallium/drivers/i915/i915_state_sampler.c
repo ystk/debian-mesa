@@ -32,6 +32,7 @@
 #include "i915_context.h"
 #include "i915_reg.h"
 #include "i915_state.h"
+#include "i915_resource.h"
 
 
 /*
@@ -52,17 +53,24 @@
  *
  * So we need to update the map state when we change samplers and
  * we need to be change the sampler state when map state is changed.
- * The first part is done by calling i915_update_texture in
- * i915_update_samplers and the second part is done else where in
- * code tracking the state changes.
+ * The first part is done by calling update_texture in update_samplers
+ * and the second part is done else where in code tracking the state
+ * changes.
  */
 
-static void
-i915_update_texture(struct i915_context *i915,
-                    uint unit,
-                    const struct i915_texture *tex,
-                    const struct i915_sampler_state *sampler,
-                    uint state[6]);
+static void update_map(struct i915_context *i915,
+                       uint unit,
+                       const struct i915_texture *tex,
+                       const struct i915_sampler_state *sampler,
+                       const struct pipe_sampler_view* view,
+                       uint state[2]);
+
+
+
+/***********************************************************************
+ * Samplers
+ */
+
 /**
  * Compute i915 texture sampling state.
  *
@@ -73,22 +81,19 @@ i915_update_texture(struct i915_context *i915,
  */
 static void update_sampler(struct i915_context *i915,
                            uint unit,
-			   const struct i915_sampler_state *sampler,
-			   const struct i915_texture *tex,
-			   unsigned state[3] )
+                           const struct i915_sampler_state *sampler,
+                           const struct i915_texture *tex,
+                           unsigned state[3])
 {
-   const struct pipe_texture *pt = &tex->base;
+   const struct pipe_resource *pt = &tex->b.b;
    unsigned minlod, lastlod;
 
-   /* Need to do this after updating the maps, which call the
-    * intel_finalize_mipmap_tree and hence can update firstLevel:
-    */
    state[0] = sampler->state[0];
    state[1] = sampler->state[1];
    state[2] = sampler->state[2];
 
-   if (pt->format == PIPE_FORMAT_YCBCR ||
-       pt->format == PIPE_FORMAT_YCBCR_REV)
+   if (pt->format == PIPE_FORMAT_UYVY ||
+       pt->format == PIPE_FORMAT_YUYV)
       state[0] |= SS2_COLORSPACE_CONVERSION;
 
    /* 3D textures don't seem to respect the border color.
@@ -117,7 +122,7 @@ static void update_sampler(struct i915_context *i915,
            wr == PIPE_TEX_WRAP_CLAMP_TO_BORDER)) {
          if (i915->conformance_mode > 0) {
             assert(0);
-            /* 	    sampler->fallback = true; */
+            /*             sampler->fallback = true; */
             /* TODO */
          }
       }
@@ -136,43 +141,62 @@ static void update_sampler(struct i915_context *i915,
    state[1] |= (unit << SS3_TEXTUREMAP_INDEX_SHIFT);
 }
 
-
-void i915_update_samplers( struct i915_context *i915 )
+static void update_samplers(struct i915_context *i915)
 {
    uint unit;
 
    i915->current.sampler_enable_nr = 0;
    i915->current.sampler_enable_flags = 0x0;
 
-   for (unit = 0; unit < i915->num_textures && unit < i915->num_samplers;
+   for (unit = 0; unit < i915->num_fragment_sampler_views && unit < i915->num_samplers;
         unit++) {
       /* determine unit enable/disable by looking for a bound texture */
       /* could also examine the fragment program? */
-      if (i915->texture[unit]) {
-	 update_sampler( i915,
-	                 unit,
-	                 i915->sampler[unit],       /* sampler state */
-	                 i915->texture[unit],        /* texture */
-	                 i915->current.sampler[unit] /* the result */
-	                 );
-	 i915_update_texture( i915,
-	                      unit,
-	                      i915->texture[unit],          /* texture */
-	                      i915->sampler[unit],          /* sampler state */
-	                      i915->current.texbuffer[unit] );
+      if (i915->fragment_sampler_views[unit]) {
+         struct i915_texture *texture = i915_texture(i915->fragment_sampler_views[unit]->texture);
 
-	 i915->current.sampler_enable_nr++;
-	 i915->current.sampler_enable_flags |= (1 << unit);
+         update_sampler(i915,
+                        unit,
+                        i915->sampler[unit],          /* sampler state */
+                        texture,                      /* texture */
+                        i915->current.sampler[unit]); /* the result */
+         update_map(i915,
+                    unit,
+                    texture,                             /* texture */
+                    i915->sampler[unit],                 /* sampler state */
+                    i915->fragment_sampler_views[unit],  /* sampler view */
+                    i915->current.texbuffer[unit]);      /* the result */
+
+         i915->current.sampler_enable_nr++;
+         i915->current.sampler_enable_flags |= (1 << unit);
       }
    }
 
    i915->hardware_dirty |= I915_HW_SAMPLER | I915_HW_MAP;
 }
 
+struct i915_tracked_state i915_hw_samplers = {
+   "samplers",
+   update_samplers,
+   I915_NEW_SAMPLER | I915_NEW_SAMPLER_VIEW
+};
 
-static uint
-translate_texture_format(enum pipe_format pipeFormat)
+
+/***********************************************************************
+ * Sampler views
+ */
+
+static uint translate_texture_format(enum pipe_format pipeFormat,
+                                     const struct pipe_sampler_view* view)
 {
+   if ( (view->swizzle_r != PIPE_SWIZZLE_RED ||
+         view->swizzle_g != PIPE_SWIZZLE_GREEN ||
+         view->swizzle_b != PIPE_SWIZZLE_BLUE ||
+         view->swizzle_a != PIPE_SWIZZLE_ALPHA ) &&
+         pipeFormat != PIPE_FORMAT_Z24_UNORM_S8_UINT &&
+         pipeFormat != PIPE_FORMAT_Z24X8_UNORM )
+      debug_printf("i915: unsupported texture swizzle for format %d\n", pipeFormat);
+
    switch (pipeFormat) {
    case PIPE_FORMAT_L8_UNORM:
       return MAPSURF_8BIT | MT_8BIT_L8;
@@ -180,19 +204,27 @@ translate_texture_format(enum pipe_format pipeFormat)
       return MAPSURF_8BIT | MT_8BIT_I8;
    case PIPE_FORMAT_A8_UNORM:
       return MAPSURF_8BIT | MT_8BIT_A8;
-   case PIPE_FORMAT_A8L8_UNORM:
+   case PIPE_FORMAT_L8A8_UNORM:
       return MAPSURF_16BIT | MT_16BIT_AY88;
-   case PIPE_FORMAT_R5G6B5_UNORM:
+   case PIPE_FORMAT_B5G6R5_UNORM:
       return MAPSURF_16BIT | MT_16BIT_RGB565;
-   case PIPE_FORMAT_A1R5G5B5_UNORM:
+   case PIPE_FORMAT_B5G5R5A1_UNORM:
       return MAPSURF_16BIT | MT_16BIT_ARGB1555;
-   case PIPE_FORMAT_A4R4G4B4_UNORM:
+   case PIPE_FORMAT_B4G4R4A4_UNORM:
       return MAPSURF_16BIT | MT_16BIT_ARGB4444;
-   case PIPE_FORMAT_A8R8G8B8_UNORM:
+   case PIPE_FORMAT_B10G10R10A2_UNORM:
+      return MAPSURF_32BIT | MT_32BIT_ARGB2101010;
+   case PIPE_FORMAT_B8G8R8A8_UNORM:
       return MAPSURF_32BIT | MT_32BIT_ARGB8888;
-   case PIPE_FORMAT_YCBCR_REV:
+   case PIPE_FORMAT_B8G8R8X8_UNORM:
+      return MAPSURF_32BIT | MT_32BIT_XRGB8888;
+   case PIPE_FORMAT_R8G8B8A8_UNORM:
+      return MAPSURF_32BIT | MT_32BIT_ABGR8888;
+   case PIPE_FORMAT_R8G8B8X8_UNORM:
+      return MAPSURF_32BIT | MT_32BIT_XBGR8888;
+   case PIPE_FORMAT_YUYV:
       return (MAPSURF_422 | MT_422_YCRCB_NORMAL);
-   case PIPE_FORMAT_YCBCR:
+   case PIPE_FORMAT_UYVY:
       return (MAPSURF_422 | MT_422_YCRCB_SWAPY);
 #if 0
    case PIPE_FORMAT_RGB_FXT1:
@@ -201,62 +233,93 @@ translate_texture_format(enum pipe_format pipeFormat)
 #endif
    case PIPE_FORMAT_Z16_UNORM:
       return (MAPSURF_16BIT | MT_16BIT_L16);
-#if 0
-   case PIPE_FORMAT_RGBA_DXT1:
-   case PIPE_FORMAT_RGB_DXT1:
+   case PIPE_FORMAT_DXT1_RGBA:
+   case PIPE_FORMAT_DXT1_RGB:
       return (MAPSURF_COMPRESSED | MT_COMPRESS_DXT1);
-   case PIPE_FORMAT_RGBA_DXT3:
+   case PIPE_FORMAT_DXT3_RGBA:
       return (MAPSURF_COMPRESSED | MT_COMPRESS_DXT2_3);
-   case PIPE_FORMAT_RGBA_DXT5:
+   case PIPE_FORMAT_DXT5_RGBA:
       return (MAPSURF_COMPRESSED | MT_COMPRESS_DXT4_5);
-#endif
-   case PIPE_FORMAT_S8Z24_UNORM:
-      return (MAPSURF_32BIT | MT_32BIT_xI824);
+   case PIPE_FORMAT_Z24_UNORM_S8_UINT:
+   case PIPE_FORMAT_Z24X8_UNORM:
+      {
+         if ( view->swizzle_r == PIPE_SWIZZLE_RED &&
+              view->swizzle_g == PIPE_SWIZZLE_RED &&
+              view->swizzle_b == PIPE_SWIZZLE_RED &&
+              view->swizzle_a == PIPE_SWIZZLE_ONE)
+            return (MAPSURF_32BIT | MT_32BIT_xA824);
+         if ( view->swizzle_r == PIPE_SWIZZLE_RED &&
+              view->swizzle_g == PIPE_SWIZZLE_RED &&
+              view->swizzle_b == PIPE_SWIZZLE_RED &&
+              view->swizzle_a == PIPE_SWIZZLE_RED)
+            return (MAPSURF_32BIT | MT_32BIT_xI824);
+         if ( view->swizzle_r == PIPE_SWIZZLE_ZERO &&
+              view->swizzle_g == PIPE_SWIZZLE_ZERO &&
+              view->swizzle_b == PIPE_SWIZZLE_ZERO &&
+              view->swizzle_a == PIPE_SWIZZLE_RED)
+            return (MAPSURF_32BIT | MT_32BIT_xL824);
+         debug_printf("i915: unsupported depth swizzle %d %d %d %d\n",
+                      view->swizzle_r,
+                      view->swizzle_g,
+                      view->swizzle_b,
+                      view->swizzle_a);
+         return (MAPSURF_32BIT | MT_32BIT_xL824);
+      }
    default:
       debug_printf("i915: translate_texture_format() bad image format %x\n",
-              pipeFormat);
+                   pipeFormat);
       assert(0);
       return 0;
    }
 }
 
-
-static void
-i915_update_texture(struct i915_context *i915,
-                    uint unit,
-                    const struct i915_texture *tex,
-                    const struct i915_sampler_state *sampler,
-                    uint state[6])
+static inline uint32_t
+ms3_tiling_bits(enum i915_winsys_buffer_tile tiling)
 {
-   const struct pipe_texture *pt = &tex->base;
+         uint32_t tiling_bits = 0;
+
+         switch (tiling) {
+         case I915_TILE_Y:
+            tiling_bits |= MS3_TILE_WALK_Y;
+         case I915_TILE_X:
+            tiling_bits |= MS3_TILED_SURFACE;
+         case I915_TILE_NONE:
+            break;
+         }
+
+         return tiling_bits;
+}
+
+static void update_map(struct i915_context *i915,
+                       uint unit,
+                       const struct i915_texture *tex,
+                       const struct i915_sampler_state *sampler,
+                       const struct pipe_sampler_view* view,
+                       uint state[2])
+{
+   const struct pipe_resource *pt = &tex->b.b;
    uint format, pitch;
-   const uint width = pt->width[0], height = pt->height[0], depth = pt->depth[0];
+   const uint width = pt->width0, height = pt->height0, depth = pt->depth0;
    const uint num_levels = pt->last_level;
    unsigned max_lod = num_levels * 4;
-   unsigned tiled = MS3_USE_FENCE_REGS;
 
    assert(tex);
    assert(width);
    assert(height);
    assert(depth);
 
-   format = translate_texture_format(pt->format);
+   format = translate_texture_format(pt->format, view);
    pitch = tex->stride;
 
    assert(format);
    assert(pitch);
-
-   if (tex->sw_tiled) {
-      assert(!((pitch - 1) & pitch));
-      tiled = MS3_TILED_SURFACE;
-   }
 
    /* MS3 state */
    state[0] =
       (((height - 1) << MS3_HEIGHT_SHIFT)
        | ((width - 1) << MS3_WIDTH_SHIFT)
        | format
-       | tiled);
+       | ms3_tiling_bits(tex->tiling));
 
    /*
     * XXX When min_filter != mag_filter and there's just one mipmap level,
@@ -275,24 +338,31 @@ i915_update_texture(struct i915_context *i915,
        | ((depth - 1) << MS4_VOLUME_DEPTH_SHIFT));
 }
 
-
-void
-i915_update_textures(struct i915_context *i915)
+static void update_maps(struct i915_context *i915)
 {
    uint unit;
 
-   for (unit = 0; unit < i915->num_textures && unit < i915->num_samplers;
+   for (unit = 0; unit < i915->num_fragment_sampler_views && unit < i915->num_samplers;
         unit++) {
       /* determine unit enable/disable by looking for a bound texture */
       /* could also examine the fragment program? */
-      if (i915->texture[unit]) {
-	 i915_update_texture( i915,
-	                      unit,
-	                      i915->texture[unit],          /* texture */
-	                      i915->sampler[unit],          /* sampler state */
-	                      i915->current.texbuffer[unit] );
+      if (i915->fragment_sampler_views[unit]) {
+         struct i915_texture *texture = i915_texture(i915->fragment_sampler_views[unit]->texture);
+
+         update_map(i915,
+                    unit,
+                    texture,                            /* texture */
+                    i915->sampler[unit],                /* sampler state */
+                    i915->fragment_sampler_views[unit], /* sampler view */
+                    i915->current.texbuffer[unit]);
       }
    }
 
    i915->hardware_dirty |= I915_HW_MAP;
 }
+
+struct i915_tracked_state i915_hw_sampler_views = {
+   "sampler_views",
+   update_maps,
+   I915_NEW_SAMPLER_VIEW
+};

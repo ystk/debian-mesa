@@ -28,15 +28,16 @@
 #ifndef _INTEL_SPAN_H
 #define _INTEL_SPAN_H
 
-extern void intelInitSpanFuncs(GLcontext * ctx);
+#include "main/formats.h"
+#include <stdbool.h>
 
-extern void intelSpanRenderFinish(GLcontext * ctx);
-extern void intelSpanRenderStart(GLcontext * ctx);
-void intel_renderbuffer_map(struct intel_context *intel,
-			    struct gl_renderbuffer *rb);
-void intel_renderbuffer_unmap(struct intel_context *intel,
-			      struct gl_renderbuffer *rb);
-void intel_map_vertex_shader_textures(GLcontext *ctx);
-void intel_unmap_vertex_shader_textures(GLcontext *ctx);
+extern void intelInitSpanFuncs(struct gl_context * ctx);
+
+extern void intelSpanRenderFinish(struct gl_context * ctx);
+extern void intelSpanRenderStart(struct gl_context * ctx);
+
+void intel_map_vertex_shader_textures(struct gl_context *ctx);
+void intel_unmap_vertex_shader_textures(struct gl_context *ctx);
+intptr_t intel_offset_S8(uint32_t stride, uint32_t x, uint32_t y, bool swizzled);
 
 #endif

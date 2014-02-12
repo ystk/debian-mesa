@@ -194,29 +194,10 @@ intel_translate_logic_op(GLenum opcode)
    }
 }
 
-
-static void
-intelClearColor(GLcontext *ctx, const GLfloat color[4])
-{
-   struct intel_context *intel = intel_context(ctx);
-   GLubyte clear[4];
-
-   CLAMPED_FLOAT_TO_UBYTE(clear[0], color[0]);
-   CLAMPED_FLOAT_TO_UBYTE(clear[1], color[1]);
-   CLAMPED_FLOAT_TO_UBYTE(clear[2], color[2]);
-   CLAMPED_FLOAT_TO_UBYTE(clear[3], color[3]);
-
-   /* compute both 32 and 16-bit clear values */
-   intel->ClearColor8888 = INTEL_PACKCOLOR8888(clear[0], clear[1],
-                                               clear[2], clear[3]);
-   intel->ClearColor565 = INTEL_PACKCOLOR565(clear[0], clear[1], clear[2]);
-}
-
-
 /* Fallback to swrast for select and feedback.
  */
 static void
-intelRenderMode(GLcontext *ctx, GLenum mode)
+intelRenderMode(struct gl_context *ctx, GLenum mode)
 {
    struct intel_context *intel = intel_context(ctx);
    FALLBACK(intel, INTEL_FALLBACK_RENDERMODE, (mode != GL_RENDER));
@@ -227,5 +208,4 @@ void
 intelInitStateFuncs(struct dd_function_table *functions)
 {
    functions->RenderMode = intelRenderMode;
-   functions->ClearColor = intelClearColor;
 }

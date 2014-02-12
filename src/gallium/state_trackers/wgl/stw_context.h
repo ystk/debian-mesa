@@ -30,20 +30,29 @@
 
 #include <windows.h>
 
-struct st_context;
+struct stw_framebuffer;
+struct st_context_iface;
 
 struct stw_context
 {
-   struct st_context *st;
+   struct st_context_iface *st;
    DHGLRC dhglrc;
    int iPixelFormat;
    HDC hdc;
+
+   struct stw_framebuffer *current_framebuffer;
 };
+
+DHGLRC stw_create_context_attribs( HDC hdc, INT iLayerPlane, DHGLRC hShareContext,
+                                   int majorVersion, int minorVersion, int contextFlags, int profileMask );
 
 DHGLRC stw_get_current_context( void );
 
 HDC stw_get_current_dc( void );
 
 BOOL stw_make_current( HDC hdc, DHGLRC dhglrc );
+
+void stw_flush_current_locked( struct stw_framebuffer *fb );
+void stw_notify_current_locked( struct stw_framebuffer *fb );
 
 #endif /* STW_CONTEXT_H */

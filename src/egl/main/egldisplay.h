@@ -1,10 +1,83 @@
+/**************************************************************************
+ *
+ * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2009-2010 Chia-I Wu <olvaffe@gmail.com>
+ * Copyright 2010-2011 LunarG, Inc.
+ * All Rights Reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sub license, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial portions
+ * of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ *
+ **************************************************************************/
+
+
 #ifndef EGLDISPLAY_INCLUDED
 #define EGLDISPLAY_INCLUDED
 
+
 #include "egltypedefs.h"
 #include "egldefines.h"
-#include "eglcontext.h"
-#include "eglsurface.h"
+#include "eglmutex.h"
+#include "eglarray.h"
+
+
+enum _egl_platform_type {
+   _EGL_PLATFORM_WINDOWS,
+   _EGL_PLATFORM_X11,
+   _EGL_PLATFORM_WAYLAND,
+   _EGL_PLATFORM_DRM,
+   _EGL_PLATFORM_FBDEV,
+   _EGL_PLATFORM_NULL,
+   _EGL_PLATFORM_ANDROID,
+
+   _EGL_NUM_PLATFORMS,
+   _EGL_INVALID_PLATFORM = -1
+};
+typedef enum _egl_platform_type _EGLPlatformType;
+
+
+enum _egl_resource_type {
+   _EGL_RESOURCE_CONTEXT,
+   _EGL_RESOURCE_SURFACE,
+   _EGL_RESOURCE_IMAGE,
+   _EGL_RESOURCE_SYNC,
+
+   _EGL_NUM_RESOURCES
+};
+/* this cannot and need not go into egltypedefs.h */
+typedef enum _egl_resource_type _EGLResourceType;
+
+
+/**
+ * A resource of a display.
+ */
+struct _egl_resource
+{
+   /* which display the resource belongs to */
+   _EGLDisplay *Display;
+   EGLBoolean IsLinked;
+   EGLint RefCount;
+
+   /* used to link resources of the same type */
+   _EGLResource *Next;
+};
 
 
 /**
@@ -14,137 +87,100 @@ struct _egl_extensions
 {
    EGLBoolean MESA_screen_surface;
    EGLBoolean MESA_copy_context;
+   EGLBoolean MESA_drm_display;
+   EGLBoolean MESA_drm_image;
 
-   char String[_EGL_MAX_EXTENSIONS_LEN];
+   EGLBoolean WL_bind_wayland_display;
+
+   EGLBoolean KHR_image_base;
+   EGLBoolean KHR_image_pixmap;
+   EGLBoolean KHR_vg_parent_image;
+   EGLBoolean KHR_gl_texture_2D_image;
+   EGLBoolean KHR_gl_texture_cubemap_image;
+   EGLBoolean KHR_gl_texture_3D_image;
+   EGLBoolean KHR_gl_renderbuffer_image;
+
+   EGLBoolean KHR_reusable_sync;
+   EGLBoolean KHR_fence_sync;
+
+   EGLBoolean KHR_surfaceless_gles1;
+   EGLBoolean KHR_surfaceless_gles2;
+   EGLBoolean KHR_surfaceless_opengl;
+
+   EGLBoolean NOK_swap_region;
+   EGLBoolean NOK_texture_from_pixmap;
+
+   EGLBoolean ANDROID_image_native_buffer;
+
+   EGLBoolean NV_post_sub_buffer;
 };
 
 
-struct _egl_display 
+struct _egl_display
 {
    /* used to link displays */
    _EGLDisplay *Next;
 
-   EGLNativeDisplayType NativeDisplay;
+   _EGLMutex Mutex;
 
-   const char *DriverName;
-   _EGLDriver *Driver;
-   void *DriverData; /* private to driver */
+   _EGLPlatformType Platform; /**< The type of the platform display */
+   void *PlatformDisplay;     /**< A pointer to the platform display */
 
-   int APImajor, APIminor; /**< as returned by eglInitialize() */
-   char Version[1000];     /**< initialized from APImajor/minor, DriverName */
+   _EGLDriver *Driver;        /**< Matched driver of the display */
+   EGLBoolean Initialized;    /**< True if the display is initialized */
 
-   /** Bitmask of supported APIs (EGL_xx_BIT) set by the driver during init */
-   EGLint ClientAPIsMask;
-   char ClientAPIs[1000];   /**< updated by eglQueryString */
+   /* options that affect how the driver initializes the display */
+   struct {
+      EGLBoolean TestOnly;    /**< Driver should not set fields when true */
+      EGLBoolean UseFallback; /**< Use fallback driver (sw or less features) */
+   } Options;
 
-   _EGLExtensions Extensions;
+   /* these fields are set by the driver during init */
+   void *DriverData;          /**< Driver private data */
+   EGLint VersionMajor;       /**< EGL major version */
+   EGLint VersionMinor;       /**< EGL minor version */
+   EGLint ClientAPIs;         /**< Bitmask of APIs supported (EGL_xxx_BIT) */
+   _EGLExtensions Extensions; /**< Extensions supported */
 
-   int LargestPbuffer;
+   /* these fields are derived from above */
+   char VersionString[1000];                       /**< EGL_VERSION */
+   char ClientAPIsString[1000];                    /**< EGL_CLIENT_APIS */
+   char ExtensionsString[_EGL_MAX_EXTENSIONS_LEN]; /**< EGL_EXTENSIONS */
 
-   EGLint NumScreens;
-   _EGLScreen **Screens;  /* array [NumScreens] */
+   _EGLArray *Screens;
+   _EGLArray *Configs;
 
-   EGLint MaxConfigs;
-   EGLint NumConfigs;
-   _EGLConfig **Configs;  /* array [NumConfigs] of ptr to _EGLConfig */
-
-   /* lists of linked contexts and surface */
-   _EGLContext *ContextList;
-   _EGLSurface *SurfaceList;
+   /* lists of resources */
+   _EGLResource *ResourceLists[_EGL_NUM_RESOURCES];
 };
+
+
+extern _EGLPlatformType
+_eglGetNativePlatform(EGLNativeDisplayType nativeDisplay);
 
 
 extern void
 _eglFiniDisplay(void);
 
 
-extern char *
-_eglSplitDisplayString(const char *dpyString, const char **args);
-
-
 extern _EGLDisplay *
-_eglNewDisplay(NativeDisplayType displayName);
+_eglFindDisplay(_EGLPlatformType plat, void *plat_dpy);
 
 
-extern EGLDisplay
-_eglLinkDisplay(_EGLDisplay *dpy);
-
-
-extern void
-_eglUnlinkDisplay(_EGLDisplay *dpy);
-
-
-extern _EGLDisplay *
-_eglFindDisplay(NativeDisplayType nativeDisplay);
-
-
-extern void
+PUBLIC void
 _eglReleaseDisplayResources(_EGLDriver *drv, _EGLDisplay *dpy);
 
 
-extern void
+PUBLIC void
 _eglCleanupDisplay(_EGLDisplay *disp);
-
-
-extern EGLContext
-_eglLinkContext(_EGLContext *ctx, _EGLDisplay *dpy);
-
-
-extern void
-_eglUnlinkContext(_EGLContext *ctx);
-
-
-extern EGLSurface
-_eglLinkSurface(_EGLSurface *surf, _EGLDisplay *dpy);
-
-
-extern void
-_eglUnlinkSurface(_EGLSurface *surf);
-
-
-#ifndef _EGL_SKIP_HANDLE_CHECK
 
 
 extern EGLBoolean
 _eglCheckDisplayHandle(EGLDisplay dpy);
 
 
-extern EGLBoolean
-_eglCheckContextHandle(EGLContext ctx, _EGLDisplay *dpy);
-
-
-extern EGLBoolean
-_eglCheckSurfaceHandle(EGLSurface surf, _EGLDisplay *dpy);
-
-
-#else /* !_EGL_SKIP_HANDLE_CHECK */
-
-/* Only do a quick check.  This is NOT standard compliant. */
-
-static INLINE EGLBoolean
-_eglCheckDisplayHandle(EGLDisplay dpy)
-{
-   return ((_EGLDisplay *) dpy != NULL);
-}
-
-
-static INLINE EGLBoolean
-_eglCheckContextHandle(EGLContext ctx, _EGLDisplay *dpy)
-{
-   _EGLContext *c = (_EGLContext *) ctx;
-   return (dpy && c && c->Display == dpy);
-}
-
-
-static INLINE EGLBoolean
-_eglCheckSurfaceHandle(EGLSurface surf, _EGLDisplay *dpy)
-{
-   _EGLSurface *s = (_EGLSurface *) surf;
-   return (dpy && s && s->Display == dpy);
-}
-
-
-#endif /* _EGL_SKIP_HANDLE_CHECK */
+PUBLIC EGLBoolean
+_eglCheckResource(void *res, _EGLResourceType type, _EGLDisplay *dpy);
 
 
 /**
@@ -171,102 +207,33 @@ _eglGetDisplayHandle(_EGLDisplay *dpy)
 }
 
 
+extern void
+_eglInitResource(_EGLResource *res, EGLint size, _EGLDisplay *dpy);
+
+
+PUBLIC void
+_eglGetResource(_EGLResource *res);
+
+
+PUBLIC EGLBoolean
+_eglPutResource(_EGLResource *res);
+
+
+extern void
+_eglLinkResource(_EGLResource *res, _EGLResourceType type);
+
+
+extern void
+_eglUnlinkResource(_EGLResource *res, _EGLResourceType type);
+
+
 /**
- * Return true if the display is linked.
+ * Return true if the resource is linked.
  */
 static INLINE EGLBoolean
-_eglIsDisplayLinked(_EGLDisplay *dpy)
+_eglIsResourceLinked(_EGLResource *res)
 {
-   return (EGLBoolean) (_eglGetDisplayHandle(dpy) != EGL_NO_DISPLAY);
-}
-
-
-/**
- * Lookup a handle to find the linked context.
- * Return NULL if the handle has no corresponding linked context.
- */
-static INLINE _EGLContext *
-_eglLookupContext(EGLContext context, _EGLDisplay *dpy)
-{
-   _EGLContext *ctx = (_EGLContext *) context;
-   if (!_eglCheckContextHandle(context, dpy))
-      ctx = NULL;
-   return ctx;
-}
-
-
-/**
- * Return the handle of a linked context, or EGL_NO_CONTEXT.
- */
-static INLINE EGLContext
-_eglGetContextHandle(_EGLContext *ctx)
-{
-   return (EGLContext) ((ctx && ctx->Display) ? ctx : EGL_NO_CONTEXT);
-}
-
-
-/**
- * Return true if the context is linked to a display.
- */
-static INLINE EGLBoolean
-_eglIsContextLinked(_EGLContext *ctx)
-{
-   return (EGLBoolean) (_eglGetContextHandle(ctx) != EGL_NO_CONTEXT);
-}
-
-
-/**
- * Lookup a handle to find the linked surface.
- * Return NULL if the handle has no corresponding linked surface.
- */
-static INLINE _EGLSurface *
-_eglLookupSurface(EGLSurface surface, _EGLDisplay *dpy)
-{
-   _EGLSurface *surf = (_EGLSurface *) surface;
-   if (!_eglCheckSurfaceHandle(surf, dpy))
-      surf = NULL;
-   return surf;
-}
-
-
-/**
- * Return the handle of a linked surface, or EGL_NO_SURFACE.
- */
-static INLINE EGLSurface
-_eglGetSurfaceHandle(_EGLSurface *surf)
-{
-   return (EGLSurface) ((surf && surf->Display) ? surf : EGL_NO_SURFACE);
-}
-
-
-/**
- * Return true if the surface is linked to a display.
- */
-static INLINE EGLBoolean
-_eglIsSurfaceLinked(_EGLSurface *surf)
-{
-   return (EGLBoolean) (_eglGetSurfaceHandle(surf) != EGL_NO_SURFACE);
-}
-
-
-/**
- * Cast an unsigned int to a pointer.
- */
-static INLINE void *
-_eglUIntToPointer(unsigned int v)
-{
-   return (void *) ((uintptr_t) v);
-}
-
-
-/**
- * Cast a pointer to an unsigned int.  The pointer must be one that is
- * returned by _eglUIntToPointer.
- */
-static INLINE unsigned int
-_eglPointerToUInt(const void *p)
-{
-   return (unsigned int) ((uintptr_t) p);
+   return res->IsLinked;
 }
 
 

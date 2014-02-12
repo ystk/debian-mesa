@@ -27,17 +27,20 @@
 
 #include "main/mtypes.h"
 #include "main/enums.h"
+#include "main/colormac.h"
+#include "main/macros.h"
+#include "main/samplerobj.h"
 
 #include "intel_mipmap_tree.h"
 #include "intel_tex.h"
 
 #include "i830_context.h"
 #include "i830_reg.h"
-
+#include "intel_chipset.h"
 
 
 static GLuint
-translate_texture_format(GLuint mesa_format, GLuint internal_format)
+translate_texture_format(GLuint mesa_format)
 {
    switch (mesa_format) {
    case MESA_FORMAT_L8:
@@ -73,7 +76,8 @@ translate_texture_format(GLuint mesa_format, GLuint internal_format)
    case MESA_FORMAT_RGBA_DXT5:
       return (MAPSURF_COMPRESSED | MT_COMPRESS_DXT4_5);
    default:
-      fprintf(stderr, "%s: bad image format %x\n", __FUNCTION__, mesa_format);
+      fprintf(stderr, "%s: bad image format %s\n", __FUNCTION__,
+	      _mesa_get_format_name(mesa_format));
       abort();
       return 0;
    }
@@ -109,72 +113,51 @@ translate_wrap_mode(GLenum wrap)
  * efficient, but this has gotten complex enough that we need
  * something which is understandable and reliable.
  */
-static GLboolean
+static bool
 i830_update_tex_unit(struct intel_context *intel, GLuint unit, GLuint ss3)
 {
-   GLcontext *ctx = &intel->ctx;
+   struct gl_context *ctx = &intel->ctx;
    struct i830_context *i830 = i830_context(ctx);
    struct gl_texture_unit *tUnit = &ctx->Texture.Unit[unit];
    struct gl_texture_object *tObj = tUnit->_Current;
    struct intel_texture_object *intelObj = intel_texture_object(tObj);
    struct gl_texture_image *firstImage;
+   struct gl_sampler_object *sampler = _mesa_get_samplerobj(ctx, unit);
    GLuint *state = i830->state.Tex[unit], format, pitch;
    GLint lodbias;
    GLubyte border[4];
+   GLuint dst_x, dst_y;
 
-   memset(state, 0, sizeof(state));
+   memset(state, 0, sizeof(*state));
 
    /*We need to refcount these. */
 
    if (i830->state.tex_buffer[unit] != NULL) {
-       dri_bo_unreference(i830->state.tex_buffer[unit]);
+       drm_intel_bo_unreference(i830->state.tex_buffer[unit]);
        i830->state.tex_buffer[unit] = NULL;
    }
 
-   if (!intelObj->imageOverride && !intel_finalize_mipmap_tree(intel, unit))
-      return GL_FALSE;
+   if (!intel_finalize_mipmap_tree(intel, unit))
+      return false;
 
    /* Get first image here, since intelObj->firstLevel will get set in
     * the intel_finalize_mipmap_tree() call above.
     */
-   firstImage = tObj->Image[0][intelObj->firstLevel];
+   firstImage = tObj->Image[0][tObj->BaseLevel];
 
-   if (intelObj->imageOverride) {
-      i830->state.tex_buffer[unit] = NULL;
-      i830->state.tex_offset[unit] = intelObj->textureOffset;
+   intel_miptree_get_image_offset(intelObj->mt, tObj->BaseLevel, 0, 0,
+				  &dst_x, &dst_y);
 
-      switch (intelObj->depthOverride) {
-      case 32:
-	 format = MAPSURF_32BIT | MT_32BIT_ARGB8888;
-	 break;
-      case 24:
-      default:
-	 format = MAPSURF_32BIT | MT_32BIT_XRGB8888;
-	 break;
-      case 16:
-	 format = MAPSURF_16BIT | MT_16BIT_RGB565;
-	 break;
-      }
+   drm_intel_bo_reference(intelObj->mt->region->bo);
+   i830->state.tex_buffer[unit] = intelObj->mt->region->bo;
+   pitch = intelObj->mt->region->pitch * intelObj->mt->cpp;
 
-      pitch = intelObj->pitchOverride;
-   } else {
-      GLuint dst_x, dst_y;
+   /* XXX: This calculation is probably broken for tiled images with
+    * a non-page-aligned offset.
+    */
+   i830->state.tex_offset[unit] = dst_x * intelObj->mt->cpp + dst_y * pitch;
 
-      intel_miptree_get_image_offset(intelObj->mt, intelObj->firstLevel, 0, 0,
-				     &dst_x, &dst_y);
-
-      dri_bo_reference(intelObj->mt->region->buffer);
-      i830->state.tex_buffer[unit] = intelObj->mt->region->buffer;
-      /* XXX: This calculation is probably broken for tiled images with
-       * a non-page-aligned offset.
-       */
-      i830->state.tex_offset[unit] = (dst_x + dst_y * intelObj->mt->pitch) *
-	 intelObj->mt->cpp;
-
-      format = translate_texture_format(firstImage->TexFormat,
-					firstImage->InternalFormat);
-      pitch = intelObj->mt->pitch * intelObj->mt->cpp;
-   }
+   format = translate_texture_format(firstImage->TexFormat);
 
    state[I830_TEXREG_TM0LI] = (_3DSTATE_LOAD_STATE_IMMEDIATE_2 |
                                (LOAD_TEXTURE_MAP0 << unit) | 4);
@@ -209,8 +192,10 @@ i830_update_tex_unit(struct intel_context *intel, GLuint unit, GLuint ss3)
 
    {
       GLuint minFilt, mipFilt, magFilt;
+      float maxlod;
+      uint32_t minlod_fixed, maxlod_fixed;
 
-      switch (tObj->MinFilter) {
+      switch (sampler->MinFilter) {
       case GL_NEAREST:
          minFilt = FILTER_NEAREST;
          mipFilt = MIPFILTER_NONE;
@@ -236,15 +221,15 @@ i830_update_tex_unit(struct intel_context *intel, GLuint unit, GLuint ss3)
          mipFilt = MIPFILTER_LINEAR;
          break;
       default:
-         return GL_FALSE;
+         return false;
       }
 
-      if (tObj->MaxAnisotropy > 1.0) {
+      if (sampler->MaxAnisotropy > 1.0) {
          minFilt = FILTER_ANISOTROPIC;
          magFilt = FILTER_ANISOTROPIC;
       }
       else {
-         switch (tObj->MagFilter) {
+         switch (sampler->MagFilter) {
          case GL_NEAREST:
             magFilt = FILTER_NEAREST;
             break;
@@ -252,11 +237,11 @@ i830_update_tex_unit(struct intel_context *intel, GLuint unit, GLuint ss3)
             magFilt = FILTER_LINEAR;
             break;
          default:
-            return GL_FALSE;
+            return false;
          }
       }
 
-      lodbias = (int) ((tUnit->LodBias + tObj->LodBias) * 16.0);
+      lodbias = (int) ((tUnit->LodBias + sampler->LodBias) * 16.0);
       if (lodbias < -64)
           lodbias = -64;
       if (lodbias > 63)
@@ -272,24 +257,38 @@ i830_update_tex_unit(struct intel_context *intel, GLuint unit, GLuint ss3)
          state[I830_TEXREG_TM0S3] |= SS2_COLORSPACE_CONVERSION;
 #endif
 
-      state[I830_TEXREG_TM0S3] |= ((intelObj->lastLevel -
-                                    intelObj->firstLevel) *
-                                   4) << TM0S3_MIN_MIP_SHIFT;
-
+      /* We get one field with fraction bits for the maximum
+       * addressable (smallest resolution) LOD.  Use it to cover both
+       * MAX_LEVEL and MAX_LOD.
+       */
+      minlod_fixed = U_FIXED(CLAMP(sampler->MinLod, 0.0, 11), 4);
+      maxlod = MIN2(sampler->MaxLod, tObj->_MaxLevel - tObj->BaseLevel);
+      if (intel->intelScreen->deviceID == PCI_CHIP_I855_GM ||
+	  intel->intelScreen->deviceID == PCI_CHIP_I865_G) {
+	 maxlod_fixed = U_FIXED(CLAMP(maxlod, 0.0, 11.75), 2);
+	 maxlod_fixed = MAX2(maxlod_fixed, (minlod_fixed + 3) >> 2);
+	 state[I830_TEXREG_TM0S3] |= maxlod_fixed << TM0S3_MIN_MIP_SHIFT;
+	 state[I830_TEXREG_TM0S2] |= TM0S2_LOD_PRECLAMP;
+      } else {
+	 maxlod_fixed = U_FIXED(CLAMP(maxlod, 0.0, 11), 0);
+	 maxlod_fixed = MAX2(maxlod_fixed, (minlod_fixed + 15) >> 4);
+	 state[I830_TEXREG_TM0S3] |= maxlod_fixed << TM0S3_MIN_MIP_SHIFT_830;
+      }
+      state[I830_TEXREG_TM0S3] |= minlod_fixed << TM0S3_MAX_MIP_SHIFT;
       state[I830_TEXREG_TM0S3] |= ((minFilt << TM0S3_MIN_FILTER_SHIFT) |
                                    (mipFilt << TM0S3_MIP_FILTER_SHIFT) |
                                    (magFilt << TM0S3_MAG_FILTER_SHIFT));
    }
 
    {
-      GLenum ws = tObj->WrapS;
-      GLenum wt = tObj->WrapT;
+      GLenum ws = sampler->WrapS;
+      GLenum wt = sampler->WrapT;
 
 
       /* 3D textures not available on i830
        */
       if (tObj->Target == GL_TEXTURE_3D)
-         return GL_FALSE;
+         return false;
 
       state[I830_TEXREG_MCS] = (_3DSTATE_MAP_COORD_SET_CMD |
                                 MAP_UNIT(unit) |
@@ -303,23 +302,22 @@ i830_update_tex_unit(struct intel_context *intel, GLuint unit, GLuint ss3)
    }
 
    /* convert border color from float to ubyte */
-   CLAMPED_FLOAT_TO_UBYTE(border[0], tObj->BorderColor[0]);
-   CLAMPED_FLOAT_TO_UBYTE(border[1], tObj->BorderColor[1]);
-   CLAMPED_FLOAT_TO_UBYTE(border[2], tObj->BorderColor[2]);
-   CLAMPED_FLOAT_TO_UBYTE(border[3], tObj->BorderColor[3]);
+   CLAMPED_FLOAT_TO_UBYTE(border[0], sampler->BorderColor.f[0]);
+   CLAMPED_FLOAT_TO_UBYTE(border[1], sampler->BorderColor.f[1]);
+   CLAMPED_FLOAT_TO_UBYTE(border[2], sampler->BorderColor.f[2]);
+   CLAMPED_FLOAT_TO_UBYTE(border[3], sampler->BorderColor.f[3]);
 
-   state[I830_TEXREG_TM0S4] = INTEL_PACKCOLOR8888(border[0],
-                                                  border[1],
-                                                  border[2],
-                                                  border[3]);
+   state[I830_TEXREG_TM0S4] = PACK_COLOR_8888(border[3],
+					      border[0],
+					      border[1],
+					      border[2]);
 
-
-   I830_ACTIVESTATE(i830, I830_UPLOAD_TEX(unit), GL_TRUE);
+   I830_ACTIVESTATE(i830, I830_UPLOAD_TEX(unit), true);
    /* memcmp was already disabled, but definitely won't work as the
     * region might now change and that wouldn't be detected:
     */
    I830_STATECHANGE(i830, I830_UPLOAD_TEX(unit));
-   return GL_TRUE;
+   return true;
 }
 
 
@@ -329,7 +327,7 @@ void
 i830UpdateTextureState(struct intel_context *intel)
 {
    struct i830_context *i830 = i830_context(&intel->ctx);
-   GLboolean ok = GL_TRUE;
+   bool ok = true;
    GLuint i;
 
    for (i = 0; i < I830_TEX_UNITS && ok; i++) {
@@ -345,17 +343,17 @@ i830UpdateTextureState(struct intel_context *intel)
       case 0:{
 	 struct i830_context *i830 = i830_context(&intel->ctx);
          if (i830->state.active & I830_UPLOAD_TEX(i)) 
-            I830_ACTIVESTATE(i830, I830_UPLOAD_TEX(i), GL_FALSE);
+            I830_ACTIVESTATE(i830, I830_UPLOAD_TEX(i), false);
 
 	 if (i830->state.tex_buffer[i] != NULL) {
-	    dri_bo_unreference(i830->state.tex_buffer[i]);
+	    drm_intel_bo_unreference(i830->state.tex_buffer[i]);
 	    i830->state.tex_buffer[i] = NULL;
 	 }
          break;
       }
       case TEXTURE_3D_BIT:
       default:
-         ok = GL_FALSE;
+         ok = false;
          break;
       }
    }

@@ -27,19 +27,9 @@
 #ifndef ASM_UTIL_H
 #define ASM_UTIL_H
 
-
-static const char pass_through_depth_asm[] =
-   "FRAG1.1\n"
-   "DCL IN[0], POSITION, LINEAR\n"
-   "DCL OUT[0].z, POSITION, CONSTANT\n"
-   "0: MOV OUT[0].z, IN[0].zzzz\n"
-   "1: END\n";
-
-
-
 /* μnew = μmask */
 static const char set_mask_asm[] =
-   "FRAG1.1\n"
+   "FRAG\n"
    "DCL IN[0], GENERIC[0], PERSPECTIVE\n"
    "DCL SAMP[0], CONSTANT\n"
    "DCL OUT[0], COLOR, CONSTANT\n"
@@ -48,7 +38,7 @@ static const char set_mask_asm[] =
 
 /* μnew = 1 – (1 – μmask)*(1 – μprev) */
 static const char union_mask_asm[] =
-   "FRAG1.1\n"
+   "FRAG\n"
    "DCL IN[0], GENERIC[0], PERSPECTIVE\n"
    "DCL IN[1], POSITION, LINEAR\n"
    "DCL CONST[0], CONSTANT\n"
@@ -65,7 +55,7 @@ static const char union_mask_asm[] =
 
 /* μnew = μmask *μprev */
 static const char intersect_mask_asm[] =
-   "FRAG1.1\n"
+   "FRAG\n"
    "DCL IN[0], GENERIC[0], PERSPECTIVE\n"
    "DCL IN[1], POSITION, LINEAR\n"
    "DCL CONST[0], CONSTANT\n"
@@ -79,7 +69,7 @@ static const char intersect_mask_asm[] =
 
 /* μnew = μprev*(1 – μmask) */
 static const char subtract_mask_asm[] =
-   "FRAG1.1\n"
+   "FRAG\n"
    "DCL IN[0], GENERIC[0], PERSPECTIVE\n"
    "DCL IN[1], POSITION, LINEAR\n"
    "DCL CONST[0], CONSTANT\n"
@@ -90,47 +80,6 @@ static const char subtract_mask_asm[] =
    "1: TEX TEMP[0], IN[1], SAMP[1], 2D\n"/*uprev*/
    "2: SUB TEMP[2], CONST[0], TEMP[1]\n"
    "3: MUL OUT[0], TEMP[2].wwww, TEMP[0].wwww\n"
-   "4: END\n";
-
-
-static const char vs_plain_asm[] =
-   "VERT1.1\n"
-   "DCL IN[0]\n"
-   "DCL OUT[0], POSITION\n"
-   "DCL TEMP[0]\n"
-   "DCL CONST[0..1]\n"
-   "0: MUL TEMP[0], IN[0], CONST[0]\n"
-   "1: ADD TEMP[0], TEMP[0], CONST[1]\n"
-   "2: MOV OUT[0], TEMP[0]\n"
-   "3: END\n";
-
-static const char vs_clear_asm[] =
-   "VERT1.1\n"
-   "DCL IN[0]\n"
-   "DCL IN[1]\n"
-   "DCL OUT[0], POSITION\n"
-   "DCL OUT[1], COLOR\n"
-   "DCL TEMP[0]\n"
-   "DCL CONST[0..1]\n"
-   "0: MUL TEMP[0], IN[0], CONST[0]\n"
-   "1: ADD TEMP[0], TEMP[0], CONST[1]\n"
-   "2: MOV OUT[0], TEMP[0]\n"
-   "3: MOV OUT[1], IN[1]\n"
-   "4: END\n";
-
-
-static const char vs_texture_asm[] =
-   "VERT1.1\n"
-   "DCL IN[0]\n"
-   "DCL IN[1]\n"
-   "DCL OUT[0], POSITION\n"
-   "DCL OUT[1], GENERIC\n"
-   "DCL TEMP[0]\n"
-   "DCL CONST[0..1]\n"
-   "0: MUL TEMP[0], IN[0], CONST[0]\n"
-   "1: ADD TEMP[0], TEMP[0], CONST[1]\n"
-   "2: MOV OUT[0], TEMP[0]\n"
-   "3: MOV OUT[1], IN[1]\n"
    "4: END\n";
 
 #endif

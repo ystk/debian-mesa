@@ -39,31 +39,13 @@
 #define U_DEBUG_H_
 
 
-#include <stdarg.h>
-
-#include "pipe/p_compiler.h"
+#include "os/os_misc.h"
 
 
 #ifdef	__cplusplus
 extern "C" {
 #endif
 
-
-#if defined(DBG) || defined(DEBUG)
-#ifndef DEBUG
-#define DEBUG 1
-#endif
-#else
-#ifndef NDEBUG
-#define NDEBUG 1
-#endif
-#endif
-
-   
-/* MSVC bebore VC7 does not have the __FUNCTION__ macro */
-#if defined(_MSC_VER) && _MSC_VER < 1300
-#define __FUNCTION__ "???"
-#endif
 
 #if defined(__GNUC__)
 #define _util_printf_format(fmt, list) __attribute__ ((format (printf, fmt, list)))
@@ -109,8 +91,11 @@ debug_printf(const char *format, ...)
    (void) format; /* silence warning */
 #endif
 }
+#else /* is Haiku */
+/* Haiku provides debug_printf in libroot with OS.h */
+#include <OS.h>
+#endif
 
-#endif /* !PIPE_OS_HAIKU */
 
 /*
  * ... isn't portable so we need to pass arguments in parentheses.
@@ -155,13 +140,7 @@ void debug_print_format(const char *msg, unsigned fmt );
  * Hard-coded breakpoint.
  */
 #ifdef DEBUG
-#if (defined(PIPE_ARCH_X86) || defined(PIPE_ARCH_X86_64)) && defined(PIPE_CC_GCC)
-#define debug_break() __asm("int3")
-#elif defined(PIPE_CC_MSVC)
-#define debug_break()  __debugbreak()
-#else
-void debug_break(void);
-#endif
+#define debug_break() os_break()
 #else /* !DEBUG */
 #define debug_break() ((void)0)
 #endif /* !DEBUG */
@@ -216,7 +195,7 @@ void _debug_assert_fail(const char *expr,
  */
 #ifdef DEBUG
 #define debug_checkpoint_full() \
-   _debug_printf("%s:%u:%s", __FILE__, __LINE__, __FUNCTION__) 
+   _debug_printf("%s:%u:%s\n", __FILE__, __LINE__, __FUNCTION__)
 #else
 #define debug_checkpoint_full() \
    ((void)0) 
@@ -231,6 +210,25 @@ void _debug_assert_fail(const char *expr,
    _debug_printf("%s:%u:%s: warning: %s\n", __FILE__, __LINE__, __FUNCTION__, __msg)
 #else
 #define debug_warning(__msg) \
+   ((void)0) 
+#endif
+
+
+/**
+ * Emit a warning message, but only once.
+ */
+#ifdef DEBUG
+#define debug_warn_once(__msg) \
+   do { \
+      static bool warned = FALSE; \
+      if (!warned) { \
+         _debug_printf("%s:%u:%s: one time warning: %s\n", \
+                       __FILE__, __LINE__, __FUNCTION__, __msg); \
+         warned = TRUE; \
+      } \
+   } while (0)
+#else
+#define debug_warn_once(__msg) \
    ((void)0) 
 #endif
 
@@ -254,6 +252,7 @@ struct debug_named_value
 {
    const char *name;
    unsigned long value;
+   const char *desc;
 };
 
 
@@ -276,8 +275,9 @@ struct debug_named_value
  *    ...
  * @endcode
  */
-#define DEBUG_NAMED_VALUE(__symbol) {#__symbol, (unsigned long)__symbol} 
-#define DEBUG_NAMED_VALUE_END {NULL, 0} 
+#define DEBUG_NAMED_VALUE(__symbol) DEBUG_NAMED_VALUE_WITH_DESCRIPTION(__symbol, NULL)
+#define DEBUG_NAMED_VALUE_WITH_DESCRIPTION(__symbol, __desc) {#__symbol, (unsigned long)__symbol, __desc}
+#define DEBUG_NAMED_VALUE_END {NULL, 0, NULL}
 
 
 /**
@@ -299,6 +299,43 @@ debug_dump_enum_noprefix(const struct debug_named_value *names,
 const char *
 debug_dump_flags(const struct debug_named_value *names, 
                  unsigned long value);
+
+
+/**
+ * Function enter exit loggers
+ */
+#ifdef DEBUG
+int debug_funclog_enter(const char* f, const int line, const char* file);
+void debug_funclog_exit(const char* f, const int line, const char* file);
+void debug_funclog_enter_exit(const char* f, const int line, const char* file);
+
+#define DEBUG_FUNCLOG_ENTER() \
+   int __debug_decleration_work_around = \
+      debug_funclog_enter(__FUNCTION__, __LINE__, __FILE__)
+#define DEBUG_FUNCLOG_EXIT() \
+   do { \
+      (void)__debug_decleration_work_around; \
+      debug_funclog_exit(__FUNCTION__, __LINE__, __FILE__); \
+      return; \
+   } while(0)
+#define DEBUG_FUNCLOG_EXIT_RET(ret) \
+   do { \
+      (void)__debug_decleration_work_around; \
+      debug_funclog_exit(__FUNCTION__, __LINE__, __FILE__); \
+      return ret; \
+   } while(0)
+#define DEBUG_FUNCLOG_ENTER_EXIT() \
+   debug_funclog_enter_exit(__FUNCTION__, __LINE__, __FILE__)
+
+#else
+#define DEBUG_FUNCLOG_ENTER() \
+   int __debug_decleration_work_around
+#define DEBUG_FUNCLOG_EXIT() \
+   do { (void)__debug_decleration_work_around; return; } while(0)
+#define DEBUG_FUNCLOG_EXIT_RET(ret) \
+   do { (void)__debug_decleration_work_around; return ret; } while(0)
+#define DEBUG_FUNCLOG_ENTER_EXIT()
+#endif
 
 
 /**
@@ -327,22 +364,45 @@ debug_get_flags_option(const char *name,
                        const struct debug_named_value *flags,
                        unsigned long dfault);
 
+#define DEBUG_GET_ONCE_BOOL_OPTION(sufix, name, dfault) \
+static boolean \
+debug_get_option_ ## sufix (void) \
+{ \
+   static boolean first = TRUE; \
+   static boolean value; \
+   if (first) { \
+      first = FALSE; \
+      value = debug_get_bool_option(name, dfault); \
+   } \
+   return value; \
+}
 
-void *
-debug_malloc(const char *file, unsigned line, const char *function,
-             size_t size);
+#define DEBUG_GET_ONCE_NUM_OPTION(sufix, name, dfault) \
+static long \
+debug_get_option_ ## sufix (void) \
+{ \
+   static boolean first = TRUE; \
+   static long value; \
+   if (first) { \
+      first = FALSE; \
+      value = debug_get_num_option(name, dfault); \
+   } \
+   return value; \
+}
 
-void
-debug_free(const char *file, unsigned line, const char *function,
-           void *ptr);
+#define DEBUG_GET_ONCE_FLAGS_OPTION(sufix, name, flags, dfault) \
+static unsigned long \
+debug_get_option_ ## sufix (void) \
+{ \
+   static boolean first = TRUE; \
+   static unsigned long value; \
+   if (first) { \
+      first = FALSE; \
+      value = debug_get_flags_option(name, flags, dfault); \
+   } \
+   return value; \
+}
 
-void *
-debug_calloc(const char *file, unsigned line, const char *function,
-             size_t count, size_t size );
-
-void *
-debug_realloc(const char *file, unsigned line, const char *function,
-              void *old_ptr, size_t old_size, size_t new_size );
 
 unsigned long
 debug_memory_begin(void);
@@ -352,28 +412,37 @@ debug_memory_end(unsigned long beginning);
 
 
 #ifdef DEBUG
+struct pipe_context;
 struct pipe_surface;
 struct pipe_transfer;
+struct pipe_resource;
+
 void debug_dump_image(const char *prefix,
                       unsigned format, unsigned cpp,
                       unsigned width, unsigned height,
                       unsigned stride,
                       const void *data);
-void debug_dump_surface(const char *prefix,
+void debug_dump_surface(struct pipe_context *pipe,
+			const char *prefix,
                         struct pipe_surface *surface);   
-void debug_dump_surface_bmp(const char *filename,
+void debug_dump_texture(struct pipe_context *pipe,
+			const char *prefix,
+                        struct pipe_resource *texture);
+void debug_dump_surface_bmp(struct pipe_context *pipe,
+                            const char *filename,
                             struct pipe_surface *surface);
-void debug_dump_transfer_bmp(const char *filename,
+void debug_dump_transfer_bmp(struct pipe_context *pipe,
+                             const char *filename,
                              struct pipe_transfer *transfer);
 void debug_dump_float_rgba_bmp(const char *filename,
                                unsigned width, unsigned height,
                                float *rgba, unsigned stride);
 #else
 #define debug_dump_image(prefix, format, cpp, width, height, stride, data) ((void)0)
-#define debug_dump_surface(prefix, surface) ((void)0)
-#define debug_dump_surface_bmp(filename, surface) ((void)0)
+#define debug_dump_surface(pipe, prefix, surface) ((void)0)
+#define debug_dump_surface_bmp(pipe, filename, surface) ((void)0)
 #define debug_dump_transfer_bmp(filename, transfer) ((void)0)
-#define debug_dump_rgba_float_bmp(filename, width, height, rgba, stride) ((void)0)
+#define debug_dump_float_rgba_bmp(filename, width, height, rgba, stride) ((void)0)
 #endif
 
 
