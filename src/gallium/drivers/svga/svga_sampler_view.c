@@ -65,7 +65,6 @@ svga_get_tex_sampler_view(struct pipe_context *pipe,
    boolean view = TRUE;
 
    assert(pt);
-   assert(min_lod >= 0);
    assert(min_lod <= max_lod);
    assert(max_lod <= pt->last_level);
 
@@ -104,6 +103,9 @@ svga_get_tex_sampler_view(struct pipe_context *pipe,
    }
 
    sv = CALLOC_STRUCT(svga_sampler_view);
+   if (!sv)
+      return NULL;
+
    pipe_reference_init(&sv->reference, 1);
 
    /* Note: we're not refcounting the texture resource here to avoid
@@ -148,7 +150,6 @@ svga_get_tex_sampler_view(struct pipe_context *pipe,
                                           &sv->key);
 
    if (!sv->handle) {
-      assert(0);
       sv->key.cachable = 0;
       sv->handle = tex->handle;
       debug_reference(&sv->reference,
@@ -172,7 +173,8 @@ svga_validate_sampler_view(struct svga_context *svga, struct svga_sampler_view *
    struct svga_texture *tex = svga_texture(v->texture);
    unsigned numFaces;
    unsigned age = 0;
-   int i, k;
+   int i;
+   unsigned k;
 
    assert(svga);
 
@@ -188,6 +190,7 @@ svga_validate_sampler_view(struct svga_context *svga, struct svga_sampler_view *
 
    for (i = v->min_lod; i <= v->max_lod; i++) {
       for (k = 0; k < numFaces; k++) {
+         assert(i < Elements(tex->view_age));
          if (v->age < tex->view_age[i])
             svga_texture_copy_handle(svga,
                                      tex->handle, 0, 0, 0, i, k,

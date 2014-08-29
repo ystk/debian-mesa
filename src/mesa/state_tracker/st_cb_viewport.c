@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -43,11 +43,12 @@ static INLINE struct st_framebuffer *
 st_ws_framebuffer(struct gl_framebuffer *fb)
 {
    /* FBO cannot be casted.  See st_new_framebuffer */
-   return (struct st_framebuffer *) ((fb && !fb->Name) ? fb : NULL);
+   if (fb && _mesa_is_winsys_fbo(fb))
+      return (struct st_framebuffer *) fb;
+   return NULL;
 }
 
-static void st_viewport(struct gl_context * ctx, GLint x, GLint y,
-                        GLsizei width, GLsizei height)
+static void st_viewport(struct gl_context *ctx)
 {
    struct st_context *st = ctx->st;
    struct st_framebuffer *stdraw;

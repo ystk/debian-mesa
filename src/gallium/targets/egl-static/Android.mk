@@ -39,15 +39,14 @@ LOCAL_C_INCLUDES := \
 	$(GALLIUM_TOP)/state_trackers/vega \
 	$(GALLIUM_TOP)/state_trackers/egl \
 	$(MESA_TOP)/src/egl/main \
+	$(MESA_TOP)/src/loader \
 	$(MESA_TOP)/src/mesa
 
 # swrast
 LOCAL_CFLAGS += -DGALLIUM_SOFTPIPE
 
-# swrast only
-ifeq ($(MESA_GPU_DRIVERS),swrast)
-LOCAL_CFLAGS += -D_EGL_NO_DRM
-else
+# !swrast only
+ifneq ($(MESA_GPU_DRIVERS),swrast)
 LOCAL_C_INCLUDES += \
 	$(DRM_TOP)/include/drm \
 	$(DRM_TOP)
@@ -55,6 +54,9 @@ endif
 
 ifneq ($(filter i915g, $(MESA_GPU_DRIVERS)),)
 LOCAL_CFLAGS += -D_EGL_PIPE_I915=1
+endif
+ifneq ($(filter ilo, $(MESA_GPU_DRIVERS)),)
+LOCAL_CFLAGS += -D_EGL_PIPE_ILO=1
 endif
 ifneq ($(filter nouveau, $(MESA_GPU_DRIVERS)),)
 LOCAL_CFLAGS += -D_EGL_PIPE_NOUVEAU=1
@@ -64,6 +66,9 @@ LOCAL_CFLAGS += -D_EGL_PIPE_R300=1
 endif
 ifneq ($(filter r600g, $(MESA_GPU_DRIVERS)),)
 LOCAL_CFLAGS += -D_EGL_PIPE_R600=1
+endif
+ifneq ($(filter radeonsi, $(MESA_GPU_DRIVERS)),)
+LOCAL_CFLAGS += -D_EGL_PIPE_RADEONSI=1
 endif
 ifneq ($(filter vmwgfx, $(MESA_GPU_DRIVERS)),)
 LOCAL_CFLAGS += -D_EGL_PIPE_VMWGFX=1

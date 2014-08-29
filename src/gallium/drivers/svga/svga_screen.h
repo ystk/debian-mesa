@@ -30,8 +30,6 @@
 #include "pipe/p_screen.h"
 #include "os/os_thread.h"
 
-#include "util/u_double_list.h"
-
 #include "svga_screen_cache.h"
 
 
@@ -48,6 +46,12 @@ struct svga_screen
    struct svga_winsys_screen *sws;
 
    SVGA3dHardwareVersion hw_version;
+
+   /** Device caps */
+   boolean haveLineStipple, haveLineSmooth;
+   float maxLineWidth, maxLineWidthAA;
+   float maxPointSize;
+   unsigned max_color_buffers;
 
    struct {
       boolean force_level_surface_view;
@@ -71,6 +75,9 @@ struct svga_screen
    } depth;
 
    struct svga_host_surface_cache cache;
+
+   /** Memory used by all resources (buffers and surfaces) */
+   uint64_t total_resource_bytes;
 };
 
 #ifndef DEBUG

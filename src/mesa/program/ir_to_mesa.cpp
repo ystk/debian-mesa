@@ -33,7 +33,6 @@
 #include "main/compiler.h"
 #include "ir.h"
 #include "ir_visitor.h"
-#include "ir_print_visitor.h"
 #include "ir_expression_flattening.h"
 #include "ir_uniform.h"
 #include "glsl_types.h"
@@ -45,11 +44,11 @@
 
 #include "main/mtypes.h"
 #include "main/shaderobj.h"
+#include "main/uniforms.h"
 #include "program/hash_table.h"
 
 extern "C" {
 #include "main/shaderapi.h"
-#include "main/uniforms.h"
 #include "program/prog_instruction.h"
 #include "program/prog_optimize.h"
 #include "program/prog_print.h"
@@ -58,10 +57,12 @@ extern "C" {
 #include "program/sampler.h"
 }
 
+static int swizzle_for_size(int size);
+
+namespace {
+
 class src_reg;
 class dst_reg;
-
-static int swizzle_for_size(int size);
 
 /**
  * This struct is a corresponding struct to Mesa prog_src_register, with
@@ -93,7 +94,7 @@ public:
    explicit src_reg(dst_reg reg);
 
    gl_register_file file; /**< PROGRAM_* from Mesa */
-   int index; /**< temporary index, VERT_ATTRIB_*, FRAG_ATTRIB_*, etc. */
+   int index; /**< temporary index, VERT_ATTRIB_*, VARYING_SLOT_*, etc. */
    GLuint swizzle; /**< SWIZZLE_XYZWONEZERO swizzles from Mesa. */
    int negate; /**< NEGATE_XYZW mask from mesa */
    /** Register index should be offset by the integer in this reg. */
@@ -123,12 +124,14 @@ public:
    explicit dst_reg(src_reg reg);
 
    gl_register_file file; /**< PROGRAM_* from Mesa */
-   int index; /**< temporary index, VERT_ATTRIB_*, FRAG_ATTRIB_*, etc. */
+   int index; /**< temporary index, VERT_ATTRIB_*, VARYING_SLOT_*, etc. */
    int writemask; /**< Bitfield of WRITEMASK_[XYZW] */
    GLuint cond_mask:4;
    /** Register index should be offset by the integer in this reg. */
    src_reg *reladdr;
 };
+
+} /* anonymous namespace */
 
 src_reg::src_reg(dst_reg reg)
 {
@@ -148,19 +151,11 @@ dst_reg::dst_reg(src_reg reg)
    this->reladdr = reg.reladdr;
 }
 
+namespace {
+
 class ir_to_mesa_instruction : public exec_node {
 public:
-   /* Callers of this ralloc-based new need not call delete. It's
-    * easier to just ralloc_free 'ctx' (or any of its ancestors). */
-   static void* operator new(size_t size, void *ctx)
-   {
-      void *node;
-
-      node = rzalloc_size(ctx, size);
-      assert(node != NULL);
-
-      return node;
-   }
+   DECLARE_RALLOC_CXX_OPERATORS(ir_to_mesa_instruction)
 
    enum prog_opcode op;
    dst_reg dst;
@@ -172,8 +167,6 @@ public:
    int sampler; /**< sampler index */
    int tex_target; /**< One of TEXTURE_*_INDEX */
    GLboolean tex_shadow;
-
-   class function_entry *function; /* Set on OPCODE_CAL or OPCODE_BGNSUB */
 };
 
 class variable_storage : public exec_node {
@@ -236,9 +229,7 @@ public:
 
    int next_temp;
 
-   variable_storage *find_variable_storage(ir_variable *var);
-
-   function_entry *get_function_signature(ir_function_signature *sig);
+   variable_storage *find_variable_storage(const ir_variable *var);
 
    src_reg get_temp(const glsl_type *type);
    void reladdr_to_temp(ir_instruction *ir, src_reg *reg, int *num_reladdr);
@@ -270,6 +261,8 @@ public:
    virtual void visit(ir_discard *);
    virtual void visit(ir_texture *);
    virtual void visit(ir_if *);
+   virtual void visit(ir_emit_vertex *);
+   virtual void visit(ir_end_primitive *);
    /*@}*/
 
    src_reg result;
@@ -329,16 +322,18 @@ public:
    void *mem_ctx;
 };
 
-src_reg undef_src = src_reg(PROGRAM_UNDEFINED, 0, NULL);
+} /* anonymous namespace */
 
-dst_reg undef_dst = dst_reg(PROGRAM_UNDEFINED, SWIZZLE_NOOP);
+static src_reg undef_src = src_reg(PROGRAM_UNDEFINED, 0, NULL);
 
-dst_reg address_reg = dst_reg(PROGRAM_ADDRESS, WRITEMASK_X);
+static dst_reg undef_dst = dst_reg(PROGRAM_UNDEFINED, SWIZZLE_NOOP);
+
+static dst_reg address_reg = dst_reg(PROGRAM_ADDRESS, WRITEMASK_X);
 
 static int
 swizzle_for_size(int size)
 {
-   int size_swizzles[4] = {
+   static const int size_swizzles[4] = {
       MAKE_SWIZZLE4(SWIZZLE_X, SWIZZLE_X, SWIZZLE_X, SWIZZLE_X),
       MAKE_SWIZZLE4(SWIZZLE_X, SWIZZLE_Y, SWIZZLE_Y, SWIZZLE_Y),
       MAKE_SWIZZLE4(SWIZZLE_X, SWIZZLE_Y, SWIZZLE_Z, SWIZZLE_Z),
@@ -382,8 +377,6 @@ ir_to_mesa_visitor::emit(ir_instruction *ir, enum prog_opcode op,
    inst->src[1] = src1;
    inst->src[2] = src2;
    inst->ir = ir;
-
-   inst->function = NULL;
 
    this->instructions.push_tail(inst);
 
@@ -625,14 +618,20 @@ type_size(const struct glsl_type *type)
       }
       return size;
    case GLSL_TYPE_SAMPLER:
+   case GLSL_TYPE_IMAGE:
       /* Samplers take up one slot in UNIFORMS[], but they're baked in
        * at link time.
        */
       return 1;
-   default:
-      assert(0);
-      return 0;
+   case GLSL_TYPE_ATOMIC_UINT:
+   case GLSL_TYPE_VOID:
+   case GLSL_TYPE_ERROR:
+   case GLSL_TYPE_INTERFACE:
+      assert(!"Invalid type in type_size");
+      break;
    }
+
+   return 0;
 }
 
 /**
@@ -662,13 +661,12 @@ ir_to_mesa_visitor::get_temp(const glsl_type *type)
 }
 
 variable_storage *
-ir_to_mesa_visitor::find_variable_storage(ir_variable *var)
+ir_to_mesa_visitor::find_variable_storage(const ir_variable *var)
 {
-   
    variable_storage *entry;
 
-   foreach_iter(exec_list_iterator, iter, this->variables) {
-      entry = (variable_storage *)iter.get();
+   foreach_list(node, &this->variables) {
+      entry = (variable_storage *) node;
 
       if (entry->var == var)
 	 return entry;
@@ -683,11 +681,11 @@ ir_to_mesa_visitor::visit(ir_variable *ir)
    if (strcmp(ir->name, "gl_FragCoord") == 0) {
       struct gl_fragment_program *fp = (struct gl_fragment_program *)this->prog;
 
-      fp->OriginUpperLeft = ir->origin_upper_left;
-      fp->PixelCenterInteger = ir->pixel_center_integer;
+      fp->OriginUpperLeft = ir->data.origin_upper_left;
+      fp->PixelCenterInteger = ir->data.pixel_center_integer;
    }
 
-   if (ir->mode == ir_var_uniform && strncmp(ir->name, "gl_", 3) == 0) {
+   if (ir->data.mode == ir_var_uniform && strncmp(ir->name, "gl_", 3) == 0) {
       unsigned int i;
       const ir_state_slot *const slots = ir->state_slots;
       assert(ir->state_slots != NULL);
@@ -761,48 +759,9 @@ ir_to_mesa_visitor::visit(ir_variable *ir)
 void
 ir_to_mesa_visitor::visit(ir_loop *ir)
 {
-   ir_dereference_variable *counter = NULL;
-
-   if (ir->counter != NULL)
-      counter = new(mem_ctx) ir_dereference_variable(ir->counter);
-
-   if (ir->from != NULL) {
-      assert(ir->counter != NULL);
-
-      ir_assignment *a =
-	new(mem_ctx) ir_assignment(counter, ir->from, NULL);
-
-      a->accept(this);
-   }
-
    emit(NULL, OPCODE_BGNLOOP);
 
-   if (ir->to) {
-      ir_expression *e =
-	 new(mem_ctx) ir_expression(ir->cmp, glsl_type::bool_type,
-					  counter, ir->to);
-      ir_if *if_stmt =  new(mem_ctx) ir_if(e);
-
-      ir_loop_jump *brk =
-	new(mem_ctx) ir_loop_jump(ir_loop_jump::jump_break);
-
-      if_stmt->then_instructions.push_tail(brk);
-
-      if_stmt->accept(this);
-   }
-
    visit_exec_list(&ir->body_instructions, this);
-
-   if (ir->increment) {
-      ir_expression *e =
-	 new(mem_ctx) ir_expression(ir_binop_add, counter->type,
-					  counter, ir->increment);
-
-      ir_assignment *a =
-	new(mem_ctx) ir_assignment(counter, e, NULL);
-
-      a->accept(this);
-   }
 
    emit(NULL, OPCODE_ENDLOOP);
 }
@@ -838,12 +797,12 @@ ir_to_mesa_visitor::visit(ir_function *ir)
       const ir_function_signature *sig;
       exec_list empty;
 
-      sig = ir->matching_signature(&empty);
+      sig = ir->matching_signature(NULL, &empty);
 
       assert(sig);
 
-      foreach_iter(exec_list_iterator, iter, sig->body) {
-	 ir_instruction *ir = (ir_instruction *)iter.get();
+      foreach_list(node, &sig->body) {
+	 ir_instruction *ir = (ir_instruction *) node;
 
 	 ir->accept(this);
       }
@@ -1059,9 +1018,9 @@ ir_to_mesa_visitor::emit_swz(ir_expression *ir)
    this->result.file = PROGRAM_UNDEFINED;
    deref->accept(this);
    if (this->result.file == PROGRAM_UNDEFINED) {
-      ir_print_visitor v;
       printf("Failed to get tree for expression operand:\n");
-      deref->accept(&v);
+      deref->print();
+      printf("\n");
       exit(1);
    }
 
@@ -1131,9 +1090,9 @@ ir_to_mesa_visitor::visit(ir_expression *ir)
       this->result.file = PROGRAM_UNDEFINED;
       ir->operands[operand]->accept(this);
       if (this->result.file == PROGRAM_UNDEFINED) {
-	 ir_print_visitor v;
 	 printf("Failed to get tree for expression operand:\n");
-	 ir->operands[operand]->accept(&v);
+         ir->operands[operand]->print();
+         printf("\n");
 	 exit(1);
       }
       op[operand] = this->result;
@@ -1406,12 +1365,18 @@ ir_to_mesa_visitor::visit(ir_expression *ir)
       result_src = op[0];
       break;
    case ir_unop_f2i:
+   case ir_unop_f2u:
       emit(ir, OPCODE_TRUNC, result_dst, op[0]);
       break;
    case ir_unop_f2b:
    case ir_unop_i2b:
       emit(ir, OPCODE_SNE, result_dst,
 			  op[0], src_reg_for_float(0.0));
+      break;
+   case ir_unop_bitcast_f2i: // Ignore these 4, they can't happen here anyway
+   case ir_unop_bitcast_f2u:
+   case ir_unop_bitcast_i2f:
+   case ir_unop_bitcast_u2f:
       break;
    case ir_unop_trunc:
       emit(ir, OPCODE_TRUNC, result_dst, op[0]);
@@ -1427,7 +1392,25 @@ ir_to_mesa_visitor::visit(ir_expression *ir)
    case ir_unop_fract:
       emit(ir, OPCODE_FRC, result_dst, op[0]);
       break;
-
+   case ir_unop_pack_snorm_2x16:
+   case ir_unop_pack_snorm_4x8:
+   case ir_unop_pack_unorm_2x16:
+   case ir_unop_pack_unorm_4x8:
+   case ir_unop_pack_half_2x16:
+   case ir_unop_unpack_snorm_2x16:
+   case ir_unop_unpack_snorm_4x8:
+   case ir_unop_unpack_unorm_2x16:
+   case ir_unop_unpack_unorm_4x8:
+   case ir_unop_unpack_half_2x16:
+   case ir_unop_unpack_half_2x16_split_x:
+   case ir_unop_unpack_half_2x16_split_y:
+   case ir_binop_pack_half_2x16_split:
+   case ir_unop_bitfield_reverse:
+   case ir_unop_bit_count:
+   case ir_unop_find_msb:
+   case ir_unop_find_lsb:
+      assert(!"not supported");
+      break;
    case ir_binop_min:
       emit(ir, OPCODE_MIN, result_dst, op[0], op[1]);
       break;
@@ -1454,6 +1437,32 @@ ir_to_mesa_visitor::visit(ir_expression *ir)
    case ir_unop_bit_not:
    case ir_unop_round_even:
       emit(ir, OPCODE_MOV, result_dst, op[0]);
+      break;
+
+   case ir_binop_ubo_load:
+      assert(!"not supported");
+      break;
+
+   case ir_triop_lrp:
+      /* ir_triop_lrp operands are (x, y, a) while
+       * OPCODE_LRP operands are (a, y, x) to match ARB_fragment_program.
+       */
+      emit(ir, OPCODE_LRP, result_dst, op[2], op[1], op[0]);
+      break;
+
+   case ir_binop_vector_extract:
+   case ir_binop_bfm:
+   case ir_triop_fma:
+   case ir_triop_bfi:
+   case ir_triop_bitfield_extract:
+   case ir_triop_vector_insert:
+   case ir_quadop_bitfield_insert:
+   case ir_binop_ldexp:
+   case ir_triop_csel:
+   case ir_binop_carry:
+   case ir_binop_borrow:
+   case ir_binop_imul_high:
+      assert(!"not supported");
       break;
 
    case ir_quadop_vector:
@@ -1519,36 +1528,33 @@ ir_to_mesa_visitor::visit(ir_dereference_variable *ir)
    ir_variable *var = ir->var;
 
    if (!entry) {
-      switch (var->mode) {
+      switch (var->data.mode) {
       case ir_var_uniform:
 	 entry = new(mem_ctx) variable_storage(var, PROGRAM_UNIFORM,
-					       var->location);
+					       var->data.location);
 	 this->variables.push_tail(entry);
 	 break;
-      case ir_var_in:
-      case ir_var_inout:
+      case ir_var_shader_in:
 	 /* The linker assigns locations for varyings and attributes,
 	  * including deprecated builtins (like gl_Color),
 	  * user-assigned generic attributes (glBindVertexLocation),
 	  * and user-defined varyings.
-	  *
-	  * FINISHME: We would hit this path for function arguments.  Fix!
 	  */
-	 assert(var->location != -1);
+	 assert(var->data.location != -1);
          entry = new(mem_ctx) variable_storage(var,
                                                PROGRAM_INPUT,
-                                               var->location);
+                                               var->data.location);
          break;
-      case ir_var_out:
-	 assert(var->location != -1);
+      case ir_var_shader_out:
+	 assert(var->data.location != -1);
          entry = new(mem_ctx) variable_storage(var,
                                                PROGRAM_OUTPUT,
-                                               var->location);
+                                               var->data.location);
 	 break;
       case ir_var_system_value:
          entry = new(mem_ctx) variable_storage(var,
                                                PROGRAM_SYSTEM_VALUE,
-                                               var->location);
+                                               var->data.location);
          break;
       case ir_var_auto:
       case ir_var_temporary:
@@ -1862,8 +1868,8 @@ ir_to_mesa_visitor::visit(ir_constant *ir)
       src_reg temp_base = get_temp(ir->type);
       dst_reg temp = dst_reg(temp_base);
 
-      foreach_iter(exec_list_iterator, iter, ir->components) {
-	 ir_constant *field_value = (ir_constant *)iter.get();
+      foreach_list(node, &ir->components) {
+	 ir_constant *field_value = (ir_constant *) node;
 	 int size = type_size(field_value->type);
 
 	 assert(size > 0);
@@ -1956,126 +1962,10 @@ ir_to_mesa_visitor::visit(ir_constant *ir)
 						   &this->result.swizzle);
 }
 
-function_entry *
-ir_to_mesa_visitor::get_function_signature(ir_function_signature *sig)
-{
-   function_entry *entry;
-
-   foreach_iter(exec_list_iterator, iter, this->function_signatures) {
-      entry = (function_entry *)iter.get();
-
-      if (entry->sig == sig)
-	 return entry;
-   }
-
-   entry = ralloc(mem_ctx, function_entry);
-   entry->sig = sig;
-   entry->sig_id = this->next_signature_id++;
-   entry->bgn_inst = NULL;
-
-   /* Allocate storage for all the parameters. */
-   foreach_iter(exec_list_iterator, iter, sig->parameters) {
-      ir_variable *param = (ir_variable *)iter.get();
-      variable_storage *storage;
-
-      storage = find_variable_storage(param);
-      assert(!storage);
-
-      storage = new(mem_ctx) variable_storage(param, PROGRAM_TEMPORARY,
-					      this->next_temp);
-      this->variables.push_tail(storage);
-
-      this->next_temp += type_size(param->type);
-   }
-
-   if (!sig->return_type->is_void()) {
-      entry->return_reg = get_temp(sig->return_type);
-   } else {
-      entry->return_reg = undef_src;
-   }
-
-   this->function_signatures.push_tail(entry);
-   return entry;
-}
-
 void
-ir_to_mesa_visitor::visit(ir_call *ir)
+ir_to_mesa_visitor::visit(ir_call *)
 {
-   ir_to_mesa_instruction *call_inst;
-   ir_function_signature *sig = ir->get_callee();
-   function_entry *entry = get_function_signature(sig);
-   int i;
-
-   /* Process in parameters. */
-   exec_list_iterator sig_iter = sig->parameters.iterator();
-   foreach_iter(exec_list_iterator, iter, *ir) {
-      ir_rvalue *param_rval = (ir_rvalue *)iter.get();
-      ir_variable *param = (ir_variable *)sig_iter.get();
-
-      if (param->mode == ir_var_in ||
-	  param->mode == ir_var_inout) {
-	 variable_storage *storage = find_variable_storage(param);
-	 assert(storage);
-
-	 param_rval->accept(this);
-	 src_reg r = this->result;
-
-	 dst_reg l;
-	 l.file = storage->file;
-	 l.index = storage->index;
-	 l.reladdr = NULL;
-	 l.writemask = WRITEMASK_XYZW;
-	 l.cond_mask = COND_TR;
-
-	 for (i = 0; i < type_size(param->type); i++) {
-	    emit(ir, OPCODE_MOV, l, r);
-	    l.index++;
-	    r.index++;
-	 }
-      }
-
-      sig_iter.next();
-   }
-   assert(!sig_iter.has_next());
-
-   /* Emit call instruction */
-   call_inst = emit(ir, OPCODE_CAL);
-   call_inst->function = entry;
-
-   /* Process out parameters. */
-   sig_iter = sig->parameters.iterator();
-   foreach_iter(exec_list_iterator, iter, *ir) {
-      ir_rvalue *param_rval = (ir_rvalue *)iter.get();
-      ir_variable *param = (ir_variable *)sig_iter.get();
-
-      if (param->mode == ir_var_out ||
-	  param->mode == ir_var_inout) {
-	 variable_storage *storage = find_variable_storage(param);
-	 assert(storage);
-
-	 src_reg r;
-	 r.file = storage->file;
-	 r.index = storage->index;
-	 r.reladdr = NULL;
-	 r.swizzle = SWIZZLE_NOOP;
-	 r.negate = 0;
-
-	 param_rval->accept(this);
-	 dst_reg l = dst_reg(this->result);
-
-	 for (i = 0; i < type_size(param->type); i++) {
-	    emit(ir, OPCODE_MOV, l, r);
-	    l.index++;
-	    r.index++;
-	 }
-      }
-
-      sig_iter.next();
-   }
-   assert(!sig_iter.has_next());
-
-   /* Process return value. */
-   this->result = entry->return_reg;
+   assert(!"ir_to_mesa: All function calls should have been inlined by now.");
 }
 
 void
@@ -2134,6 +2024,18 @@ ir_to_mesa_visitor::visit(ir_texture *ir)
       dx = this->result;
       ir->lod_info.grad.dPdy->accept(this);
       dy = this->result;
+      break;
+   case ir_txf_ms:
+      assert(!"Unexpected ir_txf_ms opcode");
+      break;
+   case ir_lod:
+      assert(!"Unexpected ir_lod opcode");
+      break;
+   case ir_tg4:
+      assert(!"Unexpected ir_tg4 opcode");
+      break;
+   case ir_query_levels:
+      assert(!"Unexpected ir_query_levels opcode");
       break;
    }
 
@@ -2263,32 +2165,16 @@ ir_to_mesa_visitor::visit(ir_texture *ir)
 void
 ir_to_mesa_visitor::visit(ir_return *ir)
 {
-   if (ir->get_value()) {
-      dst_reg l;
-      int i;
-
-      assert(current_function);
-
-      ir->get_value()->accept(this);
-      src_reg r = this->result;
-
-      l = dst_reg(current_function->return_reg);
-
-      for (i = 0; i < type_size(current_function->sig->return_type); i++) {
-	 emit(ir, OPCODE_MOV, l, r);
-	 l.index++;
-	 r.index++;
-      }
-   }
-
+   /* Non-void functions should have been inlined.  We may still emit RETs
+    * from main() unless the EmitNoMainReturn option is set.
+    */
+   assert(!ir->get_value());
    emit(ir, OPCODE_RET);
 }
 
 void
 ir_to_mesa_visitor::visit(ir_discard *ir)
 {
-   struct gl_fragment_program *fp = (struct gl_fragment_program *)this->prog;
-
    if (ir->condition) {
       ir->condition->accept(this);
       this->result.negate = ~this->result.negate;
@@ -2296,8 +2182,6 @@ ir_to_mesa_visitor::visit(ir_discard *ir)
    } else {
       emit(ir, OPCODE_KIL_NV);
    }
-
-   fp->UsesKill = GL_TRUE;
 }
 
 void
@@ -2339,7 +2223,19 @@ ir_to_mesa_visitor::visit(ir_if *ir)
       visit_exec_list(&ir->else_instructions, this);
    }
 
-   if_inst = emit(ir->condition, OPCODE_ENDIF);
+   emit(ir->condition, OPCODE_ENDIF);
+}
+
+void
+ir_to_mesa_visitor::visit(ir_emit_vertex *)
+{
+   assert(!"Geometry shaders not supported.");
+}
+
+void
+ir_to_mesa_visitor::visit(ir_end_primitive *)
+{
+   assert(!"Geometry shaders not supported.");
 }
 
 ir_to_mesa_visitor::ir_to_mesa_visitor()
@@ -2442,8 +2338,8 @@ set_branchtargets(ir_to_mesa_visitor *v,
 	 mesa_instructions[loop_stack[loop_stack_pos]].BranchTarget = i;
 	 break;
       case OPCODE_CAL:
-	 foreach_iter(exec_list_iterator, iter, v->function_signatures) {
-	    function_entry *entry = (function_entry *)iter.get();
+	 foreach_list(n, &v->function_signatures) {
+	    function_entry *entry = (function_entry *) n;
 
 	    if (entry->sig_id == mesa_instructions[i].BranchTarget) {
 	       mesa_instructions[i].BranchTarget = entry->inst;
@@ -2490,11 +2386,15 @@ print_program(struct prog_instruction *mesa_instructions,
    }
 }
 
-class add_uniform_to_shader : public uniform_field_visitor {
+namespace {
+
+class add_uniform_to_shader : public program_resource_visitor {
 public:
    add_uniform_to_shader(struct gl_shader_program *shader_program,
-			 struct gl_program_parameter_list *params)
-      : shader_program(shader_program), params(params), idx(-1)
+			 struct gl_program_parameter_list *params,
+                         gl_shader_stage shader_type)
+      : shader_program(shader_program), params(params), idx(-1),
+        shader_type(shader_type)
    {
       /* empty */
    }
@@ -2502,23 +2402,30 @@ public:
    void process(ir_variable *var)
    {
       this->idx = -1;
-      this->uniform_field_visitor::process(var);
+      this->program_resource_visitor::process(var);
 
-      var->location = this->idx;
+      var->data.location = this->idx;
    }
 
 private:
-   virtual void visit_field(const glsl_type *type, const char *name);
+   virtual void visit_field(const glsl_type *type, const char *name,
+                            bool row_major);
 
    struct gl_shader_program *shader_program;
    struct gl_program_parameter_list *params;
    int idx;
+   gl_shader_stage shader_type;
 };
 
+} /* anonymous namespace */
+
 void
-add_uniform_to_shader::visit_field(const glsl_type *type, const char *name)
+add_uniform_to_shader::visit_field(const glsl_type *type, const char *name,
+                                   bool row_major)
 {
    unsigned int size;
+
+   (void) row_major;
 
    if (type->is_vector() || type->is_scalar()) {
       size = type->vector_elements;
@@ -2537,7 +2444,7 @@ add_uniform_to_shader::visit_field(const glsl_type *type, const char *name)
    int index = _mesa_lookup_parameter_index(params, -1, name);
    if (index < 0) {
       index = _mesa_add_parameter(params, file, name, size, type->gl_type,
-				  NULL, NULL, 0x0);
+				  NULL, NULL);
 
       /* Sampler uniform values are stored in prog->SamplerUnits,
        * and the entry in that array is selected by this index we
@@ -2556,8 +2463,11 @@ add_uniform_to_shader::visit_field(const glsl_type *type, const char *name)
 	 struct gl_uniform_storage *storage =
 	    &this->shader_program->UniformStorage[location];
 
+         assert(storage->sampler[shader_type].active);
+
 	 for (unsigned int j = 0; j < size / 4; j++)
-	    params->ParameterValues[index + j][0].f = storage->sampler + j;
+            params->ParameterValues[index + j][0].f =
+               storage->sampler[shader_type].index + j;
       }
    }
 
@@ -2583,13 +2493,13 @@ _mesa_generate_parameters_list_for_uniforms(struct gl_shader_program
 					    struct gl_program_parameter_list
 					    *params)
 {
-   add_uniform_to_shader add(shader_program, params);
+   add_uniform_to_shader add(shader_program, params, sh->Stage);
 
    foreach_list(node, sh->ir) {
       ir_variable *var = ((ir_instruction *) node)->as_variable();
 
-      if ((var == NULL) || (var->mode != ir_var_uniform)
-	  || (strncmp(var->name, "gl_", 3) == 0))
+      if ((var == NULL) || (var->data.mode != ir_var_uniform)
+	  || var->is_in_uniform_block() || (strncmp(var->name, "gl_", 3) == 0))
 	 continue;
 
       add.process(var);
@@ -2649,10 +2559,16 @@ _mesa_associate_uniform_storage(struct gl_context *ctx,
 	    columns = 1;
 	    break;
 	 case GLSL_TYPE_SAMPLER:
+	 case GLSL_TYPE_IMAGE:
 	    format = uniform_native;
 	    columns = 1;
 	    break;
-	 default:
+         case GLSL_TYPE_ATOMIC_UINT:
+         case GLSL_TYPE_ARRAY:
+         case GLSL_TYPE_VOID:
+         case GLSL_TYPE_STRUCT:
+         case GLSL_TYPE_ERROR:
+         case GLSL_TYPE_INTERFACE:
 	    assert(!"Should not get here.");
 	    break;
 	 }
@@ -2662,109 +2578,18 @@ _mesa_associate_uniform_storage(struct gl_context *ctx,
 					     4 * sizeof(float),
 					     format,
 					     &params->ParameterValues[i]);
+
+	 /* After attaching the driver's storage to the uniform, propagate any
+	  * data from the linker's backing store.  This will cause values from
+	  * initializers in the source code to be copied over.
+	  */
+	 _mesa_propagate_uniforms_to_driver_storage(storage,
+						    0,
+						    MAX2(1, storage->array_elements));
+
 	 last_location = location;
       }
    }
-}
-
-static void
-set_uniform_initializer(struct gl_context *ctx, void *mem_ctx,
-			struct gl_shader_program *shader_program,
-			const char *name, const glsl_type *type,
-			ir_constant *val)
-{
-   if (type->is_record()) {
-      ir_constant *field_constant;
-
-      field_constant = (ir_constant *)val->components.get_head();
-
-      for (unsigned int i = 0; i < type->length; i++) {
-	 const glsl_type *field_type = type->fields.structure[i].type;
-	 const char *field_name = ralloc_asprintf(mem_ctx, "%s.%s", name,
-					    type->fields.structure[i].name);
-	 set_uniform_initializer(ctx, mem_ctx, shader_program, field_name,
-				 field_type, field_constant);
-	 field_constant = (ir_constant *)field_constant->next;
-      }
-      return;
-   }
-
-   int loc = _mesa_get_uniform_location(ctx, shader_program, name);
-
-   if (loc == -1) {
-      linker_error(shader_program,
-		   "Couldn't find uniform for initializer %s\n", name);
-      return;
-   }
-
-   for (unsigned int i = 0; i < (type->is_array() ? type->length : 1); i++) {
-      ir_constant *element;
-      const glsl_type *element_type;
-      if (type->is_array()) {
-	 element = val->array_elements[i];
-	 element_type = type->fields.array;
-      } else {
-	 element = val;
-	 element_type = type;
-      }
-
-      void *values;
-
-      if (element_type->base_type == GLSL_TYPE_BOOL) {
-	 int *conv = ralloc_array(mem_ctx, int, element_type->components());
-	 for (unsigned int j = 0; j < element_type->components(); j++) {
-	    conv[j] = element->value.b[j];
-	 }
-	 values = (void *)conv;
-	 element_type = glsl_type::get_instance(GLSL_TYPE_INT,
-						element_type->vector_elements,
-						1);
-      } else {
-	 values = &element->value;
-      }
-
-      if (element_type->is_matrix()) {
-	 _mesa_uniform_matrix(ctx, shader_program,
-			      element_type->matrix_columns,
-			      element_type->vector_elements,
-			      loc, 1, GL_FALSE, (GLfloat *)values);
-      } else {
-	 _mesa_uniform(ctx, shader_program, loc, element_type->matrix_columns,
-		       values, element_type->gl_type);
-      }
-
-      loc++;
-   }
-}
-
-static void
-set_uniform_initializers(struct gl_context *ctx,
-			 struct gl_shader_program *shader_program)
-{
-   void *mem_ctx = NULL;
-
-   for (unsigned int i = 0; i < MESA_SHADER_TYPES; i++) {
-      struct gl_shader *shader = shader_program->_LinkedShaders[i];
-
-      if (shader == NULL)
-	 continue;
-
-      foreach_iter(exec_list_iterator, iter, *shader->ir) {
-	 ir_instruction *ir = (ir_instruction *)iter.get();
-	 ir_variable *var = ir->as_variable();
-
-	 if (!var || var->mode != ir_var_uniform || !var->constant_value)
-	    continue;
-
-	 if (!mem_ctx)
-	    mem_ctx = ralloc_context(NULL);
-
-	 set_uniform_initializer(ctx, mem_ctx, shader_program, var->name,
-				 var->type, var->constant_value);
-      }
-   }
-
-   ralloc_free(mem_ctx);
 }
 
 /*
@@ -2796,8 +2621,8 @@ ir_to_mesa_visitor::copy_propagate(void)
    int *acp_level = rzalloc_array(mem_ctx, int, this->next_temp * 4);
    int level = 0;
 
-   foreach_iter(exec_list_iterator, iter, this->instructions) {
-      ir_to_mesa_instruction *inst = (ir_to_mesa_instruction *)iter.get();
+   foreach_list(node, &this->instructions) {
+      ir_to_mesa_instruction *inst = (ir_to_mesa_instruction *) node;
 
       assert(inst->dst.file != PROGRAM_TEMPORARY
 	     || inst->dst.index < this->next_temp);
@@ -2942,6 +2767,8 @@ ir_to_mesa_visitor::copy_propagate(void)
       /* If this is a copy, add it to the ACP. */
       if (inst->op == OPCODE_MOV &&
 	  inst->dst.file == PROGRAM_TEMPORARY &&
+	  !(inst->dst.file == inst->src[0].file &&
+	    inst->dst.index == inst->src[0].index) &&
 	  !inst->dst.reladdr &&
 	  !inst->saturate &&
 	  !inst->src[0].reladdr &&
@@ -2973,29 +2800,10 @@ get_mesa_program(struct gl_context *ctx,
    ir_instruction **mesa_instruction_annotation;
    int i;
    struct gl_program *prog;
-   GLenum target;
-   const char *target_string;
-   GLboolean progress;
+   GLenum target = _mesa_shader_stage_to_program(shader->Stage);
+   const char *target_string = _mesa_shader_stage_to_string(shader->Stage);
    struct gl_shader_compiler_options *options =
-         &ctx->ShaderCompilerOptions[_mesa_shader_type_to_index(shader->Type)];
-
-   switch (shader->Type) {
-   case GL_VERTEX_SHADER:
-      target = GL_VERTEX_PROGRAM_ARB;
-      target_string = "vertex";
-      break;
-   case GL_FRAGMENT_SHADER:
-      target = GL_FRAGMENT_PROGRAM_ARB;
-      target_string = "fragment";
-      break;
-   case GL_GEOMETRY_SHADER:
-      target = GL_GEOMETRY_PROGRAM_NV;
-      target_string = "geometry";
-      break;
-   default:
-      assert(!"should not be reached");
-      return NULL;
-   }
+         &ctx->ShaderCompilerOptions[shader->Stage];
 
    validate_ir_tree(shader->ir);
 
@@ -3015,39 +2823,10 @@ get_mesa_program(struct gl_context *ctx,
    visit_exec_list(shader->ir, &v);
    v.emit(NULL, OPCODE_END);
 
-   /* Now emit bodies for any functions that were used. */
-   do {
-      progress = GL_FALSE;
-
-      foreach_iter(exec_list_iterator, iter, v.function_signatures) {
-	 function_entry *entry = (function_entry *)iter.get();
-
-	 if (!entry->bgn_inst) {
-	    v.current_function = entry;
-
-	    entry->bgn_inst = v.emit(NULL, OPCODE_BGNSUB);
-	    entry->bgn_inst->function = entry;
-
-	    visit_exec_list(&entry->sig->body, &v);
-
-	    ir_to_mesa_instruction *last;
-	    last = (ir_to_mesa_instruction *)v.instructions.get_tail();
-	    if (last->op != OPCODE_RET)
-	       v.emit(NULL, OPCODE_RET);
-
-	    ir_to_mesa_instruction *end;
-	    end = v.emit(NULL, OPCODE_ENDSUB);
-	    end->function = entry;
-
-	    progress = GL_TRUE;
-	 }
-      }
-   } while (progress);
-
    prog->NumTemporaries = v.next_temp;
 
    int num_instructions = 0;
-   foreach_iter(exec_list_iterator, iter, v.instructions) {
+   foreach_list(node, &v.instructions) {
       num_instructions++;
    }
 
@@ -3063,8 +2842,8 @@ get_mesa_program(struct gl_context *ctx,
     */
    mesa_inst = mesa_instructions;
    i = 0;
-   foreach_iter(exec_list_iterator, iter, v.instructions) {
-      const ir_to_mesa_instruction *inst = (ir_to_mesa_instruction *)iter.get();
+   foreach_list(node, &v.instructions) {
+      const ir_to_mesa_instruction *inst = (ir_to_mesa_instruction *) node;
 
       mesa_inst->Opcode = inst->op;
       mesa_inst->CondUpdate = inst->cond_update;
@@ -3117,16 +2896,6 @@ get_mesa_program(struct gl_context *ctx,
 			   "rasterization.\n");
 	 }
 	 break;
-      case OPCODE_BGNSUB:
-	 inst->function->inst = i;
-	 mesa_inst->Comment = strdup(inst->function->sig->function_name());
-	 break;
-      case OPCODE_ENDSUB:
-	 mesa_inst->Comment = strdup(inst->function->sig->function_name());
-	 break;
-      case OPCODE_CAL:
-	 mesa_inst->BranchTarget = inst->function->sig_id; /* rewritten later */
-	 break;
       case OPCODE_ARL:
 	 prog->NumAddressRegs = 1;
 	 break;
@@ -3147,17 +2916,18 @@ get_mesa_program(struct gl_context *ctx,
 
    set_branchtargets(&v, mesa_instructions, num_instructions);
 
-   if (ctx->Shader.Flags & GLSL_DUMP) {
-      printf("\n");
-      printf("GLSL IR for linked %s program %d:\n", target_string,
-	     shader_program->Name);
-      _mesa_print_ir(shader->ir, NULL);
-      printf("\n");
-      printf("\n");
-      printf("Mesa IR for linked %s program %d:\n", target_string,
-	     shader_program->Name);
+   if (ctx->_Shader->Flags & GLSL_DUMP) {
+      fprintf(stderr, "\n");
+      fprintf(stderr, "GLSL IR for linked %s program %d:\n", target_string,
+	      shader_program->Name);
+      _mesa_print_ir(stderr, shader->ir, NULL);
+      fprintf(stderr, "\n");
+      fprintf(stderr, "\n");
+      fprintf(stderr, "Mesa IR for linked %s program %d:\n", target_string,
+	      shader_program->Name);
       print_program(mesa_instructions, mesa_instruction_annotation,
 		    num_instructions);
+      fflush(stderr);
    }
 
    prog->Instructions = mesa_instructions;
@@ -3168,7 +2938,7 @@ get_mesa_program(struct gl_context *ctx,
     */
    mesa_instructions = NULL;
 
-   do_set_program_inouts(shader->ir, prog, shader->Type == GL_FRAGMENT_SHADER);
+   do_set_program_inouts(shader->ir, prog, shader->Stage);
 
    prog->SamplersUsed = shader->active_samplers;
    prog->ShadowSamplers = shader->shadow_samplers;
@@ -3182,7 +2952,7 @@ get_mesa_program(struct gl_context *ctx,
 
    _mesa_reference_program(ctx, &shader->Program, prog);
 
-   if ((ctx->Shader.Flags & GLSL_NO_OPT) == 0) {
+   if ((ctx->_Shader->Flags & GLSL_NO_OPT) == 0) {
       _mesa_optimize_program(ctx, prog);
    }
 
@@ -3216,14 +2986,14 @@ _mesa_ir_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
 {
    assert(prog->LinkStatus);
 
-   for (unsigned i = 0; i < MESA_SHADER_TYPES; i++) {
+   for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
       if (prog->_LinkedShaders[i] == NULL)
 	 continue;
 
       bool progress;
       exec_list *ir = prog->_LinkedShaders[i]->ir;
       const struct gl_shader_compiler_options *options =
-            &ctx->ShaderCompilerOptions[_mesa_shader_type_to_index(prog->_LinkedShaders[i]->Type)];
+            &ctx->ShaderCompilerOptions[prog->_LinkedShaders[i]->Stage];
 
       do {
 	 progress = false;
@@ -3237,7 +3007,7 @@ _mesa_ir_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
 	 progress = do_lower_jumps(ir, true, true, options->EmitNoMainReturn, options->EmitNoCont, options->EmitNoLoops) || progress;
 
 	 progress = do_common_optimization(ir, true, true,
-					   options->MaxUnrollIterations)
+                                           options, ctx->Const.NativeIntegers)
 	   || progress;
 
 	 progress = lower_quadop_vector(ir, true) || progress;
@@ -3264,12 +3034,13 @@ _mesa_ir_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
 	     || progress;
 
 	 progress = do_vec_index_to_cond_assign(ir) || progress;
+         progress = lower_vector_insert(ir, true) || progress;
       } while (progress);
 
       validate_ir_tree(ir);
    }
 
-   for (unsigned i = 0; i < MESA_SHADER_TYPES; i++) {
+   for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
       struct gl_program *linked_prog;
 
       if (prog->_LinkedShaders[i] == NULL)
@@ -3278,20 +3049,13 @@ _mesa_ir_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
       linked_prog = get_mesa_program(ctx, prog, prog->_LinkedShaders[i]);
 
       if (linked_prog) {
-	 static const GLenum targets[] = {
-	    GL_VERTEX_PROGRAM_ARB,
-	    GL_FRAGMENT_PROGRAM_ARB,
-	    GL_GEOMETRY_PROGRAM_NV
-	 };
-
-	 if (i == MESA_SHADER_VERTEX) {
-            ((struct gl_vertex_program *)linked_prog)->UsesClipDistance
-               = prog->Vert.UsesClipDistance;
-	 }
+         _mesa_copy_linked_program_data((gl_shader_stage) i, prog, linked_prog);
 
 	 _mesa_reference_program(ctx, &prog->_LinkedShaders[i]->Program,
 				 linked_prog);
-         if (!ctx->Driver.ProgramStringNotify(ctx, targets[i], linked_prog)) {
+         if (!ctx->Driver.ProgramStringNotify(ctx,
+                                              _mesa_shader_stage_to_program(i),
+                                              linked_prog)) {
             return GL_FALSE;
          }
       }
@@ -3301,91 +3065,6 @@ _mesa_ir_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
 
    return prog->LinkStatus;
 }
-
-
-/**
- * Compile a GLSL shader.  Called via glCompileShader().
- */
-void
-_mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader)
-{
-   struct _mesa_glsl_parse_state *state =
-      new(shader) _mesa_glsl_parse_state(ctx, shader->Type, shader);
-
-   const char *source = shader->Source;
-   /* Check if the user called glCompileShader without first calling
-    * glShaderSource.  This should fail to compile, but not raise a GL_ERROR.
-    */
-   if (source == NULL) {
-      shader->CompileStatus = GL_FALSE;
-      return;
-   }
-
-   state->error = preprocess(state, &source, &state->info_log,
-			     &ctx->Extensions, ctx->API);
-
-   if (ctx->Shader.Flags & GLSL_DUMP) {
-      printf("GLSL source for %s shader %d:\n",
-	     _mesa_glsl_shader_target_name(state->target), shader->Name);
-      printf("%s\n", shader->Source);
-   }
-
-   if (!state->error) {
-     _mesa_glsl_lexer_ctor(state, source);
-     _mesa_glsl_parse(state);
-     _mesa_glsl_lexer_dtor(state);
-   }
-
-   ralloc_free(shader->ir);
-   shader->ir = new(shader) exec_list;
-   if (!state->error && !state->translation_unit.is_empty())
-      _mesa_ast_to_hir(shader->ir, state);
-
-   if (!state->error && !shader->ir->is_empty()) {
-      validate_ir_tree(shader->ir);
-
-      /* Do some optimization at compile time to reduce shader IR size
-       * and reduce later work if the same shader is linked multiple times
-       */
-      while (do_common_optimization(shader->ir, false, false, 32))
-	 ;
-
-      validate_ir_tree(shader->ir);
-   }
-
-   shader->symbols = state->symbols;
-
-   shader->CompileStatus = !state->error;
-   shader->InfoLog = state->info_log;
-   shader->Version = state->language_version;
-   memcpy(shader->builtins_to_link, state->builtins_to_link,
-	  sizeof(shader->builtins_to_link[0]) * state->num_builtins_to_link);
-   shader->num_builtins_to_link = state->num_builtins_to_link;
-
-   if (ctx->Shader.Flags & GLSL_LOG) {
-      _mesa_write_shader_to_file(shader);
-   }
-
-   if (ctx->Shader.Flags & GLSL_DUMP) {
-      if (shader->CompileStatus) {
-	 printf("GLSL IR for shader %d:\n", shader->Name);
-	 _mesa_print_ir(shader->ir, NULL);
-	 printf("\n\n");
-      } else {
-	 printf("GLSL shader %d failed to compile.\n", shader->Name);
-      }
-      if (shader->InfoLog && shader->InfoLog[0] != 0) {
-	 printf("GLSL shader %d info log:\n", shader->Name);
-	 printf("%s\n", shader->InfoLog);
-      }
-   }
-
-   /* Retain any live IR, but trash the rest. */
-   reparent_ir(shader->ir, shader->ir);
-
-   ralloc_free(state);
-}
-
 
 /**
  * Link a GLSL shader program.  Called via glLinkProgram().
@@ -3402,7 +3081,6 @@ _mesa_glsl_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
    for (i = 0; i < prog->NumShaders; i++) {
       if (!prog->Shaders[i]->CompileStatus) {
 	 linker_error(prog, "linking with uncompiled shader");
-	 prog->LinkStatus = GL_FALSE;
       }
    }
 
@@ -3416,18 +3094,14 @@ _mesa_glsl_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
       }
    }
 
-   if (prog->LinkStatus) {
-      set_uniform_initializers(ctx, prog);
-   }
-
-   if (ctx->Shader.Flags & GLSL_DUMP) {
+   if (ctx->_Shader->Flags & GLSL_DUMP) {
       if (!prog->LinkStatus) {
-	 printf("GLSL shader program %d failed to link\n", prog->Name);
+	 fprintf(stderr, "GLSL shader program %d failed to link\n", prog->Name);
       }
 
       if (prog->InfoLog && prog->InfoLog[0] != 0) {
-	 printf("GLSL shader program %d info log:\n", prog->Name);
-	 printf("%s\n", prog->InfoLog);
+	 fprintf(stderr, "GLSL shader program %d info log:\n", prog->Name);
+	 fprintf(stderr, "%s\n", prog->InfoLog);
       }
    }
 }

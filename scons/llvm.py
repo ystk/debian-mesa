@@ -92,7 +92,31 @@ def generate(env):
             'HAVE_STDINT_H',
         ])
         env.Prepend(LIBPATH = [os.path.join(llvm_dir, 'lib')])
-        if llvm_version >= distutils.version.LooseVersion('2.9'):
+        if llvm_version >= distutils.version.LooseVersion('3.2'):
+            # 3.2
+            env.Prepend(LIBS = [
+                'LLVMBitWriter', 'LLVMX86Disassembler', 'LLVMX86AsmParser',
+                'LLVMX86CodeGen', 'LLVMX86Desc', 'LLVMSelectionDAG',
+                'LLVMAsmPrinter', 'LLVMMCParser', 'LLVMX86AsmPrinter',
+                'LLVMX86Utils', 'LLVMX86Info', 'LLVMJIT',
+                'LLVMExecutionEngine', 'LLVMCodeGen', 'LLVMScalarOpts',
+                'LLVMInstCombine', 'LLVMTransformUtils', 'LLVMipa',
+                'LLVMAnalysis', 'LLVMTarget', 'LLVMMC', 'LLVMCore',
+                'LLVMSupport', 'LLVMRuntimeDyld', 'LLVMObject'
+            ])
+        elif llvm_version >= distutils.version.LooseVersion('3.0'):
+            # 3.0
+            env.Prepend(LIBS = [
+                'LLVMBitWriter', 'LLVMX86Disassembler', 'LLVMX86AsmParser',
+                'LLVMX86CodeGen', 'LLVMX86Desc', 'LLVMSelectionDAG',
+                'LLVMAsmPrinter', 'LLVMMCParser', 'LLVMX86AsmPrinter',
+                'LLVMX86Utils', 'LLVMX86Info', 'LLVMJIT',
+                'LLVMExecutionEngine', 'LLVMCodeGen', 'LLVMScalarOpts',
+                'LLVMInstCombine', 'LLVMTransformUtils', 'LLVMipa',
+                'LLVMAnalysis', 'LLVMTarget', 'LLVMMC', 'LLVMCore',
+                'LLVMSupport'
+            ])
+        elif llvm_version >= distutils.version.LooseVersion('2.9'):
             # 2.9
             env.Prepend(LIBS = [
                 'LLVMObject', 'LLVMMCJIT', 'LLVMMCDisassembler',
@@ -150,7 +174,7 @@ def generate(env):
                 env.Append(LINKFLAGS = ['/nodefaultlib:LIBCMT'])
     else:
         if not env.Detect('llvm-config'):
-            print 'scons: llvm-config script not found' % llvm_version
+            print 'scons: llvm-config script not found'
             return
 
         llvm_version = env.backtick('llvm-config --version').rstrip()
@@ -166,8 +190,21 @@ def generate(env):
                 pass
             env.MergeFlags(cppflags)
 
-            env.ParseConfig('llvm-config --libs')
+            # Match llvm --fno-rtti flag
+            cxxflags = env.backtick('llvm-config --cxxflags').split()
+            if '-fno-rtti' in cxxflags:
+                env.Append(CXXFLAGS = ['-fno-rtti'])
+
+            components = ['engine', 'bitwriter', 'x86asmprinter']
+
+            if llvm_version >= distutils.version.LooseVersion('3.1'):
+                components.append('mcjit')
+
+            env.ParseConfig('llvm-config --libs ' + ' '.join(components))
             env.ParseConfig('llvm-config --ldflags')
+            if llvm_version >= distutils.version.LooseVersion('3.5'):
+                env.ParseConfig('llvm-config --system-libs')
+                env.Append(CXXFLAGS = ['-std=c++11'])
         except OSError:
             print 'scons: llvm-config version %s failed' % llvm_version
             return

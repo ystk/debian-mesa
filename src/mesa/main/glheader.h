@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  7.5
  *
  * Copyright (C) 1999-2008  Brian Paul   All Rights Reserved.
  *
@@ -17,9 +16,10 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 
@@ -33,22 +33,6 @@
 #define GLHEADER_H
 
 
-#ifdef WGLAPI
-#undef WGLAPI
-#endif
-
-
-#if !defined(OPENSTEP) && (defined(__WIN32__) && !defined(__CYGWIN__)) && !defined(BUILD_FOR_SNAP)
-#  if (defined(_MSC_VER) || defined(__MINGW32__)) && defined(BUILD_GL32) /* tag specify we're building mesa as a DLL */
-#    define WGLAPI __declspec(dllexport)
-#  elif (defined(_MSC_VER) || defined(__MINGW32__)) && defined(_DLL) /* tag specifying we're building for DLL runtime support */
-#    define WGLAPI __declspec(dllimport)
-#  else /* for use with static link lib build of Win32 edition only */
-#    define WGLAPI __declspec(dllimport)
-#  endif /* _STATIC_MESA support */
-#endif /* WIN32 / CYGWIN bracket */
-
-
 #define GL_GLEXT_PROTOTYPES
 #include "GL/gl.h"
 #include "GL/glext.h"
@@ -59,10 +43,6 @@ extern "C" {
 #endif
 
 
-/**
- * GL_FIXED is defined in glext.h version 64 but these typedefs aren't (yet).
- */
-typedef int GLfixed;
 typedef int GLclampx;
 
 
@@ -119,12 +99,6 @@ typedef void *GLeglImageOES;
 #define GL_PALETTE8_RGB5_A1_OES                                 0x8B99
 #endif
 
-#ifndef GL_OES_matrix_get
-#define GL_MODELVIEW_MATRIX_FLOAT_AS_INT_BITS_OES               0x898D
-#define GL_PROJECTION_MATRIX_FLOAT_AS_INT_BITS_OES              0x898E
-#define GL_TEXTURE_MATRIX_FLOAT_AS_INT_BITS_OES                 0x898F
-#endif
-
 #ifndef GL_ES_VERSION_2_0
 #define GL_SHADER_BINARY_FORMATS            0x8DF8
 #define GL_NUM_SHADER_BINARY_FORMATS        0x8DF9
@@ -141,6 +115,13 @@ typedef void *GLeglImageOES;
 
 #ifndef GL_OES_compressed_ETC1_RGB8_texture
 #define GL_ETC1_RGB8_OES                                        0x8D64
+#endif
+
+
+/* Inexplicably, GL_HALF_FLOAT_OES has a different value than GL_HALF_FLOAT.
+ */
+#ifndef GL_HALF_FLOAT_OES
+#define GL_HALF_FLOAT_OES 0x8D61
 #endif
 
 

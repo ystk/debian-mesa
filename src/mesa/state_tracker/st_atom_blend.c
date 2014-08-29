@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -27,7 +27,7 @@
 
  /*
   * Authors:
-  *   Keith Whitwell <keith@tungstengraphics.com>
+  *   Keith Whitwell <keithw@vmware.com>
   *   Brian Paul
   */
  
@@ -78,10 +78,10 @@ translate_blend(GLenum blend)
       return PIPE_BLENDFACTOR_CONST_COLOR;
    case GL_CONSTANT_ALPHA:
       return PIPE_BLENDFACTOR_CONST_ALPHA;
-      /*
+   case GL_SRC1_COLOR:
       return PIPE_BLENDFACTOR_SRC1_COLOR;
+   case GL_SRC1_ALPHA:
       return PIPE_BLENDFACTOR_SRC1_ALPHA;
-      */
    case GL_ZERO:
       return PIPE_BLENDFACTOR_ZERO;
    case GL_ONE_MINUS_SRC_COLOR:
@@ -96,10 +96,10 @@ translate_blend(GLenum blend)
       return PIPE_BLENDFACTOR_INV_CONST_COLOR;
    case GL_ONE_MINUS_CONSTANT_ALPHA:
       return PIPE_BLENDFACTOR_INV_CONST_ALPHA;
-      /*
+   case GL_ONE_MINUS_SRC1_COLOR:
       return PIPE_BLENDFACTOR_INV_SRC1_COLOR;
+   case GL_ONE_MINUS_SRC1_ALPHA:
       return PIPE_BLENDFACTOR_INV_SRC1_ALPHA;
-      */
    default:
       assert("invalid GL token in translate_blend()" == NULL);
       return 0;

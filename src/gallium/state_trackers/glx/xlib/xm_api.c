@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  7.1
  *
  * Copyright (C) 1999-2007  Brian Paul   All Rights Reserved.
  *
@@ -17,9 +16,10 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 /**
@@ -63,6 +63,8 @@
 
 #include "util/u_atomic.h"
 #include "util/u_inlines.h"
+
+#include "hud/hud_context.h"
 
 #include "xm_public.h"
 #include <GL/glx.h>
@@ -168,10 +170,8 @@ xmesa_init_display( Display *display )
             xmdpy->screen->destroy(xmdpy->screen);
             xmdpy->screen = NULL;
          }
-         if (xmdpy->smapi) {
-            FREE(xmdpy->smapi);
-            xmdpy->smapi = NULL;
-         }
+         free(xmdpy->smapi);
+         xmdpy->smapi = NULL;
 
          xmdpy->display = NULL;
       }
@@ -220,7 +220,7 @@ bits_per_pixel( XMesaVisual xmv )
    /* Create a temporary XImage */
    img = XCreateImage( dpy, visinfo->visual, visinfo->depth,
 		       ZPixmap, 0,           /*format, offset*/
-		       (char*) MALLOC(8),    /*data*/
+		       malloc(8),    /*data*/
 		       1, 1,                 /*width, height*/
 		       32,                   /*bitmap_pad*/
 		       0                     /*bytes_per_line*/
@@ -328,10 +328,10 @@ choose_pixel_format(XMesaVisual v)
        && v->BitsPerPixel == 32) {
       if (native_byte_order) {
          /* no byteswapping needed */
-         return PIPE_FORMAT_R8G8B8A8_UNORM;
+         return PIPE_FORMAT_RGBA8888_UNORM;
       }
       else {
-         return PIPE_FORMAT_A8B8G8R8_UNORM;
+         return PIPE_FORMAT_ABGR8888_UNORM;
       }
    }
    else if (   GET_REDMASK(v)   == 0xff0000
@@ -340,10 +340,10 @@ choose_pixel_format(XMesaVisual v)
             && v->BitsPerPixel == 32) {
       if (native_byte_order) {
          /* no byteswapping needed */
-         return PIPE_FORMAT_B8G8R8A8_UNORM;
+         return PIPE_FORMAT_BGRA8888_UNORM;
       }
       else {
-         return PIPE_FORMAT_A8R8G8B8_UNORM;
+         return PIPE_FORMAT_ARGB8888_UNORM;
       }
    }
    else if (   GET_REDMASK(v)   == 0x0000ff00
@@ -352,10 +352,10 @@ choose_pixel_format(XMesaVisual v)
             && v->BitsPerPixel == 32) {
       if (native_byte_order) {
          /* no byteswapping needed */
-         return PIPE_FORMAT_A8R8G8B8_UNORM;
+         return PIPE_FORMAT_ARGB8888_UNORM;
       }
       else {
-         return PIPE_FORMAT_B8G8R8A8_UNORM;
+         return PIPE_FORMAT_BGRA8888_UNORM;
       }
    }
    else if (   GET_REDMASK(v)   == 0xf800
@@ -440,7 +440,6 @@ create_xmesa_buffer(Drawable d, BufferType type,
 {
    XMesaDisplay xmdpy = xmesa_init_display(vis->display);
    XMesaBuffer b;
-   uint width, height;
 
    ASSERT(type == WINDOW || type == PIXMAP || type == PBUFFER);
 
@@ -459,7 +458,7 @@ create_xmesa_buffer(Drawable d, BufferType type,
    b->type = type;
    b->cmap = cmap;
 
-   get_drawable_size(vis->display, d, &width, &height);
+   get_drawable_size(vis->display, d, &b->width, &b->height);
 
    /*
     * Create framebuffer, but we'll plug in our own renderbuffers below.
@@ -706,7 +705,7 @@ XMesaVisual XMesaCreateVisual( Display *display,
     * the struct but we may need some of the information contained in it
     * at a later time.
     */
-   v->visinfo = (XVisualInfo *) MALLOC(sizeof(*visinfo));
+   v->visinfo = (XVisualInfo *) malloc(sizeof(*visinfo));
    if (!v->visinfo) {
       free(v);
       return NULL;
@@ -800,8 +799,8 @@ XMesaVisual XMesaCreateVisual( Display *display,
 
    v->stvis.color_format = choose_pixel_format(v);
    if (v->stvis.color_format == PIPE_FORMAT_NONE) {
-      FREE(v->visinfo);
-      FREE(v);
+      free(v->visinfo);
+      free(v);
       return NULL;
    }
 
@@ -900,10 +899,23 @@ XMesaContext XMesaCreateContext( XMesaVisual v, XMesaContext share_list,
     *
     *     "The default value for GLX_CONTEXT_PROFILE_MASK_ARB is
     *     GLX_CONTEXT_CORE_PROFILE_BIT_ARB."
+    *
+    * The spec also says:
+    *
+    *     "If version 3.1 is requested, the context returned may implement
+    *     any of the following versions:
+    *
+    *       * Version 3.1. The GL_ARB_compatibility extension may or may not
+    *         be implemented, as determined by the implementation.
+    *       * The core profile of version 3.2 or greater."
+    *
+    * and because Mesa doesn't support GL_ARB_compatibility, the only chance to
+    * honour a 3.1 context is through core profile.
     */
    attribs.profile = ST_PROFILE_DEFAULT;
-   if ((major > 3 || (major == 3 && minor >= 2))
-       && ((profileMask & GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB) == 0))
+   if (((major > 3 || (major == 3 && minor >= 2))
+        && ((profileMask & GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB) == 0)) ||
+       (major == 3 && minor == 1))
       attribs.profile = ST_PROFILE_OPENGL_CORE;
 
    c->st = stapi->create_context(stapi, xmdpy->smapi, &attribs,
@@ -912,6 +924,8 @@ XMesaContext XMesaCreateContext( XMesaVisual v, XMesaContext share_list,
       goto fail;
 
    c->st->st_manager_private = (void *) c;
+
+   c->hud = hud_create(c->st->pipe, c->st->cso_context);
 
    return c;
 
@@ -928,6 +942,10 @@ fail:
 PUBLIC
 void XMesaDestroyContext( XMesaContext c )
 {
+   if (c->hud) {
+      hud_destroy(c->hud);
+   }
+
    c->st->destroy(c->st);
 
    /* FIXME: We should destroy the screen here, but if we do so, surfaces may 
@@ -1227,6 +1245,13 @@ void XMesaSwapBuffers( XMesaBuffer b )
 {
    XMesaContext xmctx = XMesaGetCurrentContext();
 
+   /* Need to draw HUD before flushing */
+   if (xmctx && xmctx->hud) {
+      struct pipe_resource *back =
+         xmesa_get_framebuffer_resource(b->stfb, ST_ATTACHMENT_BACK_LEFT);
+      hud_draw(xmctx->hud, back);
+   }
+
    if (xmctx && xmctx->xm_buffer == b) {
       xmctx->st->flush( xmctx->st, ST_FLUSH_FRONT, NULL);
    }
@@ -1241,9 +1266,13 @@ void XMesaSwapBuffers( XMesaBuffer b )
  */
 void XMesaCopySubBuffer( XMesaBuffer b, int x, int y, int width, int height )
 {
+   XMesaContext xmctx = XMesaGetCurrentContext();
+
+   xmctx->st->flush( xmctx->st, ST_FLUSH_FRONT, NULL);
+
    xmesa_copy_st_framebuffer(b->stfb,
          ST_ATTACHMENT_BACK_LEFT, ST_ATTACHMENT_FRONT_LEFT,
-         x, y, width, height);
+         x, b->height - y - height, width, height);
 }
 
 
@@ -1365,17 +1394,17 @@ XMesaBindTexImage(Display *dpy, XMesaBuffer drawable, int buffer,
       enum pipe_format internal_format = res->format;
       struct pipe_transfer *tex_xfer;
       char *map;
-      int line, ximage_stride;
+      int line, byte_width;
       XImage *img;
 
       internal_format = choose_pixel_format(drawable->xm_visual);
 
-      tex_xfer = pipe_get_transfer(pipe, res,
-                                   0, 0,    /* level, layer */
-                                   PIPE_TRANSFER_WRITE,
-                                   x, y,
-                                   w, h);
-      if (!tex_xfer)
+      map = pipe_transfer_map(pipe, res,
+                              0, 0,    /* level, layer */
+                              PIPE_TRANSFER_WRITE,
+                              x, y,
+                              w, h, &tex_xfer);
+      if (!map)
          return;
 
       /* Grab the XImage that we want to turn into a texture. */
@@ -1387,29 +1416,19 @@ XMesaBindTexImage(Display *dpy, XMesaBuffer drawable, int buffer,
                       ZPixmap);
 
       if (!img) {
-         pipe_transfer_destroy(pipe, tex_xfer);
+         pipe_transfer_unmap(pipe, tex_xfer);
          return;
       }
 
-      map = pipe_transfer_map(pipe, tex_xfer);
-
-      if (!map) {
-         pipe_transfer_destroy(pipe, tex_xfer);
-         return;
-      }
-
-      /* The pipe transfer has a pitch rounded up to the nearest 64 pixels.
-         We assume 32 bit pixels. */
-      ximage_stride = w * 4;
+      /* The pipe transfer has a pitch rounded up to the nearest 64 pixels. */
+      byte_width = w * ((img->bits_per_pixel + 7) / 8);
 
       for (line = 0; line < h; line++)
          memcpy(&map[line * tex_xfer->stride],
-                &img->data[line * ximage_stride],
-                ximage_stride);
+                &img->data[line * img->bytes_per_line],
+                byte_width);
 
       pipe_transfer_unmap(pipe, tex_xfer);
-
-      pipe_transfer_destroy(pipe, tex_xfer);
 
       st->teximage(st,
                    ST_TEXTURE_2D,

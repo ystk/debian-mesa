@@ -1,6 +1,6 @@
 /**************************************************************************
  *
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -29,8 +29,8 @@
  * \file
  * Vertex buffer drawing stage.
  * 
- * \author Jose Fonseca <jrfonsec@tungstengraphics.com>
- * \author Keith Whitwell <keith@tungstengraphics.com>
+ * \author Jose Fonseca <jfonseca@vmware.com>
+ * \author Keith Whitwell <keithw@vmware.com>
  */
 
 
@@ -138,7 +138,7 @@ emit_vertex( struct vbuf_stage *vbuf,
       /* Note: we really do want data[0] here, not data[pos]: 
        */
       vbuf->translate->set_buffer(vbuf->translate, 0, vertex->data[0], 0, ~0);
-      vbuf->translate->run(vbuf->translate, 0, 1, 0, vbuf->vertex_ptr);
+      vbuf->translate->run(vbuf->translate, 0, 1, 0, 0, vbuf->vertex_ptr);
 
       if (0) draw_dump_emitted_vertex(vbuf->vinfo, (uint8_t *)vbuf->vertex_ptr);
       
@@ -250,7 +250,7 @@ vbuf_start_prim( struct vbuf_stage *vbuf, uint prim )
    }
 
    hw_key.nr_elements = vbuf->vinfo->num_attribs;
-   hw_key.output_stride = vbuf->vinfo->size * 4;
+   hw_key.output_stride = vbuf->vertex_size;
 
    /* Don't bother with caching at this stage:
     */

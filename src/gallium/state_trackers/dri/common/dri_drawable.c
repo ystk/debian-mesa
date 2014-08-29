@@ -42,11 +42,13 @@ static void
 swap_fences_unref(struct dri_drawable *draw);
 
 static boolean
-dri_st_framebuffer_validate(struct st_framebuffer_iface *stfbi,
+dri_st_framebuffer_validate(struct st_context_iface *stctx,
+                            struct st_framebuffer_iface *stfbi,
                             const enum st_attachment_type *statts,
                             unsigned count,
                             struct pipe_resource **out)
 {
+   struct dri_context *ctx = (struct dri_context *)stctx->st_manager_private;
    struct dri_drawable *drawable =
       (struct dri_drawable *) stfbi->st_manager_private;
    struct dri_screen *screen = dri_screen(drawable->sPriv);
@@ -54,6 +56,9 @@ dri_st_framebuffer_validate(struct st_framebuffer_iface *stfbi,
    boolean new_stamp;
    int i;
    unsigned int lastStamp;
+   struct pipe_resource **textures =
+      drawable->stvis.samples > 1 ? drawable->msaa_textures
+                                  : drawable->textures;
 
    statt_mask = 0x0;
    for (i = 0; i < count; i++)
@@ -75,11 +80,11 @@ dri_st_framebuffer_validate(struct st_framebuffer_iface *stfbi,
          if (new_stamp && drawable->update_drawable_info)
             drawable->update_drawable_info(drawable);
 
-         drawable->allocate_textures(drawable, statts, count);
+         drawable->allocate_textures(ctx, drawable, statts, count);
 
          /* add existing textures */
          for (i = 0; i < ST_ATTACHMENT_COUNT; i++) {
-            if (drawable->textures[i])
+            if (textures[i])
                statt_mask |= (1 << i);
          }
 
@@ -91,23 +96,26 @@ dri_st_framebuffer_validate(struct st_framebuffer_iface *stfbi,
    if (!out)
       return TRUE;
 
+   /* Set the window-system buffers for the state tracker. */
    for (i = 0; i < count; i++) {
       out[i] = NULL;
-      pipe_resource_reference(&out[i], drawable->textures[statts[i]]);
+      pipe_resource_reference(&out[i], textures[statts[i]]);
    }
 
    return TRUE;
 }
 
 static boolean
-dri_st_framebuffer_flush_front(struct st_framebuffer_iface *stfbi,
+dri_st_framebuffer_flush_front(struct st_context_iface *stctx,
+                               struct st_framebuffer_iface *stfbi,
                                enum st_attachment_type statt)
 {
+   struct dri_context *ctx = (struct dri_context *)stctx->st_manager_private;
    struct dri_drawable *drawable =
       (struct dri_drawable *) stfbi->st_manager_private;
 
    /* XXX remove this and just set the correct one on the framebuffer */
-   drawable->flush_frontbuffer(drawable, statt);
+   drawable->flush_frontbuffer(ctx, drawable, statt);
 
    return TRUE;
 }
@@ -164,6 +172,8 @@ dri_destroy_buffer(__DRIdrawable * dPriv)
 
    for (i = 0; i < ST_ATTACHMENT_COUNT; i++)
       pipe_resource_reference(&drawable->textures[i], NULL);
+   for (i = 0; i < ST_ATTACHMENT_COUNT; i++)
+      pipe_resource_reference(&drawable->msaa_textures[i], NULL);
 
    swap_fences_unref(drawable);
 
@@ -175,7 +185,8 @@ dri_destroy_buffer(__DRIdrawable * dPriv)
  * exist.  Used by the TFP extension.
  */
 static void
-dri_drawable_validate_att(struct dri_drawable *drawable,
+dri_drawable_validate_att(struct dri_context *ctx,
+                          struct dri_drawable *drawable,
                           enum st_attachment_type statt)
 {
    enum st_attachment_type statts[ST_ATTACHMENT_COUNT];
@@ -195,7 +206,7 @@ dri_drawable_validate_att(struct dri_drawable *drawable,
 
    drawable->texture_stamp = drawable->dPriv->lastStamp - 1;
 
-   drawable->base.validate(&drawable->base, statts, count, NULL);
+   drawable->base.validate(ctx->st, &drawable->base, statts, count, NULL);
 }
 
 /**
@@ -209,7 +220,7 @@ dri_set_tex_buffer2(__DRIcontext *pDRICtx, GLint target,
    struct dri_drawable *drawable = dri_drawable(dPriv);
    struct pipe_resource *pt;
 
-   dri_drawable_validate_att(drawable, ST_ATTACHMENT_FRONT_LEFT);
+   dri_drawable_validate_att(ctx, drawable, ST_ATTACHMENT_FRONT_LEFT);
 
    /* Use the pipe resource associated with the X drawable */
    pt = drawable->textures[ST_ATTACHMENT_FRONT_LEFT];
@@ -247,10 +258,11 @@ dri_set_tex_buffer(__DRIcontext *pDRICtx, GLint target,
 }
 
 const __DRItexBufferExtension driTexBufferExtension = {
-    { __DRI_TEX_BUFFER, __DRI_TEX_BUFFER_VERSION },
-   dri_set_tex_buffer,
-   dri_set_tex_buffer2,
-   NULL,
+   .base = { __DRI_TEX_BUFFER, 2 },
+
+   .setTexBuffer       = dri_set_tex_buffer,
+   .setTexBuffer2      = dri_set_tex_buffer2,
+   .releaseTexBuffer   = NULL,
 };
 
 /**
@@ -350,52 +362,209 @@ swap_fences_unref(struct dri_drawable *draw)
    }
 }
 
+void
+dri_pipe_blit(struct pipe_context *pipe,
+              struct pipe_resource *dst,
+              struct pipe_resource *src)
+{
+   struct pipe_blit_info blit;
+
+   if (!dst || !src)
+      return;
+
+   /* From the GL spec, version 4.2, section 4.1.11 (Additional Multisample
+    *  Fragment Operations):
+    *
+    *      If a framebuffer object is not bound, after all operations have
+    *      been completed on the multisample buffer, the sample values for
+    *      each color in the multisample buffer are combined to produce a
+    *      single color value, and that value is written into the
+    *      corresponding color buffers selected by DrawBuffer or
+    *      DrawBuffers. An implementation may defer the writing of the color
+    *      buffers until a later time, but the state of the framebuffer must
+    *      behave as if the color buffers were updated as each fragment was
+    *      processed. The method of combination is not specified. If the
+    *      framebuffer contains sRGB values, then it is recommended that the
+    *      an average of sample values is computed in a linearized space, as
+    *      for blending (see section 4.1.7).
+    *
+    * In other words, to do a resolve operation in a linear space, we have
+    * to set sRGB formats if the original resources were sRGB, so don't use
+    * util_format_linear.
+    */
+
+   memset(&blit, 0, sizeof(blit));
+   blit.dst.resource = dst;
+   blit.dst.box.width = dst->width0;
+   blit.dst.box.height = dst->height0;
+   blit.dst.box.depth = 1;
+   blit.dst.format = dst->format;
+   blit.src.resource = src;
+   blit.src.box.width = src->width0;
+   blit.src.box.height = src->height0;
+   blit.src.box.depth = 1;
+   blit.src.format = src->format;
+   blit.mask = PIPE_MASK_RGBA;
+   blit.filter = PIPE_TEX_FILTER_NEAREST;
+
+   pipe->blit(pipe, &blit);
+}
+
+static void
+dri_postprocessing(struct dri_context *ctx,
+                   struct dri_drawable *drawable,
+                   enum st_attachment_type att)
+{
+   struct pipe_resource *src = drawable->textures[att];
+   struct pipe_resource *zsbuf = drawable->textures[ST_ATTACHMENT_DEPTH_STENCIL];
+
+   if (ctx->pp && src && zsbuf)
+      pp_run(ctx->pp, src, src, zsbuf);
+}
+
+/**
+ * DRI2 flush extension, the flush_with_flags function.
+ *
+ * \param context           the context
+ * \param drawable          the drawable to flush
+ * \param flags             a combination of _DRI2_FLUSH_xxx flags
+ * \param throttle_reason   the reason for throttling, 0 = no throttling
+ */
+void
+dri_flush(__DRIcontext *cPriv,
+          __DRIdrawable *dPriv,
+          unsigned flags,
+          enum __DRI2throttleReason reason)
+{
+   struct dri_context *ctx = dri_context(cPriv);
+   struct dri_drawable *drawable = dri_drawable(dPriv);
+   unsigned flush_flags;
+   boolean swap_msaa_buffers = FALSE;
+
+   if (!ctx) {
+      assert(0);
+      return;
+   }
+
+   if (drawable) {
+      /* prevent recursion */
+      if (drawable->flushing)
+         return;
+
+      drawable->flushing = TRUE;
+   }
+   else {
+      flags &= ~__DRI2_FLUSH_DRAWABLE;
+   }
+
+   /* Flush the drawable. */
+   if ((flags & __DRI2_FLUSH_DRAWABLE) &&
+       drawable->textures[ST_ATTACHMENT_BACK_LEFT]) {
+      struct pipe_context *pipe = ctx->st->pipe;
+
+      if (drawable->stvis.samples > 1 &&
+          reason == __DRI2_THROTTLE_SWAPBUFFER) {
+         /* Resolve the MSAA back buffer. */
+         dri_pipe_blit(ctx->st->pipe,
+                       drawable->textures[ST_ATTACHMENT_BACK_LEFT],
+                       drawable->msaa_textures[ST_ATTACHMENT_BACK_LEFT]);
+
+         if (drawable->msaa_textures[ST_ATTACHMENT_FRONT_LEFT] &&
+             drawable->msaa_textures[ST_ATTACHMENT_BACK_LEFT]) {
+            swap_msaa_buffers = TRUE;
+         }
+
+         /* FRONT_LEFT is resolved in drawable->flush_frontbuffer. */
+      }
+
+      dri_postprocessing(ctx, drawable, ST_ATTACHMENT_BACK_LEFT);
+
+      if (ctx->hud) {
+         hud_draw(ctx->hud, drawable->textures[ST_ATTACHMENT_BACK_LEFT]);
+      }
+
+      pipe->flush_resource(pipe, drawable->textures[ST_ATTACHMENT_BACK_LEFT]);
+   }
+
+   flush_flags = 0;
+   if (flags & __DRI2_FLUSH_CONTEXT)
+      flush_flags |= ST_FLUSH_FRONT;
+   if (reason == __DRI2_THROTTLE_SWAPBUFFER)
+      flush_flags |= ST_FLUSH_END_OF_FRAME;
+
+   /* Flush the context and throttle if needed. */
+   if (dri_screen(ctx->sPriv)->throttling_enabled &&
+       drawable &&
+       (reason == __DRI2_THROTTLE_SWAPBUFFER ||
+        reason == __DRI2_THROTTLE_FLUSHFRONT)) {
+      /* Throttle.
+       *
+       * This pulls a fence off the throttling queue and waits for it if the
+       * number of fences on the throttling queue has reached the desired
+       * number.
+       *
+       * Then flushes to insert a fence at the current rendering position, and
+       * pushes that fence on the queue. This requires that the st_context_iface
+       * flush method returns a fence even if there are no commands to flush.
+       */
+      struct pipe_screen *screen = drawable->screen->base.screen;
+      struct pipe_fence_handle *fence;
+
+      fence = swap_fences_pop_front(drawable);
+      if (fence) {
+         (void) screen->fence_finish(screen, fence, PIPE_TIMEOUT_INFINITE);
+         screen->fence_reference(screen, &fence, NULL);
+      }
+
+      ctx->st->flush(ctx->st, flush_flags, &fence);
+
+      if (fence) {
+         swap_fences_push_back(drawable, fence);
+         screen->fence_reference(screen, &fence, NULL);
+      }
+   }
+   else if (flags & (__DRI2_FLUSH_DRAWABLE | __DRI2_FLUSH_CONTEXT)) {
+      ctx->st->flush(ctx->st, flush_flags, NULL);
+   }
+
+   if (drawable) {
+      drawable->flushing = FALSE;
+   }
+
+   /* Swap the MSAA front and back buffers, so that reading
+    * from the front buffer after SwapBuffers returns what was
+    * in the back buffer.
+    */
+   if (swap_msaa_buffers) {
+      struct pipe_resource *tmp =
+         drawable->msaa_textures[ST_ATTACHMENT_FRONT_LEFT];
+
+      drawable->msaa_textures[ST_ATTACHMENT_FRONT_LEFT] =
+         drawable->msaa_textures[ST_ATTACHMENT_BACK_LEFT];
+      drawable->msaa_textures[ST_ATTACHMENT_BACK_LEFT] = tmp;
+
+      /* Now that we have swapped the buffers, this tells the state
+       * tracker to revalidate the framebuffer.
+       */
+      p_atomic_inc(&drawable->base.stamp);
+   }
+}
 
 /**
  * dri_throttle - A DRI2ThrottleExtension throttling function.
- *
- * pulls a fence off the throttling queue and waits for it if the
- * number of fences on the throttling queue has reached the desired
- * number.
- *
- * Then flushes to insert a fence at the current rendering position, and
- * pushes that fence on the queue. This requires that the st_context_iface
- * flush method returns a fence even if there are no commands to flush.
  */
 static void
-dri_throttle(__DRIcontext *driCtx, __DRIdrawable *dPriv,
-	     enum __DRI2throttleReason reason)
+dri_throttle(__DRIcontext *cPriv, __DRIdrawable *dPriv,
+             enum __DRI2throttleReason reason)
 {
-    struct dri_drawable *draw = dri_drawable(dPriv);
-    struct st_context_iface *ctxi;
-    struct pipe_screen *screen = draw->screen->base.screen;
-    struct pipe_fence_handle *fence;
-
-    if (reason != __DRI2_THROTTLE_SWAPBUFFER &&
-	reason != __DRI2_THROTTLE_FLUSHFRONT)
-	return;
-
-    fence = swap_fences_pop_front(draw);
-    if (fence) {
-	(void) screen->fence_finish(screen, fence, PIPE_TIMEOUT_INFINITE);
-	screen->fence_reference(screen, &fence, NULL);
-    }
-
-    if (driCtx == NULL)
-	return;
-
-    ctxi = dri_context(driCtx)->st;
-    ctxi->flush(ctxi, 0, &fence);
-    if (fence) {
-	swap_fences_push_back(draw, fence);
-	screen->fence_reference(screen, &fence, NULL);
-    }
+   dri_flush(cPriv, dPriv, 0, reason);
 }
 
 
 const __DRI2throttleExtension dri2ThrottleExtension = {
-    .base = { __DRI2_THROTTLE, __DRI2_THROTTLE_VERSION },
-    .throttle = dri_throttle,
+    .base = { __DRI2_THROTTLE, 1 },
+
+    .throttle          = dri_throttle,
 };
 
 

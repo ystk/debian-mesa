@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  7.9
  *
  * Copyright (C) 2010 LunarG Inc.
  *
@@ -113,7 +112,8 @@ egl_g3d_destroy_st_manager(struct st_manager *smapi)
 }
 
 static boolean
-egl_g3d_st_framebuffer_flush_front_pbuffer(struct st_framebuffer_iface *stfbi,
+egl_g3d_st_framebuffer_flush_front_pbuffer(struct st_context_iface *stctx,
+                                           struct st_framebuffer_iface *stfbi,
                                            enum st_attachment_type statt)
 {
    return TRUE;
@@ -149,7 +149,8 @@ pbuffer_allocate_pbuffer_texture(struct egl_g3d_surface *gsurf)
 }
 
 static boolean
-egl_g3d_st_framebuffer_validate_pbuffer(struct st_framebuffer_iface *stfbi,
+egl_g3d_st_framebuffer_validate_pbuffer(struct st_context_iface *stctx,
+                                        struct st_framebuffer_iface *stfbi,
                                         const enum st_attachment_type *statts,
                                         unsigned count,
                                         struct pipe_resource **out)
@@ -187,7 +188,8 @@ egl_g3d_st_framebuffer_validate_pbuffer(struct st_framebuffer_iface *stfbi,
 }
 
 static boolean
-egl_g3d_st_framebuffer_flush_front(struct st_framebuffer_iface *stfbi,
+egl_g3d_st_framebuffer_flush_front(struct st_context_iface *stctx,
+                                   struct st_framebuffer_iface *stfbi,
                                    enum st_attachment_type statt)
 {
    _EGLSurface *surf = (_EGLSurface *) stfbi->st_manager_private;
@@ -201,7 +203,8 @@ egl_g3d_st_framebuffer_flush_front(struct st_framebuffer_iface *stfbi,
 }
 
 static boolean 
-egl_g3d_st_framebuffer_validate(struct st_framebuffer_iface *stfbi,
+egl_g3d_st_framebuffer_validate(struct st_context_iface *stctx,
+                                struct st_framebuffer_iface *stfbi,
                                 const enum st_attachment_type *statts,
                                 unsigned count,
                                 struct pipe_resource **out)

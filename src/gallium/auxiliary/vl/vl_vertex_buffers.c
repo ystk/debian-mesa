@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -53,9 +53,10 @@ vl_vb_upload_quads(struct pipe_context *pipe)
    (
       pipe->screen,
       PIPE_BIND_VERTEX_BUFFER,
-      PIPE_USAGE_STATIC,
+      PIPE_USAGE_DEFAULT,
       sizeof(struct vertex2f) * 4
    );
+   quad.user_buffer = NULL;
 
    if(!quad.buffer)
       return quad;
@@ -97,9 +98,10 @@ vl_vb_upload_pos(struct pipe_context *pipe, unsigned width, unsigned height)
    (
       pipe->screen,
       PIPE_BIND_VERTEX_BUFFER,
-      PIPE_USAGE_STATIC,
+      PIPE_USAGE_DEFAULT,
       sizeof(struct vertex2s) * width * height
    );
+   pos.user_buffer = NULL;
 
    if(!pos.buffer)
       return pos;
@@ -215,7 +217,7 @@ vl_vb_init(struct vl_vertex_buffer *buffer, struct pipe_context *pipe,
 
    size = width * height;
 
-   for (i = 0; i < VL_MAX_PLANES; ++i) {
+   for (i = 0; i < VL_NUM_COMPONENTS; ++i) {
       buffer->ycbcr[i].resource = pipe_buffer_create
       (
          pipe->screen,
@@ -243,11 +245,11 @@ vl_vb_init(struct vl_vertex_buffer *buffer, struct pipe_context *pipe,
    return true;
 
 error_mv:
-   for (i = 0; i < VL_MAX_PLANES; ++i)
+   for (i = 0; i < VL_NUM_COMPONENTS; ++i)
       pipe_resource_reference(&buffer->mv[i].resource, NULL);
 
 error_ycbcr:
-   for (i = 0; i < VL_MAX_PLANES; ++i)
+   for (i = 0; i < VL_NUM_COMPONENTS; ++i)
       pipe_resource_reference(&buffer->ycbcr[i].resource, NULL);
    return false;
 }
@@ -268,6 +270,7 @@ vl_vb_get_ycbcr(struct vl_vertex_buffer *buffer, int component)
    buf.stride = sizeof(struct vl_ycbcr_block);
    buf.buffer_offset = 0;
    buf.buffer = buffer->ycbcr[component].resource;
+   buf.user_buffer = NULL;
 
    return buf;
 }
@@ -282,6 +285,7 @@ vl_vb_get_mv(struct vl_vertex_buffer *buffer, int motionvector)
    buf.stride = sizeof(struct vl_motionvector);
    buf.buffer_offset = 0;
    buf.buffer = buffer->mv[motionvector].resource;
+   buf.user_buffer = NULL;
 
    return buf;
 }
@@ -293,7 +297,7 @@ vl_vb_map(struct vl_vertex_buffer *buffer, struct pipe_context *pipe)
 
    assert(buffer && pipe);
 
-   for (i = 0; i < VL_MAX_PLANES; ++i) {
+   for (i = 0; i < VL_NUM_COMPONENTS; ++i) {
       buffer->ycbcr[i].vertex_stream = pipe_buffer_map
       (
          pipe,
@@ -319,7 +323,7 @@ struct vl_ycbcr_block *
 vl_vb_get_ycbcr_stream(struct vl_vertex_buffer *buffer, int component)
 {
    assert(buffer);
-   assert(component < VL_MAX_PLANES);
+   assert(component < VL_NUM_COMPONENTS);
 
    return buffer->ycbcr[component].vertex_stream;
 }
@@ -348,7 +352,7 @@ vl_vb_unmap(struct vl_vertex_buffer *buffer, struct pipe_context *pipe)
 
    assert(buffer && pipe);
 
-   for (i = 0; i < VL_MAX_PLANES; ++i) {
+   for (i = 0; i < VL_NUM_COMPONENTS; ++i) {
       pipe_buffer_unmap(pipe, buffer->ycbcr[i].transfer);
    }
 
@@ -364,7 +368,7 @@ vl_vb_cleanup(struct vl_vertex_buffer *buffer)
 
    assert(buffer);
 
-   for (i = 0; i < VL_MAX_PLANES; ++i) {
+   for (i = 0; i < VL_NUM_COMPONENTS; ++i) {
       pipe_resource_reference(&buffer->ycbcr[i].resource, NULL);
    }
 

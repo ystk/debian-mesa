@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  6.5.2
  *
  * Copyright (C) 1999-2006  Brian Paul   All Rights Reserved.
  *
@@ -17,9 +16,10 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 
@@ -32,7 +32,9 @@
 #include "main/bufferobj.h"
 #include "main/context.h"
 #include "main/colormac.h"
+#include "main/fbobject.h"
 #include "main/macros.h"
+#include "main/mipmap.h"
 #include "main/image.h"
 #include "main/imports.h"
 #include "main/mtypes.h"
@@ -52,35 +54,11 @@ finish_or_flush( struct gl_context *ctx )
 {
    const XMesaContext xmesa = XMESA_CONTEXT(ctx);
    if (xmesa) {
-      _glthread_LOCK_MUTEX(_xmesa_lock);
+      mtx_lock(&_xmesa_lock);
       XSync( xmesa->display, False );
-      _glthread_UNLOCK_MUTEX(_xmesa_lock);
+      mtx_unlock(&_xmesa_lock);
    }
 }
-
-
-static void
-clear_color( struct gl_context *ctx,
-             const union gl_color_union color )
-{
-   if (ctx->DrawBuffer->Name == 0) {
-      const XMesaContext xmesa = XMESA_CONTEXT(ctx);
-      XMesaBuffer xmbuf = XMESA_BUFFER(ctx->DrawBuffer);
-
-      _mesa_unclamped_float_rgba_to_ubyte(xmesa->clearcolor, color.f);
-      xmesa->clearpixel = xmesa_color_to_pixel( ctx,
-                                                xmesa->clearcolor[0],
-                                                xmesa->clearcolor[1],
-                                                xmesa->clearcolor[2],
-                                                xmesa->clearcolor[3],
-                                                xmesa->xm_visual->undithered_pf );
-      _glthread_LOCK_MUTEX(_xmesa_lock);
-      XMesaSetForeground( xmesa->display, xmbuf->cleargc,
-                          xmesa->clearpixel );
-      _glthread_UNLOCK_MUTEX(_xmesa_lock);
-   }
-}
-
 
 
 /* Implements glColorMask() */
@@ -93,7 +71,7 @@ color_mask(struct gl_context *ctx,
    const int xclass = xmesa->xm_visual->visualType;
    (void) amask;
 
-   if (ctx->DrawBuffer->Name != 0)
+   if (_mesa_is_user_fbo(ctx->DrawBuffer))
       return;
 
    xmbuf = XMESA_BUFFER(ctx->DrawBuffer);
@@ -264,14 +242,25 @@ clear_nbit_ximage(struct gl_context *ctx, struct xmesa_renderbuffer *xrb,
 static void
 clear_buffers(struct gl_context *ctx, GLbitfield buffers)
 {
-   if (ctx->DrawBuffer->Name == 0) {
+   if (_mesa_is_winsys_fbo(ctx->DrawBuffer)) {
       /* this is a window system framebuffer */
       const GLuint *colorMask = (GLuint *) &ctx->Color.ColorMask[0];
+      const XMesaContext xmesa = XMESA_CONTEXT(ctx);
       XMesaBuffer b = XMESA_BUFFER(ctx->DrawBuffer);
       const GLint x = ctx->DrawBuffer->_Xmin;
       const GLint y = ctx->DrawBuffer->_Ymin;
       const GLint width = ctx->DrawBuffer->_Xmax - x;
       const GLint height = ctx->DrawBuffer->_Ymax - y;
+
+      _mesa_unclamped_float_rgba_to_ubyte(xmesa->clearcolor,
+                                          ctx->Color.ClearColor.f);
+      xmesa->clearpixel = xmesa_color_to_pixel(ctx,
+                                               xmesa->clearcolor[0],
+                                               xmesa->clearcolor[1],
+                                               xmesa->clearcolor[2],
+                                               xmesa->clearcolor[3],
+                                               xmesa->xm_visual->undithered_pf);
+      XMesaSetForeground(xmesa->display, b->cleargc, xmesa->clearpixel);
 
       /* we can't handle color or index masking */
       if (*colorMask == 0xffffffff && ctx->Color.IndexMask == 0xffffffff) {
@@ -317,7 +306,7 @@ can_do_DrawPixels_8R8G8B(struct gl_context *ctx, GLenum format, GLenum type)
    if (format == GL_BGRA &&
        type == GL_UNSIGNED_BYTE &&
        ctx->DrawBuffer &&
-       ctx->DrawBuffer->Name == 0 &&
+       _mesa_is_winsys_fbo(ctx->DrawBuffer) &&
        ctx->Pixel.ZoomX == 1.0 &&        /* no zooming */
        ctx->Pixel.ZoomY == 1.0 &&
        ctx->_ImageTransferState == 0 /* no color tables, scale/bias, etc */) {
@@ -377,12 +366,10 @@ xmesa_DrawPixels_8R8G8B( struct gl_context *ctx,
          buf = (GLubyte *) ctx->Driver.MapBufferRange(ctx, 0,
 						      unpack->BufferObj->Size,
 						      GL_MAP_READ_BIT,
-						      unpack->BufferObj);
+						      unpack->BufferObj,
+                                                      MAP_INTERNAL);
          if (!buf) {
-            /* buffer is already mapped - that's an error */
-            _mesa_error(ctx, GL_INVALID_OPERATION,
-                        "glDrawPixels(PBO is mapped)");
-            return;
+            return; /* error */
          }
          pixels = ADD_POINTERS(buf, pixels);
       }
@@ -428,7 +415,7 @@ xmesa_DrawPixels_8R8G8B( struct gl_context *ctx,
       }
 
       if (_mesa_is_bufferobj(unpack->BufferObj)) {
-         ctx->Driver.UnmapBuffer(ctx, unpack->BufferObj);
+         ctx->Driver.UnmapBuffer(ctx, unpack->BufferObj, MAP_INTERNAL);
       }
    }
    else {
@@ -450,7 +437,7 @@ can_do_DrawPixels_5R6G5B(struct gl_context *ctx, GLenum format, GLenum type)
        type == GL_UNSIGNED_SHORT_5_6_5 &&
        !ctx->Color.DitherFlag &&  /* no dithering */
        ctx->DrawBuffer &&
-       ctx->DrawBuffer->Name == 0 &&
+       _mesa_is_winsys_fbo(ctx->DrawBuffer) &&
        ctx->Pixel.ZoomX == 1.0 &&        /* no zooming */
        ctx->Pixel.ZoomY == 1.0 &&
        ctx->_ImageTransferState == 0 /* no color tables, scale/bias, etc */) {
@@ -511,12 +498,10 @@ xmesa_DrawPixels_5R6G5B( struct gl_context *ctx,
          buf = (GLubyte *) ctx->Driver.MapBufferRange(ctx, 0,
 						      unpack->BufferObj->Size,
 						      GL_MAP_READ_BIT,
-						      unpack->BufferObj);
+						      unpack->BufferObj,
+                                                      MAP_INTERNAL);
          if (!buf) {
-            /* buffer is already mapped - that's an error */
-            _mesa_error(ctx, GL_INVALID_OPERATION,
-                        "glDrawPixels(PBO is mapped)");
-            return;
+            return; /* error */
          }
          pixels = ADD_POINTERS(buf, pixels);
       }
@@ -561,7 +546,7 @@ xmesa_DrawPixels_5R6G5B( struct gl_context *ctx,
       }
 
       if (unpack->BufferObj->Name) {
-         ctx->Driver.UnmapBuffer(ctx, unpack->BufferObj);
+         ctx->Driver.UnmapBuffer(ctx, unpack->BufferObj, MAP_INTERNAL);
       }
    }
    else {
@@ -706,7 +691,7 @@ xmesa_update_state( struct gl_context *ctx, GLbitfield new_state )
    _vbo_InvalidateState( ctx, new_state );
    _swsetup_InvalidateState( ctx, new_state );
 
-   if (ctx->DrawBuffer->Name != 0)
+   if (_mesa_is_user_fbo(ctx->DrawBuffer))
       return;
 
    /*
@@ -749,25 +734,6 @@ xmesa_update_state( struct gl_context *ctx, GLbitfield new_state )
 }
 
 
-
-/**
- * In SW, we don't really compress GL_COMPRESSED_RGB[A] textures!
- */
-static gl_format
-choose_tex_format( struct gl_context *ctx, GLint internalFormat,
-                   GLenum format, GLenum type )
-{
-   switch (internalFormat) {
-      case GL_COMPRESSED_RGB_ARB:
-         return MESA_FORMAT_RGB888;
-      case GL_COMPRESSED_RGBA_ARB:
-         return MESA_FORMAT_RGBA8888;
-      default:
-         return _mesa_choose_tex_format(ctx, internalFormat, format, type);
-   }
-}
-
-
 /**
  * Called by glViewport.
  * This is a good time for us to poll the current X window size and adjust
@@ -780,17 +746,13 @@ choose_tex_format( struct gl_context *ctx, GLint internalFormat,
  * That problem led to the GLX_MESA_resize_buffers extension.
  */
 static void
-xmesa_viewport(struct gl_context *ctx, GLint x, GLint y, GLsizei w, GLsizei h)
+xmesa_viewport(struct gl_context *ctx)
 {
    XMesaContext xmctx = XMESA_CONTEXT(ctx);
    XMesaBuffer xmdrawbuf = XMESA_BUFFER(ctx->WinSysDrawBuffer);
    XMesaBuffer xmreadbuf = XMESA_BUFFER(ctx->WinSysReadBuffer);
    xmesa_check_and_update_buffer_size(xmctx, xmdrawbuf);
    xmesa_check_and_update_buffer_size(xmctx, xmreadbuf);
-   (void) x;
-   (void) y;
-   (void) w;
-   (void) h;
 }
 
 
@@ -834,9 +796,6 @@ xmesa_begin_query(struct gl_context *ctx, struct gl_query_object *q)
 /**
  * Return the difference between the two given times in microseconds.
  */
-#ifdef __VMS
-#define suseconds_t unsigned int
-#endif
 static GLuint64EXT
 time_diff(const struct timeval *t0, const struct timeval *t1)
 {
@@ -874,17 +833,15 @@ xmesa_init_driver_functions( XMesaVisual xmvisual,
 {
    driver->GetString = get_string;
    driver->UpdateState = xmesa_update_state;
-   driver->GetBufferSize = NULL; /* OBSOLETE */
    driver->Flush = finish_or_flush;
    driver->Finish = finish_or_flush;
-   driver->ClearColor = clear_color;
    driver->ColorMask = color_mask;
    driver->Enable = enable;
    driver->Viewport = xmesa_viewport;
    if (TEST_META_FUNCS) {
       driver->Clear = _mesa_meta_Clear;
       driver->CopyPixels = _mesa_meta_CopyPixels;
-      driver->BlitFramebuffer = _mesa_meta_BlitFramebuffer;
+      driver->BlitFramebuffer = _mesa_meta_and_swrast_BlitFramebuffer;
       driver->DrawPixels = _mesa_meta_DrawPixels;
       driver->Bitmap = _mesa_meta_Bitmap;
    }
@@ -904,11 +861,7 @@ xmesa_init_driver_functions( XMesaVisual xmvisual,
    driver->MapRenderbuffer = xmesa_MapRenderbuffer;
    driver->UnmapRenderbuffer = xmesa_UnmapRenderbuffer;
 
-#if ENABLE_EXT_texure_compression_s3tc
-   driver->ChooseTextureFormat = choose_tex_format;
-#else
-   (void) choose_tex_format;
-#endif
+   driver->GenerateMipmap = _mesa_generate_mipmap;
 
 #if ENABLE_EXT_timer_query
    driver->NewQueryObject = xmesa_new_query_object;

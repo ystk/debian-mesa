@@ -1,9 +1,13 @@
 TOP = ../../..
+top_builddir = $(TOP)
+# This can be a filthy lie. But it doesn't currently build out-of-tree
+# anyway, so it's no worse than what we've got now.
+top_srcdir = $(TOP)
 
 include $(TOP)/configs/current
 
 #CC=gcc
-#GL_CFLAGS=-Wall -ggdb3 -Os -DPTHREADS -D_REENTRANT $(RC_CFLAGS) $(CFLAGS)
+#GL_CFLAGS=-Wall -ggdb3 -Os -DHAVE_PTHREAD -D_REENTRANT $(RC_CFLAGS) $(CFLAGS)
 #GL_LDFLAGS=-L$(INSTALL_DIR)/lib -L$(X11_DIR)/lib $(LDFLAGS) -Wl,-single_module
 
 TCLSH=tclsh8.5
@@ -19,7 +23,7 @@ RM=rm
 #The directory with the final binaries.
 BUILD_DIR=builds
 
-all: $(TOP)/$(LIB_DIR)/$(GL_LIB_NAME)
+default: $(TOP)/$(LIB_DIR)/lib$(GL_LIB).$(LIB_EXT)
 
 SOURCES = \
 	apple_cgl.c \
@@ -54,7 +58,7 @@ SOURCES = \
 	../xfont.c \
 	../applegl_glx.c
 
-include $(TOP)/src/mesa/sources.mak
+include $(TOP)/src/mesa/Makefile.sources
 
 # override GLAPI_LIB
 GLAPI_LIB = $(TOP)/src/mapi/glapi/libglapi.a
@@ -84,10 +88,10 @@ INCLUDES = -I. -Iinclude -I..\
 
 ##### TARGETS #####
 
-default: depend $(TOP)/$(LIB_DIR)/$(GL_LIB_NAME)
+default: depend $(TOP)/$(LIB_DIR)/lib$(GL_LIB).$(LIB_EXT)
 
 # Make libGL
-$(TOP)/$(LIB_DIR)/$(GL_LIB_NAME):  $(OBJECTS) $(GLAPI_LIB) Makefile
+$(TOP)/$(LIB_DIR)/lib$(GL_LIB).$(LIB_EXT):  $(OBJECTS) $(GLAPI_LIB) Makefile
 	$(MKLIB) -o $(GL_LIB) -linker '$(CC)' -ldflags '$(LDFLAGS)' \
 		-major 1 -minor 2 $(MKLIB_OPTIONS) \
 		-install $(TOP)/$(LIB_DIR) -id $(INSTALL_LIB_DIR)/lib$(GL_LIB).1.dylib \
@@ -110,7 +114,7 @@ install_headers: include/GL/gl.h
 	$(INSTALL) -d $(DESTDIR)$(INSTALL_DIR)/include/GL
 	$(INSTALL) -m 644 include/GL/gl.h $(DESTDIR)$(INSTALL_DIR)/include/GL
 
-install_libraries: $(TOP)/$(LIB_DIR)/$(GL_LIB_NAME)
+install_libraries: $(TOP)/$(LIB_DIR)/lib$(GL_LIB).$(LIB_EXT)
 	$(MAKE) -C $(TOP)/src/mesa install-libgl
 
 install: install_libraries
@@ -121,7 +125,6 @@ clean:
 	-rm -f *.c~ *.h~
 	-rm -f *.dylib
 	-rm -f include/GL/gl.h
-	-rm -f $(TOP)/$(LIB_DIR)/$(GL_LIB_GLOB)
 	-rm -f *.o *~
 	-rm -f depend depend.bak
 

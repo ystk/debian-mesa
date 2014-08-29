@@ -1,7 +1,6 @@
 
 /*
  * Mesa 3-D graphics library
- * Version:  6.5
  *
  * Copyright (C) 1999-2006  Brian Paul   All Rights Reserved.
  *
@@ -18,12 +17,13 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  *
  * Authors:
- *    Keith Whitwell <keith@tungstengraphics.com>
+ *    Keith Whitwell <keithw@vmware.com>
  */
 
 /* Split indexed primitives with per-vertex copying.
@@ -32,7 +32,7 @@
 #include "main/glheader.h"
 #include "main/bufferobj.h"
 #include "main/imports.h"
-#include "main/image.h"
+#include "main/glformats.h"
 #include "main/macros.h"
 #include "main/mtypes.h"
 
@@ -171,6 +171,8 @@ dump_draw_info(struct gl_context *ctx,
 static void
 flush( struct copy_context *copy )
 {
+   struct gl_context *ctx = copy->ctx;
+   const struct gl_client_array **saved_arrays = ctx->Array._DrawArrays;
    GLuint i;
 
    /* Set some counters: 
@@ -189,15 +191,20 @@ flush( struct copy_context *copy )
    (void) dump_draw_info;
 #endif
 
-   copy->draw( copy->ctx,
-	       copy->dstarray_ptr,
+   ctx->Array._DrawArrays = copy->dstarray_ptr;
+   ctx->NewDriverState |= ctx->DriverFlags.NewArray;
+
+   copy->draw( ctx,
 	       copy->dstprim,
 	       copy->dstprim_nr,
 	       &copy->dstib,
 	       GL_TRUE,
 	       0,
 	       copy->dstbuf_nr - 1,
-	       NULL );
+	       NULL, NULL );
+
+   ctx->Array._DrawArrays = saved_arrays;
+   ctx->NewDriverState |= ctx->DriverFlags.NewArray;
 
    /* Reset all pointers: 
     */
@@ -444,11 +451,14 @@ replay_init( struct copy_context *copy )
 	 copy->varying[j].size = attr_size(copy->array[i]);
 	 copy->vertex_size += attr_size(copy->array[i]);
       
-	 if (_mesa_is_bufferobj(vbo) && !_mesa_bufferobj_mapped(vbo)) 
-	    ctx->Driver.MapBufferRange(ctx, 0, vbo->Size, GL_MAP_READ_BIT, vbo);
+	 if (_mesa_is_bufferobj(vbo) &&
+             !_mesa_bufferobj_mapped(vbo, MAP_INTERNAL))
+	    ctx->Driver.MapBufferRange(ctx, 0, vbo->Size, GL_MAP_READ_BIT, vbo,
+                                       MAP_INTERNAL);
 
-	 copy->varying[j].src_ptr = ADD_POINTERS(vbo->Pointer,
-						 copy->array[i]->Ptr);
+	 copy->varying[j].src_ptr =
+               ADD_POINTERS(vbo->Mappings[MAP_INTERNAL].Pointer,
+                            copy->array[i]->Ptr);
 
 	 copy->dstarray_ptr[i] = &copy->varying[j].dstarray;
       }
@@ -459,12 +469,13 @@ replay_init( struct copy_context *copy )
     * do it internally.
     */
    if (_mesa_is_bufferobj(copy->ib->obj) &&
-       !_mesa_bufferobj_mapped(copy->ib->obj)) 
+       !_mesa_bufferobj_mapped(copy->ib->obj, MAP_INTERNAL))
       ctx->Driver.MapBufferRange(ctx, 0, copy->ib->obj->Size, GL_MAP_READ_BIT,
-				 copy->ib->obj);
+				 copy->ib->obj, MAP_INTERNAL);
 
-   srcptr = (const GLubyte *) ADD_POINTERS(copy->ib->obj->Pointer,
-                                           copy->ib->ptr);
+   srcptr = (const GLubyte *)
+            ADD_POINTERS(copy->ib->obj->Mappings[MAP_INTERNAL].Pointer,
+                         copy->ib->ptr);
 
    switch (copy->ib->type) {
    case GL_UNSIGNED_BYTE:
@@ -565,15 +576,15 @@ replay_finish( struct copy_context *copy )
     */
    for (i = 0; i < copy->nr_varying; i++) {
       struct gl_buffer_object *vbo = copy->varying[i].array->BufferObj;
-      if (_mesa_is_bufferobj(vbo) && _mesa_bufferobj_mapped(vbo)) 
-	 ctx->Driver.UnmapBuffer(ctx, vbo);
+      if (_mesa_is_bufferobj(vbo) && _mesa_bufferobj_mapped(vbo, MAP_INTERNAL))
+	 ctx->Driver.UnmapBuffer(ctx, vbo, MAP_INTERNAL);
    }
 
    /* Unmap index buffer:
     */
    if (_mesa_is_bufferobj(copy->ib->obj) &&
-       _mesa_bufferobj_mapped(copy->ib->obj)) {
-      ctx->Driver.UnmapBuffer(ctx, copy->ib->obj);
+       _mesa_bufferobj_mapped(copy->ib->obj, MAP_INTERNAL)) {
+      ctx->Driver.UnmapBuffer(ctx, copy->ib->obj, MAP_INTERNAL);
    }
 }
 

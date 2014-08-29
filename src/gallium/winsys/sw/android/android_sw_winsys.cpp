@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  7.12
  *
  * Copyright (C) 2010-2011 LunarG Inc.
  *
@@ -75,7 +74,8 @@ namespace android {
 static void
 android_displaytarget_display(struct sw_winsys *ws,
                               struct sw_displaytarget *dt,
-                              void *context_private)
+                              void *context_private,
+                              struct pipe_box *box)
 {
 }
 

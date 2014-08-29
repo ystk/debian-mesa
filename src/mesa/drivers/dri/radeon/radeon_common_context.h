@@ -7,8 +7,8 @@
 #include "tnl/t_context.h"
 #include "main/colormac.h"
 
-#include "radeon_debug.h"
 #include "radeon_screen.h"
+#include "radeon_debug.h"
 #include "radeon_drm.h"
 #include "dri_util.h"
 #include "tnl/t_vertex.h"
@@ -110,28 +110,18 @@ struct radeon_framebuffer
 
 
 struct radeon_colorbuffer_state {
-	GLuint clear;
 	int roundEnable;
 	struct gl_renderbuffer *rb;
 	uint32_t draw_offset; /* offset into color renderbuffer - FBOs */
 };
 
 struct radeon_depthbuffer_state {
-	GLuint clear;
 	struct gl_renderbuffer *rb;
 };
 
 struct radeon_scissor_state {
 	drm_clip_rect_t rect;
 	GLboolean enabled;
-
-	GLuint numClipRects;	/* Cliprects active */
-	GLuint numAllocedClipRects;	/* Cliprects available */
-	drm_clip_rect_t *pClipRects;
-};
-
-struct radeon_stencilbuffer_state {
-	GLuint clear;		/* rb3d_stencilrefmask value */
 };
 
 struct radeon_state_atom {
@@ -377,7 +367,6 @@ struct radeon_state {
 	struct radeon_colorbuffer_state color;
 	struct radeon_depthbuffer_state depth;
 	struct radeon_scissor_state scissor;
-	struct radeon_stencilbuffer_state stencil;
 };
 
 /**
@@ -395,7 +384,7 @@ struct radeon_cmdbuf {
 };
 
 struct radeon_context {
-   struct gl_context *glCtx;
+   struct gl_context glCtx;             /**< base class, must be first */
    radeonScreenPtr radeonScreen;	/* Screen private DRI data */
 
    /* Texture object bookkeeping
@@ -485,11 +474,11 @@ struct radeon_context {
 	   void (*free_context)(struct gl_context *ctx);
 	   void (*emit_query_finish)(radeonContextPtr radeon);
 	   void (*update_scissor)(struct gl_context *ctx);
-	   unsigned (*check_blit)(gl_format mesa_format, uint32_t dst_pitch);
+	   unsigned (*check_blit)(mesa_format mesa_format, uint32_t dst_pitch);
 	   unsigned (*blit)(struct gl_context *ctx,
                         struct radeon_bo *src_bo,
                         intptr_t src_offset,
-                        gl_format src_mesaformat,
+                        mesa_format src_mesaformat,
                         unsigned src_pitch,
                         unsigned src_width,
                         unsigned src_height,
@@ -497,7 +486,7 @@ struct radeon_context {
                         unsigned src_y_offset,
                         struct radeon_bo *dst_bo,
                         intptr_t dst_offset,
-                        gl_format dst_mesaformat,
+                        mesa_format dst_mesaformat,
                         unsigned dst_pitch,
                         unsigned dst_width,
                         unsigned dst_height,
@@ -506,11 +495,14 @@ struct radeon_context {
                         unsigned reg_width,
                         unsigned reg_height,
                         unsigned flip_y);
-	   unsigned (*is_format_renderable)(gl_format mesa_format);
+	   unsigned (*is_format_renderable)(mesa_format mesa_format);
    } vtbl;
 };
 
-#define RADEON_CONTEXT(glctx) ((radeonContextPtr)(ctx->DriverCtx))
+static inline radeonContextPtr RADEON_CONTEXT(struct gl_context *ctx)
+{
+	return (radeonContextPtr) ctx;
+}
 
 static inline __DRIdrawable* radeon_get_drawable(radeonContextPtr radeon)
 {
@@ -523,6 +515,7 @@ static inline __DRIdrawable* radeon_get_readable(radeonContextPtr radeon)
 }
 
 GLboolean radeonInitContext(radeonContextPtr radeon,
+                            gl_api api,
 			    struct dd_function_table* functions,
 			    const struct gl_config * glVisual,
 			    __DRIcontext * driContextPriv,

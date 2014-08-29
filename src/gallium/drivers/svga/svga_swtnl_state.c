@@ -35,21 +35,21 @@
 #include "svga_swtnl_private.h"
 
 
-#define SVGA_POINT_ADJ_X -0.375
-#define SVGA_POINT_ADJ_Y -0.5
+#define SVGA_POINT_ADJ_X -0.375f
+#define SVGA_POINT_ADJ_Y -0.5f
 
-#define SVGA_LINE_ADJ_X -0.5
-#define SVGA_LINE_ADJ_Y -0.5
+#define SVGA_LINE_ADJ_X -0.5f
+#define SVGA_LINE_ADJ_Y -0.5f
 
-#define SVGA_TRIANGLE_ADJ_X -0.375
-#define SVGA_TRIANGLE_ADJ_Y -0.5
+#define SVGA_TRIANGLE_ADJ_X -0.375f
+#define SVGA_TRIANGLE_ADJ_Y -0.5f
 
 
 static void set_draw_viewport( struct svga_context *svga )
 {
    struct pipe_viewport_state vp = svga->curr.viewport;
-   float adjx = 0;
-   float adjy = 0;
+   float adjx = 0.0f;
+   float adjy = 0.0f;
 
    switch (svga->curr.reduced_prim) {
    case PIPE_PRIM_POINTS:
@@ -63,8 +63,8 @@ static void set_draw_viewport( struct svga_context *svga )
        */
       if (svga->curr.rast->need_pipeline & SVGA_PIPELINE_FLAG_LINES)
       {
-         adjx = SVGA_LINE_ADJ_X + 0.175;
-         adjy = SVGA_LINE_ADJ_Y - 0.175;
+         adjx = SVGA_LINE_ADJ_X + 0.175f;
+         adjy = SVGA_LINE_ADJ_Y - 0.175f;
       }
       else {
          adjx = SVGA_LINE_ADJ_X;
@@ -80,7 +80,7 @@ static void set_draw_viewport( struct svga_context *svga )
    vp.translate[0] += adjx;
    vp.translate[1] += adjy;
 
-   draw_set_viewport_state(svga->swtnl.draw, &vp);
+   draw_set_viewport_states(svga->swtnl.draw, 0, 1, &vp);
 }
 
 static enum pipe_error
@@ -98,7 +98,7 @@ update_swtnl_draw( struct svga_context *svga,
                                 svga->curr.fs->draw_shader);
 
    if (dirty & SVGA_NEW_VBUFFER)
-      draw_set_vertex_buffers(svga->swtnl.draw, 
+      draw_set_vertex_buffers(svga->swtnl.draw, 0,
                               svga->curr.num_vertex_buffers, 
                               svga->curr.vb);
 
@@ -121,11 +121,17 @@ update_swtnl_draw( struct svga_context *svga,
                                 &svga->curr.rast->templ,
                                 (void *) svga->curr.rast);
 
+   /* Tell the draw module how deep the Z/depth buffer is.
+    *
+    * If no depth buffer is bound, send the utility function the
+    * format for no bound depth (PIPE_FORMAT_NONE).
+    */
    if (dirty & SVGA_NEW_FRAME_BUFFER)
-      draw_set_mrd(svga->swtnl.draw, 
-                   svga->curr.depthscale);
+      draw_set_zs_format(svga->swtnl.draw, 
+         (svga->curr.framebuffer.zsbuf) ?
+             svga->curr.framebuffer.zsbuf->format : PIPE_FORMAT_NONE);
 
-   return 0;
+   return PIPE_OK;
 }
 
 
@@ -156,11 +162,13 @@ svga_swtnl_update_vdecl( struct svga_context *svga )
    struct svga_fragment_shader *fs = svga->curr.fs;
    int offset = 0;
    int nr_decls = 0;
-   int src, i;
+   int src;
+   unsigned i;
 
    memset(vinfo, 0, sizeof(*vinfo));
    memset(vdecl, 0, sizeof(vdecl));
 
+   draw_prepare_shader_outputs(draw);
    /* always add position */
    src = draw_find_shader_output(draw, TGSI_SEMANTIC_POSITION, 0);
    draw_emit_vertex_attr(vinfo, EMIT_4F, INTERP_LINEAR, src);
@@ -221,12 +229,12 @@ svga_swtnl_update_vdecl( struct svga_context *svga )
       vdecl[i].array.stride = offset;
 
    if (memcmp(svga_render->vdecl, vdecl, sizeof(vdecl)) == 0)
-      return 0;
+      return PIPE_OK;
 
    memcpy(svga_render->vdecl, vdecl, sizeof(vdecl));
    svga->swtnl.new_vdecl = TRUE;
 
-   return 0;
+   return PIPE_OK;
 }
 
 

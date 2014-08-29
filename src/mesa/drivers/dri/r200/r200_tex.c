@@ -28,7 +28,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 /*
  * Authors:
- *   Keith Whitwell <keith@tungstengraphics.com>
+ *   Keith Whitwell <keithw@vmware.com>
  */
 
 #include "main/glheader.h"
@@ -37,10 +37,10 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "main/context.h"
 #include "main/enums.h"
 #include "main/image.h"
-#include "main/mfeatures.h"
 #include "main/simple_list.h"
 #include "main/teximage.h"
 #include "main/texobj.h"
+#include "main/samplerobj.h"
 
 #include "radeon_mipmap_tree.h"
 #include "r200_context.h"
@@ -306,7 +306,7 @@ static void r200TexEnv( struct gl_context *ctx, GLenum target,
 
    /* This is incorrect: Need to maintain this data for each of
     * GL_TEXTURE_{123}D, GL_TEXTURE_RECTANGLE_NV, etc, and switch
-    * between them according to _ReallyEnabled.
+    * between them according to _Current->Target.
     */
    switch ( pname ) {
    case GL_TEXTURE_ENV_COLOR: {
@@ -360,42 +360,40 @@ static void r200TexEnv( struct gl_context *ctx, GLenum target,
    }
 }
 
+void r200TexUpdateParameters(struct gl_context *ctx, GLuint unit)
+{
+   struct gl_sampler_object *samp = _mesa_get_samplerobj(ctx, unit);
+   radeonTexObj* t = radeon_tex_obj(ctx->Texture.Unit[unit]._Current);
+
+   r200SetTexMaxAnisotropy(t , samp->MaxAnisotropy);
+   r200SetTexFilter(t, samp->MinFilter, samp->MagFilter);
+   r200SetTexWrap(t, samp->WrapS, samp->WrapT, samp->WrapR);
+   r200SetTexBorderColor(t, samp->BorderColor.f);
+}
 
 /**
  * Changes variables and flags for a state update, which will happen at the
  * next UpdateTextureState
  */
-
-static void r200TexParameter( struct gl_context *ctx, GLenum target,
+static void r200TexParameter( struct gl_context *ctx,
 				struct gl_texture_object *texObj,
 				GLenum pname, const GLfloat *params )
 {
    radeonTexObj* t = radeon_tex_obj(texObj);
 
    radeon_print(RADEON_TEXTURE | RADEON_STATE, RADEON_VERBOSE,
-		"%s(%p, tex %p)  target %s, pname %s\n",
+		"%s(%p, tex %p)  pname %s\n",
 		__FUNCTION__, ctx, texObj,
-		_mesa_lookup_enum_by_nr( target ),
 	       _mesa_lookup_enum_by_nr( pname ) );
 
    switch ( pname ) {
    case GL_TEXTURE_MIN_FILTER:
    case GL_TEXTURE_MAG_FILTER:
    case GL_TEXTURE_MAX_ANISOTROPY_EXT:
-      r200SetTexMaxAnisotropy( t, texObj->Sampler.MaxAnisotropy );
-      r200SetTexFilter( t, texObj->Sampler.MinFilter, texObj->Sampler.MagFilter );
-      break;
-
    case GL_TEXTURE_WRAP_S:
    case GL_TEXTURE_WRAP_T:
    case GL_TEXTURE_WRAP_R:
-      r200SetTexWrap( t, texObj->Sampler.WrapS, texObj->Sampler.WrapT, texObj->Sampler.WrapR );
-      break;
-
    case GL_TEXTURE_BORDER_COLOR:
-      r200SetTexBorderColor( t, texObj->Sampler.BorderColor.f );
-      break;
-
    case GL_TEXTURE_BASE_LEVEL:
    case GL_TEXTURE_MAX_LEVEL:
    case GL_TEXTURE_MIN_LOD:
@@ -422,7 +420,7 @@ static void r200DeleteTexture(struct gl_context * ctx, struct gl_texture_object 
    if (rmesa) {
       int i;
       radeon_firevertices(&rmesa->radeon);
-      for ( i = 0 ; i < rmesa->radeon.glCtx->Const.MaxTextureUnits ; i++ ) {
+      for ( i = 0 ; i < rmesa->radeon.glCtx.Const.MaxTextureUnits ; i++ ) {
 	 if ( t == rmesa->state.texture.unit[i].texobj ) {
 	    rmesa->state.texture.unit[i].texobj = NULL;
 	    rmesa->hw.tex[i].dirty = GL_FALSE;
@@ -477,7 +475,7 @@ static struct gl_texture_object *r200NewTextureObject(struct gl_context * ctx,
 	   __FUNCTION__, ctx,
 	   _mesa_lookup_enum_by_nr(target), t);
 
-   _mesa_initialize_texture_object(&t->base, name, target);
+   _mesa_initialize_texture_object(ctx, &t->base, name, target);
    t->base.Sampler.MaxAnisotropy = rmesa->radeon.initialMaxAnisotropy;
 
    /* Initialize hardware state */
@@ -487,6 +485,16 @@ static struct gl_texture_object *r200NewTextureObject(struct gl_context * ctx,
    r200SetTexBorderColor(t, t->base.Sampler.BorderColor.f);
 
    return &t->base;
+}
+
+static struct gl_sampler_object *
+r200NewSamplerObject(struct gl_context *ctx, GLuint name)
+{
+   r200ContextPtr rmesa = R200_CONTEXT(ctx);
+   struct gl_sampler_object *samp = _mesa_new_sampler_object(ctx, name);
+   if (samp)
+      samp->MaxAnisotropy = rmesa->radeon.initialMaxAnisotropy;
+   return samp;
 }
 
 
@@ -506,4 +514,5 @@ void r200InitTextureFuncs( radeonContextPtr radeon, struct dd_function_table *fu
    functions->TexEnv			= r200TexEnv;
    functions->TexParameter		= r200TexParameter;
    functions->TexGen			= r200TexGen;
+   functions->NewSamplerObject		= r200NewSamplerObject;
 }

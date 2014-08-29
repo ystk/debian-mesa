@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -41,8 +41,8 @@
 
 enum VS_OUTPUT
 {
-   VS_O_VPOS,
-   VS_O_VTOP,
+   VS_O_VPOS = 0,
+   VS_O_VTOP = 0,
    VS_O_VBOTTOM,
 
    VS_O_FLAGS = VS_O_VTOP,
@@ -64,7 +64,7 @@ calc_position(struct vl_mc *r, struct ureg_program *shader, struct ureg_src bloc
    o_vpos = ureg_DECL_output(shader, TGSI_SEMANTIC_POSITION, VS_O_VPOS);
 
    /*
-    * block_scale = (MACROBLOCK_WIDTH, MACROBLOCK_HEIGHT) / (dst.width, dst.height)
+    * block_scale = (VL_MACROBLOCK_WIDTH, VL_MACROBLOCK_HEIGHT) / (dst.width, dst.height)
     *
     * t_vpos = (vpos + vrect) * block_scale
     * o_vpos.xy = t_vpos
@@ -116,8 +116,8 @@ create_ref_vert_shader(struct vl_mc *r)
    vmv[1] = ureg_DECL_vs_input(shader, VS_I_MV_BOTTOM);
 
    t_vpos = calc_position(r, shader, ureg_imm2f(shader,
-      (float)MACROBLOCK_WIDTH / r->buffer_width,
-      (float)MACROBLOCK_HEIGHT / r->buffer_height)
+      (float)VL_MACROBLOCK_WIDTH / r->buffer_width,
+      (float)VL_MACROBLOCK_HEIGHT / r->buffer_height)
    );
 
    o_vmv[0] = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, VS_O_VTOP);
@@ -157,7 +157,7 @@ create_ref_frag_shader(struct vl_mc *r)
 {
    const float y_scale =
       r->buffer_height / 2 *
-      r->macroblock_size / MACROBLOCK_HEIGHT;
+      r->macroblock_size / VL_MACROBLOCK_HEIGHT;
 
    struct ureg_program *shader;
    struct ureg_src tc[2], sampler;
@@ -231,8 +231,8 @@ create_ycbcr_vert_shader(struct vl_mc *r, vl_mc_ycbcr_vert_shader vs_callback, v
    struct ureg_dst o_vpos, o_flags;
 
    struct vertex2f scale = {
-      (float)BLOCK_WIDTH / r->buffer_width * MACROBLOCK_WIDTH / r->macroblock_size,
-      (float)BLOCK_HEIGHT / r->buffer_height * MACROBLOCK_HEIGHT / r->macroblock_size
+      (float)VL_BLOCK_WIDTH / r->buffer_width * VL_MACROBLOCK_WIDTH / r->macroblock_size,
+      (float)VL_BLOCK_HEIGHT / r->buffer_height * VL_MACROBLOCK_HEIGHT / r->macroblock_size
    };
 
    unsigned label;
@@ -271,7 +271,7 @@ create_ycbcr_vert_shader(struct vl_mc *r, vl_mc_ycbcr_vert_shader vs_callback, v
             ureg_scalar(vpos, TGSI_SWIZZLE_Z), ureg_imm1f(shader, 0.5f));
    ureg_MOV(shader, ureg_writemask(o_flags, TGSI_WRITEMASK_W), ureg_imm1f(shader, -1.0f));
 
-   if (r->macroblock_size == MACROBLOCK_HEIGHT) { //TODO
+   if (r->macroblock_size == VL_MACROBLOCK_HEIGHT) { //TODO
       ureg_IF(shader, ureg_scalar(vpos, TGSI_SWIZZLE_W), &label);
 
          ureg_CMP(shader, ureg_writemask(t_vtex, TGSI_WRITEMASK_XY),
@@ -340,7 +340,7 @@ create_ycbcr_frag_shader(struct vl_mc *r, float scale, bool invert,
 
    ureg_IF(shader, ureg_scalar(ureg_src(tmp), TGSI_SWIZZLE_Y), &label);
 
-      ureg_KILP(shader);
+      ureg_KILL(shader);
 
    ureg_fixup_label(shader, label, ureg_get_instruction_number(shader));
    ureg_ELSE(shader, &label);
@@ -427,8 +427,9 @@ init_pipe_state(struct vl_mc *r)
    /*rs_state.sprite_coord_enable */
    rs_state.sprite_coord_mode = PIPE_SPRITE_COORD_UPPER_LEFT;
    rs_state.point_quad_rasterization = true;
-   rs_state.point_size = BLOCK_WIDTH;
-   rs_state.gl_rasterization_rules = true;
+   rs_state.point_size = VL_BLOCK_WIDTH;
+   rs_state.half_pixel_center = true;
+   rs_state.bottom_edge_rule = true;
    rs_state.depth_clip = 1;
    r->rs_state = r->pipe->create_rasterizer_state(r->pipe, &rs_state);
    if (!r->rs_state)
@@ -599,7 +600,7 @@ prepare_pipe_4_rendering(struct vl_mc *renderer, struct vl_mc_buffer *buffer, un
       renderer->pipe->bind_blend_state(renderer->pipe, renderer->blend_clear[mask]);
 
    renderer->pipe->set_framebuffer_state(renderer->pipe, &buffer->fb_state);
-   renderer->pipe->set_viewport_state(renderer->pipe, &buffer->viewport);
+   renderer->pipe->set_viewport_states(renderer->pipe, 0, 1, &buffer->viewport);
 }
 
 void
@@ -612,12 +613,14 @@ vl_mc_render_ref(struct vl_mc *renderer, struct vl_mc_buffer *buffer, struct pip
    renderer->pipe->bind_vs_state(renderer->pipe, renderer->vs_ref);
    renderer->pipe->bind_fs_state(renderer->pipe, renderer->fs_ref);
 
-   renderer->pipe->set_fragment_sampler_views(renderer->pipe, 1, &ref);
-   renderer->pipe->bind_fragment_sampler_states(renderer->pipe, 1, &renderer->sampler_ref);
+   renderer->pipe->set_sampler_views(renderer->pipe, PIPE_SHADER_FRAGMENT,
+                                     0, 1, &ref);
+   renderer->pipe->bind_sampler_states(renderer->pipe, PIPE_SHADER_FRAGMENT,
+                                       0, 1, &renderer->sampler_ref);
 
    util_draw_arrays_instanced(renderer->pipe, PIPE_PRIM_QUADS, 0, 4, 0,
-                              renderer->buffer_width / MACROBLOCK_WIDTH *
-                              renderer->buffer_height / MACROBLOCK_HEIGHT);
+                              renderer->buffer_width / VL_MACROBLOCK_WIDTH *
+                              renderer->buffer_height / VL_MACROBLOCK_HEIGHT);
 
    buffer->surface_cleared = true;
 }

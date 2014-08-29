@@ -38,20 +38,17 @@
 #undef NDEBUG
 #include <assert.h>
 
-#include "nouveau_device.h"
-#include "nouveau_grobj.h"
-#include "nouveau_channel.h"
-#include "nouveau_bo.h"
-#include "nouveau_notifier.h"
+#include <nouveau.h>
 #include "nouveau_screen.h"
 #include "nouveau_state.h"
 #include "nouveau_surface.h"
-#include "nv04_pushbuf.h"
+#include "nouveau_local.h"
 
 #define DRIVER_AUTHOR	"Nouveau"
 
 struct nouveau_driver {
 	struct gl_context *(*context_create)(struct nouveau_screen *screen,
+				     gl_api api,
 				     const struct gl_config *visual,
 				     struct gl_context *share_ctx);
 	void (*context_destroy)(struct gl_context *ctx);

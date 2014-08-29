@@ -145,6 +145,8 @@ PIPE_FORMAT_YUYV                 , subsampled, 2, 1, x32 ,     ,     ,     , xyz
 # same subsampling but with rgb channels
 PIPE_FORMAT_R8G8_B8G8_UNORM      , subsampled, 2, 1, x32 ,     ,     ,     , xyz1, rgb
 PIPE_FORMAT_G8R8_G8B8_UNORM      , subsampled, 2, 1, x32 ,     ,     ,     , xyz1, rgb
+PIPE_FORMAT_G8R8_B8R8_UNORM      , subsampled, 2, 1, x32 ,     ,     ,     , yxz1, rgb
+PIPE_FORMAT_R8G8_R8B8_UNORM      , subsampled, 2, 1, x32 ,     ,     ,     , yxz1, rgb
 
 # some special formats not fitting anywhere else
 PIPE_FORMAT_R11G11B10_FLOAT       , other,      1,  1, x32 ,     ,     ,     , xyz1, rgb
@@ -270,8 +272,8 @@ PIPE_FORMAT_NV12                  , other, 1, 1, x8  , x8  , x8  , x8  , xyzw, y
 PIPE_FORMAT_NV21                  , other, 1, 1, x8  , x8  , x8  , x8  , xyzw, yuv
 
 # Usually used to implement IA44 and AI44 formats in video decoding
-PIPE_FORMAT_R4A4_UNORM            , plain, 1, 1, un4 , un4 ,     ,     , y00x, rgb
-PIPE_FORMAT_A4R4_UNORM            , plain, 1, 1, un4 , un4 ,     ,     , x00y, rgb
+PIPE_FORMAT_A4R4_UNORM            , plain, 1, 1, un4 , un4 ,     ,     , y00x, rgb
+PIPE_FORMAT_R4A4_UNORM            , plain, 1, 1, un4 , un4 ,     ,     , x00y, rgb
 PIPE_FORMAT_R8A8_UNORM            , plain, 1, 1, un8 , un8 ,     ,     , x00y, rgb
 PIPE_FORMAT_A8R8_UNORM            , plain, 1, 1, un8 , un8 ,     ,     , y00x, rgb
 
@@ -344,3 +346,33 @@ PIPE_FORMAT_L32_SINT                , plain, 1, 1, sp32, , , , xxx1, rgb
 PIPE_FORMAT_L32A32_SINT             , plain, 1, 1, sp32, sp32, , , xxxy, rgb
 
 PIPE_FORMAT_B10G10R10A2_UINT        , plain, 1, 1, up10, up10, up10, up2, zyxw, rgb
+
+PIPE_FORMAT_R8G8B8X8_SNORM          , plain, 1, 1, sn8,  sn8,  sn8,  x8,  xyz1, rgb
+PIPE_FORMAT_R8G8B8X8_SRGB           , plain, 1, 1, un8,  un8,  un8,  x8,  xyz1, srgb
+PIPE_FORMAT_R8G8B8X8_UINT           , plain, 1, 1, up8,  up8,  up8,  x8,  xyz1, rgb
+PIPE_FORMAT_R8G8B8X8_SINT           , plain, 1, 1, sp8,  sp8,  sp8,  x8,  xyz1, rgb
+PIPE_FORMAT_B10G10R10X2_UNORM       , plain, 1, 1, un10, un10, un10, x2,  zyx1, rgb
+PIPE_FORMAT_R16G16B16X16_UNORM      , plain, 1, 1, un16, un16, un16, x16, xyz1, rgb
+PIPE_FORMAT_R16G16B16X16_SNORM      , plain, 1, 1, sn16, sn16, sn16, x16, xyz1, rgb
+PIPE_FORMAT_R16G16B16X16_FLOAT      , plain, 1, 1, f16,  f16,  f16,  x16, xyz1, rgb
+PIPE_FORMAT_R16G16B16X16_UINT       , plain, 1, 1, up16, up16, up16, x16, xyz1, rgb
+PIPE_FORMAT_R16G16B16X16_SINT       , plain, 1, 1, sp16, sp16, sp16, x16, xyz1, rgb
+PIPE_FORMAT_R32G32B32X32_FLOAT      , plain, 1, 1, f32,  f32,  f32,  x32, xyz1, rgb
+PIPE_FORMAT_R32G32B32X32_UINT       , plain, 1, 1, up32, up32, up32, x32, xyz1, rgb
+PIPE_FORMAT_R32G32B32X32_SINT       , plain, 1, 1, sp32, sp32, sp32, x32, xyz1, rgb
+
+PIPE_FORMAT_R8A8_SNORM              , plain, 1, 1, sn8  ,  sn8 ,     ,     , x00y, rgb
+PIPE_FORMAT_R16A16_UNORM            , plain, 1, 1, un16 , un16 ,     ,     , x00y, rgb
+PIPE_FORMAT_R16A16_SNORM            , plain, 1, 1, sn16 , sn16 ,     ,     , x00y, rgb
+PIPE_FORMAT_R16A16_FLOAT            , plain, 1, 1, f16  , f16  ,     ,     , x00y, rgb
+PIPE_FORMAT_R32A32_FLOAT            , plain, 1, 1, f32  , f32  ,     ,     , x00y, rgb
+PIPE_FORMAT_R8A8_UINT               , plain, 1, 1, up8  , up8  ,     ,     , x00y, rgb
+PIPE_FORMAT_R8A8_SINT               , plain, 1, 1, sp8  , sp8  ,     ,     , x00y, rgb
+PIPE_FORMAT_R16A16_UINT             , plain, 1, 1, up16 , up16 ,     ,     , x00y, rgb
+PIPE_FORMAT_R16A16_SINT             , plain, 1, 1, sp16 , sp16 ,     ,     , x00y, rgb
+PIPE_FORMAT_R32A32_UINT             , plain, 1, 1, up32 , up32 ,     ,     , x00y, rgb
+PIPE_FORMAT_R32A32_SINT             , plain, 1, 1, sp32 , sp32 ,     ,     , x00y, rgb
+PIPE_FORMAT_R10G10B10A2_UINT        , plain, 1, 1, up10 , up10 , up10, up2 , xyzw, rgb
+
+PIPE_FORMAT_B5G6R5_SRGB             , plain, 1, 1, un5 , un6 , un5 ,     , zyx1, srgb
+

@@ -132,20 +132,10 @@ static GLuint findOption (const driOptionCache *cache, const char *name) {
     return hash;
 }
 
-/** \brief Count the real number of options in an option cache */
-static GLuint countOptions (const driOptionCache *cache) {
-    GLuint size = 1 << cache->tableSize;
-    GLuint i, count = 0;
-    for (i = 0; i < size; ++i)
-	if (cache->info[i].name)
-	    count++;
-    return count;
-}
-
-/** \brief Like strdup but using MALLOC and with error checking. */
+/** \brief Like strdup but using malloc and with error checking. */
 #define XSTRDUP(dest,source) do { \
     GLuint len = strlen (source); \
-    if (!(dest = MALLOC (len+1))) { \
+    if (!(dest = malloc(len+1))) { \
 	fprintf (stderr, "%s: %d: out of memory.\n", __FILE__, __LINE__); \
 	abort(); \
     } \
@@ -347,7 +337,7 @@ static GLboolean parseRanges (driOptionInfo *info, const XML_Char *string) {
 	if (*range == ',')
 	    ++nRanges;
 
-    if ((ranges = MALLOC (nRanges*sizeof(driOptionRange))) == NULL) {
+    if ((ranges = malloc(nRanges*sizeof(driOptionRange))) == NULL) {
 	fprintf (stderr, "%s: %d: out of memory.\n", __FILE__, __LINE__);
 	abort();
     }
@@ -382,9 +372,9 @@ static GLboolean parseRanges (driOptionInfo *info, const XML_Char *string) {
 	else
 	    range = NULL;
     }
-    FREE (cp);
+    free(cp);
     if (i < nRanges) {
-	FREE (ranges);
+	free(ranges);
 	return GL_FALSE;
     } else
 	assert (range == NULL);
@@ -685,25 +675,18 @@ static void optInfoEndElem (void *userData, const XML_Char *name) {
     }
 }
 
-void driParseOptionInfo (driOptionCache *info,
-			 const char *configOptions, GLuint nConfigOptions) {
+void driParseOptionInfo (driOptionCache *info, const char *configOptions) {
     XML_Parser p;
     int status;
     struct OptInfoData userData;
     struct OptInfoData *data = &userData;
-    GLuint realNoptions;
 
-  /* determine hash table size and allocate memory:
-   * 3/2 of the number of options, rounded up, so there remains always
-   * at least one free entry. This is needed for detecting undefined
-   * options in configuration files without getting a hash table overflow.
-   * Round this up to a power of two. */
-    GLuint minSize = (nConfigOptions*3 + 1) / 2;
-    GLuint size, log2size;
-    for (size = 1, log2size = 0; size < minSize; size <<= 1, ++log2size);
-    info->tableSize = log2size;
-    info->info = CALLOC (size * sizeof (driOptionInfo));
-    info->values = CALLOC (size * sizeof (driOptionValue));
+    /* Make the hash table big enough to fit more than the maximum number of
+     * config options we've ever seen in a driver.
+     */
+    info->tableSize = 6;
+    info->info = calloc(1 << info->tableSize, sizeof (driOptionInfo));
+    info->values = calloc(1 << info->tableSize, sizeof (driOptionValue));
     if (info->info == NULL || info->values == NULL) {
 	fprintf (stderr, "%s: %d: out of memory.\n", __FILE__, __LINE__);
 	abort();
@@ -728,17 +711,6 @@ void driParseOptionInfo (driOptionCache *info,
 	XML_FATAL ("%s.", XML_ErrorString(XML_GetErrorCode(p)));
 
     XML_ParserFree (p);
-
-  /* Check if the actual number of options matches nConfigOptions.
-   * A mismatch is not fatal (a hash table overflow would be) but we
-   * want the driver developer's attention anyway. */
-    realNoptions = countOptions (info);
-    if (realNoptions != nConfigOptions) {
-	fprintf (stderr,
-		 "Error: nConfigOptions (%u) does not match the actual number of options in\n"
-		 "       __driConfigOptions (%u).\n",
-		 nConfigOptions, realNoptions);
-    }
 }
 
 /** \brief Parser context for configuration files. */
@@ -812,7 +784,9 @@ static void parseOptConfAttr (struct OptConfData *data, const XML_Char **attr) {
 	driOptionCache *cache = data->cache;
 	GLuint opt = findOption (cache, name);
 	if (cache->info[opt].name == NULL)
-	    XML_WARNING ("undefined option: %s.", name);
+            /* don't use XML_WARNING, drirc defines options for all drivers,
+             * but not all drivers support them */
+            return;
 	else if (getenv (cache->info[opt].name))
 	  /* don't use XML_WARNING, we want the user to see this! */
 	    fprintf (stderr, "ATTENTION: option value of option %s ignored.\n",
@@ -895,7 +869,7 @@ static void optConfEndElem (void *userData, const XML_Char *name) {
 static void initOptionCache (driOptionCache *cache, const driOptionCache *info) {
     cache->info = info->info;
     cache->tableSize = info->tableSize;
-    cache->values = MALLOC ((1<<info->tableSize) * sizeof (driOptionValue));
+    cache->values = malloc((1<<info->tableSize) * sizeof (driOptionValue));
     if (cache->values == NULL) {
 	fprintf (stderr, "%s: %d: out of memory.\n", __FILE__, __LINE__);
 	abort();
@@ -959,7 +933,7 @@ void driParseConfigFiles (driOptionCache *cache, const driOptionCache *info,
 
     if ((home = getenv ("HOME"))) {
 	GLuint len = strlen (home);
-	filenames[1] = MALLOC (len + 7+1);
+	filenames[1] = malloc(len + 7+1);
 	if (filenames[1] == NULL)
 	    __driUtilMessage ("Can't allocate memory for %s/.drirc.", home);
 	else {
@@ -989,8 +963,7 @@ void driParseConfigFiles (driOptionCache *cache, const driOptionCache *info,
 	XML_ParserFree (p);
     }
 
-    if (filenames[1])
-	FREE (filenames[1]);
+    free(filenames[1]);
 }
 
 void driDestroyOptionInfo (driOptionCache *info) {
@@ -999,18 +972,16 @@ void driDestroyOptionInfo (driOptionCache *info) {
 	GLuint i, size = 1 << info->tableSize;
 	for (i = 0; i < size; ++i) {
 	    if (info->info[i].name) {
-		FREE (info->info[i].name);
-		if (info->info[i].ranges)
-		    FREE (info->info[i].ranges);
+		free(info->info[i].name);
+		free(info->info[i].ranges);
 	    }
 	}
-	FREE (info->info);
+	free(info->info);
     }
 }
 
 void driDestroyOptionCache (driOptionCache *cache) {
-    if (cache->values)
-	FREE (cache->values);
+    free(cache->values);
 }
 
 GLboolean driCheckOption (const driOptionCache *cache, const char *name,

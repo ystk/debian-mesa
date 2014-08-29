@@ -38,12 +38,10 @@
 #include "colormac.h"
 #include "image.h"
 #include "macros.h"
-#include "mfeatures.h"
 #include "mipmap.h"
 #include "texcompress.h"
 #include "texcompress_rgtc.h"
 #include "texstore.h"
-#include "swrast/s_context.h"
 
 
 #define RGTC_DEBUG 0
@@ -99,8 +97,8 @@ _mesa_texstore_red_rgtc1(TEXSTORE_PARAMS)
    GLubyte srcpixels[4][4];
    GLubyte *blkaddr;
    GLint dstRowDiff;
-   ASSERT(dstFormat == MESA_FORMAT_RED_RGTC1 ||
-          dstFormat == MESA_FORMAT_L_LATC1);
+   ASSERT(dstFormat == MESA_FORMAT_R_RGTC1_UNORM ||
+          dstFormat == MESA_FORMAT_L_LATC1_UNORM);
 
    tempImage = _mesa_make_temp_ubyte_image(ctx, dims,
 					  baseInternalFormat,
@@ -129,8 +127,8 @@ _mesa_texstore_red_rgtc1(TEXSTORE_PARAMS)
       }
       blkaddr += dstRowDiff;
    }
-   if (tempImage)
-      free((void *) tempImage);
+
+   free((void *) tempImage);
 
    return GL_TRUE;
 }
@@ -146,8 +144,8 @@ _mesa_texstore_signed_red_rgtc1(TEXSTORE_PARAMS)
    GLbyte srcpixels[4][4];
    GLbyte *blkaddr;
    GLint dstRowDiff;
-   ASSERT(dstFormat == MESA_FORMAT_SIGNED_RED_RGTC1 ||
-          dstFormat == MESA_FORMAT_SIGNED_L_LATC1);
+   ASSERT(dstFormat == MESA_FORMAT_R_RGTC1_SNORM ||
+          dstFormat == MESA_FORMAT_L_LATC1_SNORM);
 
    tempImage = _mesa_make_temp_float_image(ctx, dims,
 					   baseInternalFormat,
@@ -176,8 +174,8 @@ _mesa_texstore_signed_red_rgtc1(TEXSTORE_PARAMS)
       }
       blkaddr += dstRowDiff;
    }
-   if (tempImage)
-      free((void *) tempImage);
+
+   free((void *) tempImage);
 
    return GL_TRUE;
 }
@@ -194,8 +192,8 @@ _mesa_texstore_rg_rgtc2(TEXSTORE_PARAMS)
    GLubyte *blkaddr;
    GLint dstRowDiff;
 
-   ASSERT(dstFormat == MESA_FORMAT_RG_RGTC2 ||
-          dstFormat == MESA_FORMAT_LA_LATC2);
+   ASSERT(dstFormat == MESA_FORMAT_RG_RGTC2_UNORM ||
+          dstFormat == MESA_FORMAT_LA_LATC2_UNORM);
 
    tempImage = _mesa_make_temp_ubyte_image(ctx, dims,
 					  baseInternalFormat,
@@ -230,8 +228,8 @@ _mesa_texstore_rg_rgtc2(TEXSTORE_PARAMS)
       }
       blkaddr += dstRowDiff;
    }
-   if (tempImage)
-      free((void *) tempImage);
+
+   free((void *) tempImage);
 
    return GL_TRUE;
 }
@@ -248,8 +246,8 @@ _mesa_texstore_signed_rg_rgtc2(TEXSTORE_PARAMS)
    GLbyte *blkaddr;
    GLint dstRowDiff;
 
-   ASSERT(dstFormat == MESA_FORMAT_SIGNED_RG_RGTC2 ||
-          dstFormat == MESA_FORMAT_SIGNED_LA_LATC2);
+   ASSERT(dstFormat == MESA_FORMAT_RG_RGTC2_SNORM ||
+          dstFormat == MESA_FORMAT_LA_LATC2_SNORM);
 
    tempImage = _mesa_make_temp_float_image(ctx, dims,
 					   baseInternalFormat,
@@ -285,123 +283,12 @@ _mesa_texstore_signed_rg_rgtc2(TEXSTORE_PARAMS)
       }
       blkaddr += dstRowDiff;
    }
-   if (tempImage)
-      free((void *) tempImage);
+
+   free((void *) tempImage);
 
    return GL_TRUE;
 }
 
-void
-_mesa_fetch_texel_2d_f_red_rgtc1(const struct swrast_texture_image *texImage,
-				 GLint i, GLint j, GLint k, GLfloat *texel)
-{
-   GLubyte red;
-   unsigned_fetch_texel_rgtc(texImage->RowStride, texImage->Map,
-		       i, j, &red, 1);
-   texel[RCOMP] = UBYTE_TO_FLOAT(red);
-   texel[GCOMP] = 0.0;
-   texel[BCOMP] = 0.0;
-   texel[ACOMP] = 1.0;
-}
-
-void
-_mesa_fetch_texel_2d_f_signed_red_rgtc1(const struct swrast_texture_image *texImage,
-					GLint i, GLint j, GLint k, GLfloat *texel)
-{
-   GLbyte red;
-   signed_fetch_texel_rgtc(texImage->RowStride, (GLbyte *)(texImage->Map),
-		       i, j, &red, 1);
-   texel[RCOMP] = BYTE_TO_FLOAT_TEX(red);
-   texel[GCOMP] = 0.0;
-   texel[BCOMP] = 0.0;
-   texel[ACOMP] = 1.0;
-}
-
-void
-_mesa_fetch_texel_2d_f_rg_rgtc2(const struct swrast_texture_image *texImage,
-				 GLint i, GLint j, GLint k, GLfloat *texel)
-{
-   GLubyte red, green;
-   unsigned_fetch_texel_rgtc(texImage->RowStride, texImage->Map,
-		     i, j, &red, 2);
-   unsigned_fetch_texel_rgtc(texImage->RowStride, texImage->Map + 8,
-		     i, j, &green, 2);
-   texel[RCOMP] = UBYTE_TO_FLOAT(red);
-   texel[GCOMP] = UBYTE_TO_FLOAT(green);
-   texel[BCOMP] = 0.0;
-   texel[ACOMP] = 1.0;
-}
-
-void
-_mesa_fetch_texel_2d_f_signed_rg_rgtc2(const struct swrast_texture_image *texImage,
-				       GLint i, GLint j, GLint k, GLfloat *texel)
-{
-   GLbyte red, green;
-   signed_fetch_texel_rgtc(texImage->RowStride, (GLbyte *)(texImage->Map),
-		     i, j, &red, 2);
-   signed_fetch_texel_rgtc(texImage->RowStride, (GLbyte *)(texImage->Map) + 8,
-		     i, j, &green, 2);
-   texel[RCOMP] = BYTE_TO_FLOAT_TEX(red);
-   texel[GCOMP] = BYTE_TO_FLOAT_TEX(green);
-   texel[BCOMP] = 0.0;
-   texel[ACOMP] = 1.0;
-}
-
-void
-_mesa_fetch_texel_2d_f_l_latc1(const struct swrast_texture_image *texImage,
-                                 GLint i, GLint j, GLint k, GLfloat *texel)
-{
-   GLubyte red;
-   unsigned_fetch_texel_rgtc(texImage->RowStride, texImage->Map,
-                       i, j, &red, 1);
-   texel[RCOMP] =
-   texel[GCOMP] =
-   texel[BCOMP] = UBYTE_TO_FLOAT(red);
-   texel[ACOMP] = 1.0;
-}
-
-void
-_mesa_fetch_texel_2d_f_signed_l_latc1(const struct swrast_texture_image *texImage,
-                                        GLint i, GLint j, GLint k, GLfloat *texel)
-{
-   GLbyte red;
-   signed_fetch_texel_rgtc(texImage->RowStride, (GLbyte *)(texImage->Map),
-                       i, j, &red, 1);
-   texel[RCOMP] =
-   texel[GCOMP] =
-   texel[BCOMP] = BYTE_TO_FLOAT_TEX(red);
-   texel[ACOMP] = 1.0;
-}
-
-void
-_mesa_fetch_texel_2d_f_la_latc2(const struct swrast_texture_image *texImage,
-                                 GLint i, GLint j, GLint k, GLfloat *texel)
-{
-   GLubyte red, green;
-   unsigned_fetch_texel_rgtc(texImage->RowStride, texImage->Map,
-                     i, j, &red, 2);
-   unsigned_fetch_texel_rgtc(texImage->RowStride, texImage->Map + 8,
-                     i, j, &green, 2);
-   texel[RCOMP] =
-   texel[GCOMP] =
-   texel[BCOMP] = UBYTE_TO_FLOAT(red);
-   texel[ACOMP] = UBYTE_TO_FLOAT(green);
-}
-
-void
-_mesa_fetch_texel_2d_f_signed_la_latc2(const struct swrast_texture_image *texImage,
-                                       GLint i, GLint j, GLint k, GLfloat *texel)
-{
-   GLbyte red, green;
-   signed_fetch_texel_rgtc(texImage->RowStride, (GLbyte *)(texImage->Map),
-                     i, j, &red, 2);
-   signed_fetch_texel_rgtc(texImage->RowStride, (GLbyte *)(texImage->Map) + 8,
-                     i, j, &green, 2);
-   texel[RCOMP] =
-   texel[GCOMP] =
-   texel[BCOMP] = BYTE_TO_FLOAT_TEX(red);
-   texel[ACOMP] = BYTE_TO_FLOAT_TEX(green);
-}
 
 #define TAG(x) unsigned_##x
 
@@ -427,3 +314,151 @@ _mesa_fetch_texel_2d_f_signed_la_latc2(const struct swrast_texture_image *texIma
 #undef TYPE
 #undef T_MIN
 #undef T_MAX
+
+
+
+static void
+fetch_red_rgtc1(const GLubyte *map,
+                GLint rowStride, GLint i, GLint j, GLfloat *texel)
+{
+   GLubyte red;
+   unsigned_fetch_texel_rgtc(rowStride, map, i, j, &red, 1);
+   texel[RCOMP] = UBYTE_TO_FLOAT(red);
+   texel[GCOMP] = 0.0;
+   texel[BCOMP] = 0.0;
+   texel[ACOMP] = 1.0;
+}
+
+static void
+fetch_l_latc1(const GLubyte *map,
+              GLint rowStride, GLint i, GLint j, GLfloat *texel)
+{
+   GLubyte red;
+   unsigned_fetch_texel_rgtc(rowStride, map, i, j, &red, 1);
+   texel[RCOMP] =
+   texel[GCOMP] =
+   texel[BCOMP] = UBYTE_TO_FLOAT(red);
+   texel[ACOMP] = 1.0;
+}
+
+static void
+fetch_signed_red_rgtc1(const GLubyte *map,
+                       GLint rowStride, GLint i, GLint j, GLfloat *texel)
+{
+   GLbyte red;
+   signed_fetch_texel_rgtc(rowStride, (const GLbyte *) map,
+                           i, j, &red, 1);
+   texel[RCOMP] = BYTE_TO_FLOAT_TEX(red);
+   texel[GCOMP] = 0.0;
+   texel[BCOMP] = 0.0;
+   texel[ACOMP] = 1.0;
+}
+
+static void
+fetch_signed_l_latc1(const GLubyte *map,
+                     GLint rowStride, GLint i, GLint j, GLfloat *texel)
+{
+   GLbyte red;
+   signed_fetch_texel_rgtc(rowStride, (GLbyte *) map,
+                           i, j, &red, 1);
+   texel[RCOMP] =
+   texel[GCOMP] =
+   texel[BCOMP] = BYTE_TO_FLOAT(red);
+   texel[ACOMP] = 1.0;
+}
+
+static void
+fetch_rg_rgtc2(const GLubyte *map,
+               GLint rowStride, GLint i, GLint j, GLfloat *texel)
+{
+   GLubyte red, green;
+   unsigned_fetch_texel_rgtc(rowStride,
+                             map,
+                             i, j, &red, 2);
+   unsigned_fetch_texel_rgtc(rowStride,
+                             map + 8,
+                             i, j, &green, 2);
+   texel[RCOMP] = UBYTE_TO_FLOAT(red);
+   texel[GCOMP] = UBYTE_TO_FLOAT(green);
+   texel[BCOMP] = 0.0;
+   texel[ACOMP] = 1.0;
+}
+
+static void
+fetch_la_latc2(const GLubyte *map,
+               GLint rowStride, GLint i, GLint j, GLfloat *texel)
+{
+   GLubyte red, green;
+   unsigned_fetch_texel_rgtc(rowStride,
+                             map,
+                             i, j, &red, 2);
+   unsigned_fetch_texel_rgtc(rowStride,
+                             map + 8,
+                             i, j, &green, 2);
+   texel[RCOMP] =
+   texel[GCOMP] =
+   texel[BCOMP] = UBYTE_TO_FLOAT(red);
+   texel[ACOMP] = UBYTE_TO_FLOAT(green);
+}
+
+
+static void
+fetch_signed_rg_rgtc2(const GLubyte *map,
+                      GLint rowStride, GLint i, GLint j, GLfloat *texel)
+{
+   GLbyte red, green;
+   signed_fetch_texel_rgtc(rowStride,
+                           (GLbyte *) map,
+                           i, j, &red, 2);
+   signed_fetch_texel_rgtc(rowStride,
+                           (GLbyte *) map + 8,
+                           i, j, &green, 2);
+   texel[RCOMP] = BYTE_TO_FLOAT_TEX(red);
+   texel[GCOMP] = BYTE_TO_FLOAT_TEX(green);
+   texel[BCOMP] = 0.0;
+   texel[ACOMP] = 1.0;
+}
+
+
+static void
+fetch_signed_la_latc2(const GLubyte *map,
+                      GLint rowStride, GLint i, GLint j, GLfloat *texel)
+{
+   GLbyte red, green;
+   signed_fetch_texel_rgtc(rowStride,
+                           (GLbyte *) map,
+                           i, j, &red, 2);
+   signed_fetch_texel_rgtc(rowStride,
+                           (GLbyte *) map + 8,
+                           i, j, &green, 2);
+   texel[RCOMP] =
+   texel[GCOMP] =
+   texel[BCOMP] = BYTE_TO_FLOAT_TEX(red);
+   texel[ACOMP] = BYTE_TO_FLOAT_TEX(green);
+}
+
+
+compressed_fetch_func
+_mesa_get_compressed_rgtc_func(mesa_format format)
+{
+   switch (format) {
+   case MESA_FORMAT_R_RGTC1_UNORM:
+      return fetch_red_rgtc1;
+   case MESA_FORMAT_L_LATC1_UNORM:
+      return fetch_l_latc1;
+   case MESA_FORMAT_R_RGTC1_SNORM:
+      return fetch_signed_red_rgtc1;
+   case MESA_FORMAT_L_LATC1_SNORM:
+      return fetch_signed_l_latc1;
+   case MESA_FORMAT_RG_RGTC2_UNORM:
+      return fetch_rg_rgtc2;
+   case MESA_FORMAT_LA_LATC2_UNORM:
+      return fetch_la_latc2;
+   case MESA_FORMAT_RG_RGTC2_SNORM:
+      return fetch_signed_rg_rgtc2;
+   case MESA_FORMAT_LA_LATC2_SNORM:
+      return fetch_signed_la_latc2;
+   default:
+      return NULL;
+   }
+}

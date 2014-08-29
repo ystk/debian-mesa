@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  6.5
  *
  * Copyright (C) 1999-2006  Brian Paul   All Rights Reserved.
  *
@@ -17,9 +16,10 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 
@@ -38,7 +38,7 @@
 void
 _mesa_init_renderbuffer(struct gl_renderbuffer *rb, GLuint name)
 {
-   _glthread_INIT_MUTEX(rb->Mutex);
+   mtx_init(&rb->Mutex, mtx_plain);
 
    rb->ClassID = 0;
    rb->Name = name;
@@ -52,6 +52,7 @@ _mesa_init_renderbuffer(struct gl_renderbuffer *rb, GLuint name)
 
    rb->Width = 0;
    rb->Height = 0;
+   rb->Depth = 0;
    rb->InternalFormat = GL_RGBA;
    rb->Format = MESA_FORMAT_NONE;
 }
@@ -75,11 +76,16 @@ _mesa_new_renderbuffer(struct gl_context *ctx, GLuint name)
 /**
  * Delete a gl_framebuffer.
  * This is the default function for renderbuffer->Delete().
+ * Drivers which subclass gl_renderbuffer should probably implement their
+ * own delete function.  But the driver might also call this function to
+ * free the object in the end.
  */
 void
-_mesa_delete_renderbuffer(struct gl_renderbuffer *rb)
+_mesa_delete_renderbuffer(struct gl_context *ctx, struct gl_renderbuffer *rb)
 {
-   /* no-op */
+   mtx_destroy(&rb->Mutex);
+   free(rb->Label);
+   free(rb);
 }
 
 
@@ -147,15 +153,16 @@ _mesa_reference_renderbuffer_(struct gl_renderbuffer **ptr,
       GLboolean deleteFlag = GL_FALSE;
       struct gl_renderbuffer *oldRb = *ptr;
 
-      _glthread_LOCK_MUTEX(oldRb->Mutex);
+      mtx_lock(&oldRb->Mutex);
       ASSERT(oldRb->RefCount > 0);
       oldRb->RefCount--;
       /*printf("RB DECR %p (%d) to %d\n", (void*) oldRb, oldRb->Name, oldRb->RefCount);*/
       deleteFlag = (oldRb->RefCount == 0);
-      _glthread_UNLOCK_MUTEX(oldRb->Mutex);
+      mtx_unlock(&oldRb->Mutex);
 
       if (deleteFlag) {
-         oldRb->Delete(oldRb);
+         GET_CURRENT_CONTEXT(ctx);
+         oldRb->Delete(ctx, oldRb);
       }
 
       *ptr = NULL;
@@ -164,10 +171,10 @@ _mesa_reference_renderbuffer_(struct gl_renderbuffer **ptr,
 
    if (rb) {
       /* reference new renderbuffer */
-      _glthread_LOCK_MUTEX(rb->Mutex);
+      mtx_lock(&rb->Mutex);
       rb->RefCount++;
       /*printf("RB INCR %p (%d) to %d\n", (void*) rb, rb->Name, rb->RefCount);*/
-      _glthread_UNLOCK_MUTEX(rb->Mutex);
+      mtx_unlock(&rb->Mutex);
       *ptr = rb;
    }
 }

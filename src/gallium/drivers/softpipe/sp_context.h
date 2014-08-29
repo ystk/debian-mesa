@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,20 +18,21 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  * 
  **************************************************************************/
 
-/* Authors:  Keith Whitwell <keith@tungstengraphics.com>
+/* Authors:  Keith Whitwell <keithw@vmware.com>
  */
 
 #ifndef SP_CONTEXT_H
 #define SP_CONTEXT_H
 
 #include "pipe/p_context.h"
+#include "util/u_blitter.h"
 
 #include "draw/draw_vertex.h"
 
@@ -60,9 +61,7 @@ struct softpipe_context {
 
    /** Constant state objects */
    struct pipe_blend_state *blend;
-   struct pipe_sampler_state *fragment_samplers[PIPE_MAX_SAMPLERS];
-   struct pipe_sampler_state *vertex_samplers[PIPE_MAX_VERTEX_SAMPLERS];
-   struct pipe_sampler_state *geometry_samplers[PIPE_MAX_GEOMETRY_SAMPLERS];
+   struct pipe_sampler_state *samplers[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
    struct pipe_depth_stencil_alpha_state *depth_stencil;
    struct pipe_rasterizer_state *rasterizer;
    struct sp_fragment_shader *fs;
@@ -81,25 +80,23 @@ struct softpipe_context {
    struct pipe_framebuffer_state framebuffer;
    struct pipe_poly_stipple poly_stipple;
    struct pipe_scissor_state scissor;
-   struct pipe_sampler_view *fragment_sampler_views[PIPE_MAX_SAMPLERS];
-   struct pipe_sampler_view *vertex_sampler_views[PIPE_MAX_VERTEX_SAMPLERS];
-   struct pipe_sampler_view *geometry_sampler_views[PIPE_MAX_GEOMETRY_SAMPLERS];
+   struct pipe_sampler_view *sampler_views[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_SAMPLER_VIEWS];
+
    struct pipe_viewport_state viewport;
    struct pipe_vertex_buffer vertex_buffer[PIPE_MAX_ATTRIBS];
    struct pipe_index_buffer index_buffer;
 
    struct draw_so_target *so_targets[PIPE_MAX_SO_BUFFERS];
-   int num_so_targets;
+   unsigned num_so_targets;
    
    struct pipe_query_data_so_statistics so_stats;
-   unsigned num_primitives_generated;
 
-   unsigned num_fragment_samplers;
-   unsigned num_fragment_sampler_views;
-   unsigned num_vertex_samplers;
-   unsigned num_vertex_sampler_views;
-   unsigned num_geometry_samplers;
-   unsigned num_geometry_sampler_views;
+   struct pipe_query_data_pipeline_statistics pipeline_statistics;
+   unsigned active_statistics_queries;
+
+   unsigned num_samplers[PIPE_SHADER_TYPES];
+   unsigned num_sampler_views[PIPE_SHADER_TYPES];
+
    unsigned num_vertex_buffers;
 
    unsigned dirty; /**< Mask of SP_NEW_x flags */
@@ -145,6 +142,7 @@ struct softpipe_context {
    /** Conditional query object and mode */
    struct pipe_query *render_cond_query;
    uint render_cond_mode;
+   boolean render_cond_cond;
 
    /** Polygon stipple items */
    struct {
@@ -164,9 +162,7 @@ struct softpipe_context {
 
    /** TGSI exec things */
    struct {
-      struct sp_sampler_variant *geom_samplers_list[PIPE_MAX_GEOMETRY_SAMPLERS];
-      struct sp_sampler_variant *vert_samplers_list[PIPE_MAX_VERTEX_SAMPLERS];
-      struct sp_sampler_variant *frag_samplers_list[PIPE_MAX_SAMPLERS];
+      struct sp_tgsi_sampler *sampler[PIPE_SHADER_TYPES];
    } tgsi;
 
    struct tgsi_exec_machine *fs_machine;
@@ -178,15 +174,23 @@ struct softpipe_context {
    struct vbuf_render *vbuf_backend;
    struct draw_stage *vbuf;
 
+   struct blitter_context *blitter;
+
    boolean dirty_render_cache;
 
    struct softpipe_tile_cache *cbuf_cache[PIPE_MAX_COLOR_BUFS];
    struct softpipe_tile_cache *zsbuf_cache;
 
    unsigned tex_timestamp;
-   struct softpipe_tex_tile_cache *fragment_tex_cache[PIPE_MAX_SAMPLERS];
-   struct softpipe_tex_tile_cache *vertex_tex_cache[PIPE_MAX_VERTEX_SAMPLERS];
-   struct softpipe_tex_tile_cache *geometry_tex_cache[PIPE_MAX_GEOMETRY_SAMPLERS];
+
+   /*
+    * Texture caches for vertex, fragment, geometry stages.
+    * Don't use PIPE_SHADER_TYPES here to avoid allocating unused memory
+    * for compute shaders.
+    * XXX wouldn't it make more sense for the tile cache to just be part
+    * of sp_sampler_view?
+    */
+   struct softpipe_tex_tile_cache *tex_cache[PIPE_SHADER_GEOMETRY+1][PIPE_MAX_SHADER_SAMPLER_VIEWS];
 
    unsigned dump_fs : 1;
    unsigned dump_gs : 1;
@@ -200,12 +204,15 @@ softpipe_context( struct pipe_context *pipe )
    return (struct softpipe_context *)pipe;
 }
 
-void
-softpipe_reset_sampler_variants(struct softpipe_context *softpipe);
 
 struct pipe_context *
 softpipe_create_context( struct pipe_screen *, void *priv );
 
+struct pipe_resource *
+softpipe_user_buffer_create(struct pipe_screen *screen,
+                            void *ptr,
+                            unsigned bytes,
+			    unsigned bind_flags);
 
 #define SP_UNREFERENCED         0
 #define SP_REFERENCED_FOR_READ  (1 << 0)

@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * Copyright 2008 VMware, Inc.  All rights reserved.
  * 
@@ -19,7 +19,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -73,6 +73,11 @@ shade_quad(struct quad_stage *qs, struct quad_header *quad)
    struct softpipe_context *softpipe = qs->softpipe;
    struct tgsi_exec_machine *machine = softpipe->fs_machine;
 
+   if (softpipe->active_statistics_queries) {
+      softpipe->pipeline_statistics.ps_invocations +=
+         util_bitcount(quad->inout.mask);         
+   }
+
    /* run shader */
    machine->flatshade_color = softpipe->rasterizer->flatshade ? TRUE : FALSE;
    return softpipe->fs_variant->run( softpipe->fs_variant, machine, quad );
@@ -90,7 +95,7 @@ coverage_quad(struct quad_stage *qs, struct quad_header *quad)
    for (cbuf = 0; cbuf < softpipe->framebuffer.nr_cbufs; cbuf++) {
       float (*quadColor)[4] = quad->output.color[cbuf];
       unsigned j;
-      for (j = 0; j < QUAD_SIZE; j++) {
+      for (j = 0; j < TGSI_QUAD_SIZE; j++) {
          assert(quad->input.coverage[j] >= 0.0);
          assert(quad->input.coverage[j] <= 1.0);
          quadColor[3][j] *= quad->input.coverage[j];
@@ -148,13 +153,6 @@ shade_quads(struct quad_stage *qs,
 static void
 shade_begin(struct quad_stage *qs)
 {
-   struct softpipe_context *softpipe = qs->softpipe;
-
-   softpipe->fs_variant->prepare( softpipe->fs_variant, 
-                                  softpipe->fs_machine,
-                                  (struct tgsi_sampler **)
-                                  softpipe->tgsi.frag_samplers_list );
-
    qs->next->begin(qs->next);
 }
 

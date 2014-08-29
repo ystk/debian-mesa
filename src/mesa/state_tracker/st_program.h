@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2003 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -27,7 +27,7 @@
 
  /*
   * Authors:
-  *   Keith Whitwell <keith@tungstengraphics.com>
+  *   Keith Whitwell <keithw@vmware.com>
   */
     
 
@@ -55,6 +55,9 @@ struct st_fp_variant_key
    GLuint pixelMaps:1;            /**< glDrawPixels w/ pixel lookup map? */
    GLuint drawpixels_z:1;         /**< glDrawPixels(GL_DEPTH) */
    GLuint drawpixels_stencil:1;   /**< glDrawPixels(GL_STENCIL) */
+
+   /** for ARB_color_buffer_float */
+   GLuint clamp_color:1;
 };
 
 
@@ -65,6 +68,8 @@ struct st_fp_variant
 {
    /** Parameters which generated this version of fragment program */
    struct st_fp_variant_key key;
+
+   struct pipe_shader_state tgsi;
 
    /** Driver's compiled shader */
    void *driver_shader;
@@ -86,8 +91,6 @@ struct st_fragment_program
    struct gl_fragment_program Base;
    struct glsl_to_tgsi_visitor* glsl_to_tgsi;
 
-   struct pipe_shader_state tgsi;
-
    struct st_fp_variant *variants;
 };
 
@@ -98,6 +101,9 @@ struct st_vp_variant_key
 {
    struct st_context *st;          /**< variants are per-context */
    boolean passthrough_edgeflags;
+
+   /** for ARB_color_buffer_float */
+   boolean clamp_color;
 };
 
 
@@ -146,10 +152,10 @@ struct st_vertex_program
    GLuint index_to_input[PIPE_MAX_SHADER_INPUTS];
    GLuint num_inputs;
 
-   /** Maps VERT_RESULT_x to slot */
-   GLuint result_to_output[VERT_RESULT_MAX];
-   ubyte output_semantic_name[VERT_RESULT_MAX];
-   ubyte output_semantic_index[VERT_RESULT_MAX];
+   /** Maps VARYING_SLOT_x to slot */
+   GLuint result_to_output[VARYING_SLOT_MAX];
+   ubyte output_semantic_name[VARYING_SLOT_MAX];
+   ubyte output_semantic_index[VARYING_SLOT_MAX];
    GLuint num_outputs;
 
    /** List of translated variants of this vertex program.
@@ -192,14 +198,14 @@ struct st_geometry_program
    /** map GP input back to VP output */
    GLuint input_map[PIPE_MAX_SHADER_INPUTS];
 
-   /** maps a Mesa GEOM_ATTRIB_x to a packed TGSI input index */
-   GLuint input_to_index[GEOM_ATTRIB_MAX];
-   /** maps a TGSI input index back to a Mesa GEOM_ATTRIB_x */
+   /** maps a Mesa VARYING_SLOT_x to a packed TGSI input index */
+   GLuint input_to_index[VARYING_SLOT_MAX];
+   /** maps a TGSI input index back to a Mesa VARYING_SLOT_x */
    GLuint index_to_input[PIPE_MAX_SHADER_INPUTS];
 
    GLuint num_inputs;
 
-   GLuint input_to_slot[GEOM_ATTRIB_MAX];  /**< Maps GEOM_ATTRIB_x to slot */
+   GLuint input_to_slot[VARYING_SLOT_MAX];  /**< Maps VARYING_SLOT_x to slot */
    GLuint num_input_slots;
 
    ubyte input_semantic_name[PIPE_MAX_SHADER_INPUTS];
@@ -307,6 +313,10 @@ st_print_shaders(struct gl_context *ctx);
 
 extern void
 st_destroy_program_variants(struct st_context *st);
+
+
+extern void
+st_print_current_vertex_program(void);
 
 
 #endif

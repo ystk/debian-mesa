@@ -78,8 +78,32 @@ struct gl_uniform_driver_storage {
    void *data;
 };
 
+struct gl_opaque_uniform_index {
+   /**
+    * Base opaque uniform index
+    *
+    * If \c gl_uniform_storage::base_type is an opaque type, this
+    * represents its uniform index.  If \c
+    * gl_uniform_storage::array_elements is not zero, the array will
+    * use opaque uniform indices \c index through \c index + \c
+    * gl_uniform_storage::array_elements - 1, inclusive.
+    *
+    * Note that the index may be different in each shader stage.
+    */
+   uint8_t index;
+
+   /**
+    * Whether this opaque uniform is used in this shader stage.
+    */
+   bool active;
+};
+
 struct gl_uniform_storage {
    char *name;
+   /** Type of this uniform data stored.
+    *
+    * In the case of an array, it's the type of a single array element.
+    */
    const struct glsl_type *type;
 
    /**
@@ -95,15 +119,9 @@ struct gl_uniform_storage {
     */
    bool initialized;
 
-   /**
-    * Base sampler index
-    *
-    * If \c ::base_type is \c GLSL_TYPE_SAMPLER, this represents the index of
-    * this sampler.  If \c ::array_elements is not zero, the array will use
-    * sampler indexes \c ::sampler through \c ::sampler + \c ::array_elements
-    * - 1, inclusive.
-    */
-   uint8_t sampler;
+   struct gl_opaque_uniform_index sampler[MESA_SHADER_STAGES];
+
+   struct gl_opaque_uniform_index image[MESA_SHADER_STAGES];
 
    /**
     * Storage used by the driver for the uniform
@@ -119,6 +137,53 @@ struct gl_uniform_storage {
     * uniform if the \c ::driver_storage interface is not used.
     */
    union gl_constant_value *storage;
+
+   /** Fields for GL_ARB_uniform_buffer_object
+    * @{
+    */
+
+   /**
+    * GL_UNIFORM_BLOCK_INDEX: index of the uniform block containing
+    * the uniform, or -1 for the default uniform block.  Note that the
+    * index is into the linked program's UniformBlocks[] array, not
+    * the linked shader's.
+    */
+   int block_index;
+
+   /** GL_UNIFORM_OFFSET: byte offset within the uniform block, or -1. */
+   int offset;
+
+   /**
+    * GL_UNIFORM_MATRIX_STRIDE: byte stride between columns or rows of
+    * a matrix.  Set to 0 for non-matrices in UBOs, or -1 for uniforms
+    * in the default uniform block.
+    */
+   int matrix_stride;
+
+   /**
+    * GL_UNIFORM_ARRAY_STRIDE: byte stride between elements of the
+    * array.  Set to zero for non-arrays in UBOs, or -1 for uniforms
+    * in the default uniform block.
+    */
+   int array_stride;
+
+   /** GL_UNIFORM_ROW_MAJOR: true iff it's a row-major matrix in a UBO */
+   bool row_major;
+
+   /** @} */
+
+   /**
+    * Index within gl_shader_program::AtomicBuffers[] of the atomic
+    * counter buffer this uniform is stored in, or -1 if this is not
+    * an atomic counter.
+    */
+   int atomic_buffer_index;
+
+   /**
+    * The 'base location' for this uniform in the uniform remap table. For
+    * arrays this is the first element in the array.
+    */
+   unsigned remap_location;
 };
 
 #ifdef __cplusplus

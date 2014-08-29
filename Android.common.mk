@@ -33,21 +33,24 @@ endif
 LOCAL_C_INCLUDES += \
 	$(MESA_TOP)/include
 
+MESA_VERSION=$(shell cat $(MESA_TOP)/VERSION)
 # define ANDROID_VERSION (e.g., 4.0.x => 0x0400)
-major := $(word 1, $(subst ., , $(PLATFORM_VERSION)))
-minor := $(word 2, $(subst ., , $(PLATFORM_VERSION)))
 LOCAL_CFLAGS += \
-	-DANDROID_VERSION=0x0$(major)0$(minor)
+	-DPACKAGE_VERSION=\"$(MESA_VERSION)\" \
+	-DPACKAGE_BUGREPORT=\"https://bugs.freedesktop.org/enter_bug.cgi?product=Mesa\" \
+	-DANDROID_VERSION=0x0$(MESA_ANDROID_MAJOR_VERSION)0$(MESA_ANDROID_MINOR_VERSION)
 
 LOCAL_CFLAGS += \
-	-DPTHREADS \
+	-DHAVE_PTHREAD=1 \
 	-fvisibility=hidden \
 	-Wno-sign-compare
 
 ifeq ($(strip $(MESA_ENABLE_ASM)),true)
 ifeq ($(TARGET_ARCH),x86)
 LOCAL_CFLAGS += \
-	-DUSE_X86_ASM
+	-DUSE_X86_ASM \
+	-DHAVE_DLOPEN \
+
 endif
 endif
 

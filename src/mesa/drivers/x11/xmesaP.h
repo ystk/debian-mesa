@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  7.1
  *
  * Copyright (C) 1999-2007  Brian Paul   All Rights Reserved.
  *
@@ -17,9 +16,10 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 
@@ -27,12 +27,13 @@
 #define XMESAP_H
 
 
+#include "c11/threads.h"
 #include "xmesa.h"
 #include "main/mtypes.h"
 #include "swrast/s_context.h"
 
 
-extern _glthread_Mutex _xmesa_lock;
+extern mtx_t _xmesa_lock;
 
 extern XMesaBuffer XMesaBufferList;
 
@@ -414,8 +415,6 @@ extern void xmesa_choose_triangle( struct gl_context *ctx );
 extern void xmesa_register_swrast_functions( struct gl_context *ctx );
 
 
-
-#define ENABLE_EXT_texure_compression_s3tc 0 /* SW texture compression */
 
 #if   defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
 #define ENABLE_EXT_timer_query 1 /* should have 64-bit GLuint64EXT */

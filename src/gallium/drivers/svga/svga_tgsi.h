@@ -47,10 +47,10 @@ struct tgsi_token;
 struct svga_vs_compile_key
 {
    unsigned fs_generic_inputs;
-   unsigned zero_stride_vertex_elements;
    unsigned need_prescale:1;
    unsigned allow_psiz:1;
-   unsigned num_zero_stride_vertex_elements:6;
+   unsigned adjust_attrib_range:16;
+   unsigned adjust_attrib_w_1:16;
 };
 
 struct svga_fs_compile_key
@@ -58,6 +58,7 @@ struct svga_fs_compile_key
    unsigned light_twoside:1;
    unsigned front_ccw:1;
    unsigned white_fragments:1;
+   unsigned write_color0_to_n_cbufs:3;
    unsigned num_textures:8;
    unsigned num_unnormalized_coords:8;
    unsigned sprite_origin_lower_left:1;
@@ -75,18 +76,26 @@ struct svga_fs_compile_key
    } tex[PIPE_MAX_SAMPLERS];
 };
 
+/**
+ * Key/index for identifying shader variants.
+ */
 struct svga_compile_key {
    struct svga_vs_compile_key vkey;
    struct svga_fs_compile_key fkey;
    int8_t generic_remap_table[MAX_GENERIC_VARYING];
 };
 
-struct svga_shader_result
+
+/**
+ * A single TGSI shader may be compiled into different variants of
+ * SVGA3D shaders depending on the compile key.  Each user shader
+ * will have a linked list of these variants.
+ */
+struct svga_shader_variant
 {
    const struct svga_shader *shader;
 
-   /* Parameters used to generate this compilation result:
-    */
+   /** Parameters used to generate this variant */
    struct svga_compile_key key;
 
    /* Compiled shader tokens:
@@ -94,13 +103,16 @@ struct svga_shader_result
    const unsigned *tokens;
    unsigned nr_tokens;
 
-   /* SVGA Shader ID:
+   /** Per-context shader identifier used with SVGA_3D_CMD_SHADER_DEFINE,
+    * SVGA_3D_CMD_SET_SHADER and SVGA_3D_CMD_SHADER_DESTROY.
     */
    unsigned id;
    
-   /* Next compilation result:
-    */
-   struct svga_shader_result *next;
+   /* GB object buffer containing the bytecode */
+   struct svga_winsys_gb_shader *gb_shader;
+
+   /** Next variant */
+   struct svga_shader_variant *next;
 };
 
 
@@ -138,16 +150,14 @@ static INLINE unsigned svga_fs_key_size( const struct svga_fs_compile_key *key )
    return (const char *)&key->tex[key->num_textures] - (const char *)key;
 }
 
-struct svga_shader_result *
+struct svga_shader_variant *
 svga_translate_fragment_program( const struct svga_fragment_shader *fs,
                                  const struct svga_fs_compile_key *fkey );
 
-struct svga_shader_result *
+struct svga_shader_variant *
 svga_translate_vertex_program( const struct svga_vertex_shader *fs,
                                const struct svga_vs_compile_key *vkey );
 
-
-void svga_destroy_shader_result( struct svga_shader_result *result );
 
 unsigned
 svga_get_generic_inputs_mask(const struct tgsi_shader_info *info);

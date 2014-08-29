@@ -1,8 +1,8 @@
 /*
  Copyright (C) Intel Corp.  2006.  All Rights Reserved.
- Intel funded Tungsten Graphics (http://www.tungstengraphics.com) to
+ Intel funded Tungsten Graphics to
  develop this 3D driver.
- 
+
  Permission is hereby granted, free of charge, to any person obtaining
  a copy of this software and associated documentation files (the
  "Software"), to deal in the Software without restriction, including
@@ -10,11 +10,11 @@
  distribute, sublicense, and/or sell copies of the Software, and to
  permit persons to whom the Software is furnished to do so, subject to
  the following conditions:
- 
+
  The above copyright notice and this permission notice (including the
  next paragraph) shall be included in all copies or substantial
  portions of the Software.
- 
+
  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
  EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
@@ -22,13 +22,13 @@
  LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
  OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- 
+
  **********************************************************************/
  /*
   * Authors:
-  *   Keith Whitwell <keith@tungstengraphics.com>
+  *   Keith Whitwell <keithw@vmware.com>
   */
-  
+
 
 #include "main/glheader.h"
 #include "main/macros.h"
@@ -50,7 +50,6 @@
 static void compile_sf_prog( struct brw_context *brw,
 			     struct brw_sf_prog_key *key )
 {
-   struct intel_context *intel = &brw->intel;
    struct brw_sf_compile c;
    const GLuint *program;
    void *mem_ctx;
@@ -65,7 +64,7 @@ static void compile_sf_prog( struct brw_context *brw,
    brw_init_compile(brw, &c.func, mem_ctx);
 
    c.key = *key;
-   brw_compute_vue_map(&c.vue_map, intel, c.key.userclip_active, c.key.attrs);
+   c.vue_map = brw->vue_map_geom_out;
    if (c.key.do_point_coord) {
       /*
        * gl_PointCoord is a FS instead of VS builtin variable, thus it's
@@ -73,17 +72,18 @@ static void compile_sf_prog( struct brw_context *brw,
        * it manually to let SF shader generate the needed interpolation
        * coefficient for FS shader.
        */
-      c.vue_map.vert_result_to_slot[BRW_VERT_RESULT_PNTC] = c.vue_map.num_slots;
-      c.vue_map.slot_to_vert_result[c.vue_map.num_slots++] = BRW_VERT_RESULT_PNTC;
+      c.vue_map.varying_to_slot[BRW_VARYING_SLOT_PNTC] = c.vue_map.num_slots;
+      c.vue_map.slot_to_varying[c.vue_map.num_slots++] = BRW_VARYING_SLOT_PNTC;
    }
-   c.urb_entry_read_offset = brw_sf_compute_urb_entry_read_offset(intel);
+   c.urb_entry_read_offset = BRW_SF_URB_ENTRY_READ_OFFSET;
    c.nr_attr_regs = (c.vue_map.num_slots + 1)/2 - c.urb_entry_read_offset;
    c.nr_setup_regs = c.nr_attr_regs;
 
    c.prog_data.urb_read_length = c.nr_attr_regs;
    c.prog_data.urb_entry_size = c.nr_setup_regs * 2;
+   c.has_flat_shading = brw_any_flat_varyings(&key->interpolation_mode);
 
-   /* Which primitive?  Or all three? 
+   /* Which primitive?  Or all three?
     */
    switch (key->primitive) {
    case SF_TRIANGLES:
@@ -115,11 +115,11 @@ static void compile_sf_prog( struct brw_context *brw,
    program = brw_get_program(&c.func, &program_size);
 
    if (unlikely(INTEL_DEBUG & DEBUG_SF)) {
-      printf("sf:\n");
+      fprintf(stderr, "sf:\n");
       for (i = 0; i < program_size / sizeof(struct brw_instruction); i++)
-	 brw_disasm(stdout, &((struct brw_instruction *)program)[i],
-		    intel->gen);
-      printf("\n");
+	 brw_disasm(stderr, &((struct brw_instruction *)program)[i],
+		    brw->gen);
+      fprintf(stderr, "\n");
    }
 
    brw_upload_cache(&brw->cache, BRW_SF_PROG,
@@ -135,7 +135,7 @@ static void compile_sf_prog( struct brw_context *brw,
 static void
 brw_upload_sf_prog(struct brw_context *brw)
 {
-   struct gl_context *ctx = &brw->intel.ctx;
+   struct gl_context *ctx = &brw->ctx;
    struct brw_sf_prog_key key;
    /* _NEW_BUFFERS */
    bool render_to_fbo = _mesa_is_user_fbo(ctx->DrawBuffer);
@@ -144,27 +144,27 @@ brw_upload_sf_prog(struct brw_context *brw)
 
    /* Populate the key, noting state dependencies:
     */
-   /* CACHE_NEW_VS_PROG */
-   key.attrs = brw->vs.prog_data->outputs_written; 
+   /* BRW_NEW_VUE_MAP_GEOM_OUT */
+   key.attrs = brw->vue_map_geom_out.slots_valid;
 
    /* BRW_NEW_REDUCED_PRIMITIVE */
-   switch (brw->intel.reduced_primitive) {
-   case GL_TRIANGLES: 
+   switch (brw->reduced_primitive) {
+   case GL_TRIANGLES:
       /* NOTE: We just use the edgeflag attribute as an indicator that
        * unfilled triangles are active.  We don't actually do the
        * edgeflag testing here, it is already done in the clip
        * program.
        */
-      if (key.attrs & BITFIELD64_BIT(VERT_RESULT_EDGE))
+      if (key.attrs & BITFIELD64_BIT(VARYING_SLOT_EDGE))
 	 key.primitive = SF_UNFILLED_TRIS;
       else
 	 key.primitive = SF_TRIANGLES;
       break;
-   case GL_LINES: 
-      key.primitive = SF_LINES; 
+   case GL_LINES:
+      key.primitive = SF_LINES;
       break;
-   case GL_POINTS: 
-      key.primitive = SF_POINTS; 
+   case GL_POINTS:
+      key.primitive = SF_POINTS;
       break;
    }
 
@@ -181,7 +181,7 @@ brw_upload_sf_prog(struct brw_context *brw)
 	    key.point_sprite_coord_replace |= (1 << i);
       }
    }
-   if (brw->fragment_program->Base.InputsRead & BITFIELD64_BIT(FRAG_ATTRIB_PNTC))
+   if (brw->fragment_program->Base.InputsRead & BITFIELD64_BIT(VARYING_SLOT_PNTC))
       key.do_point_coord = 1;
    /*
     * Window coordinates in a FBO are inverted, which means point
@@ -190,9 +190,12 @@ brw_upload_sf_prog(struct brw_context *brw)
    if ((ctx->Point.SpriteOrigin == GL_LOWER_LEFT) != render_to_fbo)
       key.sprite_origin_lower_left = true;
 
-   /* _NEW_LIGHT */
-   key.do_flat_shading = (ctx->Light.ShadeModel == GL_FLAT);
-   key.do_twoside_color = (ctx->Light.Enabled && ctx->Light.Model.TwoSide);
+   /* BRW_NEW_INTERPOLATION_MAP */
+   key.interpolation_mode = brw->interpolation_mode;
+
+   /* _NEW_LIGHT | _NEW_PROGRAM */
+   key.do_twoside_color = ((ctx->Light.Enabled && ctx->Light.Model.TwoSide) ||
+                           ctx->VertexProgram._TwoSideEnabled);
 
    /* _NEW_POLYGON */
    if (key.do_twoside_color) {
@@ -214,9 +217,10 @@ brw_upload_sf_prog(struct brw_context *brw)
 const struct brw_tracked_state brw_sf_prog = {
    .dirty = {
       .mesa  = (_NEW_HINT | _NEW_LIGHT | _NEW_POLYGON | _NEW_POINT |
-                _NEW_TRANSFORM | _NEW_BUFFERS),
-      .brw   = (BRW_NEW_REDUCED_PRIMITIVE),
-      .cache = CACHE_NEW_VS_PROG
+                _NEW_TRANSFORM | _NEW_BUFFERS | _NEW_PROGRAM),
+      .brw   = (BRW_NEW_REDUCED_PRIMITIVE |
+                BRW_NEW_VUE_MAP_GEOM_OUT |
+                BRW_NEW_INTERPOLATION_MAP)
    },
    .emit = brw_upload_sf_prog
 };

@@ -16,7 +16,9 @@ FULL = \
 	swrast.doxy \
 	swrast_setup.doxy \
 	tnl.doxy \
-	tnl_dd.doxy
+	tnl_dd.doxy \
+	gbm.doxy \
+	i965.doxy
 
 full: $(FULL:.doxy=.tag)
 	$(foreach FILE,$(FULL),doxygen $(FILE);)

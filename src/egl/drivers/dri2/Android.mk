@@ -32,7 +32,6 @@ LOCAL_SRC_FILES := \
 	platform_android.c
 
 LOCAL_CFLAGS := \
-	-D_EGL_MAIN=_eglBuiltInDriverDRI2 \
 	-DDEFAULT_DRIVER_DIR=\"/system/lib/dri\" \
 	-DHAVE_SHARED_GLAPI \
 	-DHAVE_ANDROID_PLATFORM
@@ -40,9 +39,12 @@ LOCAL_CFLAGS := \
 LOCAL_C_INCLUDES := \
 	$(MESA_TOP)/src/mapi \
 	$(MESA_TOP)/src/egl/main \
-	$(DRM_GRALLOC_TOP) \
-	$(DRM_TOP) \
-	$(DRM_TOP)/include/drm
+	$(MESA_TOP)/src/loader \
+	$(DRM_TOP)/include/drm \
+	$(DRM_GRALLOC_TOP)
+
+LOCAL_STATIC_LIBRARIES := \
+	libloader
 
 LOCAL_MODULE := libmesa_egl_dri2
 

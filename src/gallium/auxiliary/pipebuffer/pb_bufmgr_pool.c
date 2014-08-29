@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2006 Tungsten Graphics, Inc., Bismarck, ND., USA
+ * Copyright 2006 VMware, Inc., Bismarck, ND., USA
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -30,8 +30,8 @@
  * \file
  * Batch buffer pool management.
  * 
- * \author Jose Fonseca <jrfonseca-at-tungstengraphics-dot-com>
- * \author Thomas Hellström <thomas-at-tungstengraphics-dot-com>
+ * \author Jose Fonseca <jfonseca-at-vmware-dot-com>
+ * \author Thomas Hellström <thellstom-at-vmware-dot-com>
  */
 
 
@@ -311,13 +311,11 @@ pool_bufmgr_create(struct pb_manager *provider,
    return SUPER(pool);
    
 failure:
-   if(pool->bufs)
-      FREE(pool->bufs);
+   FREE(pool->bufs);
    if(pool->map)
       pb_unmap(pool->buffer);
    if(pool->buffer)
       pb_reference(&pool->buffer, NULL);
-   if(pool)
-      FREE(pool);
+   FREE(pool);
    return NULL;
 }

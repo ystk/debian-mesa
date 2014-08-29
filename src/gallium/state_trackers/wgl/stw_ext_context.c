@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  7.11
  *
  * Copyright (C) 2011 Morgan Armand <morgan.devel@gmail.com>
  *
@@ -17,9 +16,10 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include <windows.h>
@@ -102,7 +102,8 @@ wglCreateContextAttribsARB(HDC hDC, HGLRC hShareContext, const int *attribList)
       return NULL;
    }
 
-   if ((contextFlags & WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB) && majorVersion < 3) {
+   if ((contextFlags & WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB) &&
+       majorVersion < 3) {
       SetLastError(ERROR_INVALID_VERSION_ARB);
       return NULL;
    }
@@ -114,6 +115,8 @@ wglCreateContextAttribsARB(HDC hDC, HGLRC hShareContext, const int *attribList)
       return NULL;
    }
 
-   return (HGLRC) stw_create_context_attribs( hDC, layerPlane, (DHGLRC)(UINT_PTR)hShareContext,
-                                              majorVersion, minorVersion, contextFlags, profileMask );
+   return (HGLRC) stw_create_context_attribs(hDC, layerPlane,
+                                             (DHGLRC) (UINT_PTR) hShareContext,
+                                             majorVersion, minorVersion,
+                                             contextFlags, profileMask);
 }

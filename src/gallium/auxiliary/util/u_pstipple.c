@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2008 VMware, Inc.
  * Copyright 2010 VMware, Inc.
  * All Rights Reserved.
  *
@@ -19,7 +19,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -69,14 +69,13 @@ util_pstipple_update_stipple_texture(struct pipe_context *pipe,
    int i, j;
 
    /* map texture memory */
-   transfer = pipe_get_transfer(pipe, tex, 0, 0,
-                                PIPE_TRANSFER_WRITE, 0, 0, 32, 32);
-   data = pipe->transfer_map(pipe, transfer);
+   data = pipe_transfer_map(pipe, tex, 0, 0,
+                            PIPE_TRANSFER_WRITE, 0, 0, 32, 32, &transfer);
 
    /*
     * Load alpha texture.
     * Note: 0 means keep the fragment, 255 means kill it.
-    * We'll negate the texel value and use KILP which kills if value
+    * We'll negate the texel value and use KILL_IF which kills if value
     * is negative.
     */
    for (i = 0; i < 32; i++) {
@@ -94,7 +93,6 @@ util_pstipple_update_stipple_texture(struct pipe_context *pipe,
 
    /* unmap */
    pipe->transfer_unmap(pipe, transfer);
-   pipe->transfer_destroy(pipe, transfer);
 }
 
 
@@ -254,7 +252,7 @@ free_bit(uint bitfield)
  *   declare new registers
  *   MUL texTemp, INPUT[wincoord], 1/32;
  *   TEX texTemp, texTemp, sampler;
- *   KIL -texTemp;   # if -texTemp < 0, KILL fragment
+ *   KILL_IF -texTemp;   # if -texTemp < 0, kill fragment
  *   [...original code...]
  */
 static void
@@ -298,12 +296,13 @@ pstip_transform_inst(struct tgsi_transform_context *ctx,
          /* declare new position input reg */
          decl = tgsi_default_full_declaration();
          decl.Declaration.File = TGSI_FILE_INPUT;
-         decl.Declaration.Interpolate = TGSI_INTERPOLATE_LINEAR;
+         decl.Declaration.Interpolate = 1;
          decl.Declaration.Semantic = 1;
          decl.Semantic.Name = TGSI_SEMANTIC_POSITION;
          decl.Semantic.Index = 0;
          decl.Range.First = 
             decl.Range.Last = wincoordInput;
+         decl.Interp.Interpolate = TGSI_INTERPOLATE_LINEAR;
          ctx->emit_declaration(ctx, &decl);
       }
 
@@ -341,7 +340,7 @@ pstip_transform_inst(struct tgsi_transform_context *ctx,
 
 
       /* 
-       * Insert new MUL/TEX/KILP instructions at start of program
+       * Insert new MUL/TEX/KILL_IF instructions at start of program
        * Take gl_FragCoord, divide by 32 (stipple size), sample the
        * texture and kill fragment if needed.
        *
@@ -380,9 +379,9 @@ pstip_transform_inst(struct tgsi_transform_context *ctx,
       newInst.Src[1].Register.Index = pctx->freeSampler;
       ctx->emit_instruction(ctx, &newInst);
 
-      /* KIL -texTemp;   # if -texTemp < 0, KILL fragment */
+      /* KILL_IF -texTemp;   # if -texTemp < 0, kill fragment */
       newInst = tgsi_default_full_instruction();
-      newInst.Instruction.Opcode = TGSI_OPCODE_KIL;
+      newInst.Instruction.Opcode = TGSI_OPCODE_KILL_IF;
       newInst.Instruction.NumDstRegs = 0;
       newInst.Instruction.NumSrcRegs = 1;
       newInst.Src[0].Register.File = TGSI_FILE_TEMPORARY;

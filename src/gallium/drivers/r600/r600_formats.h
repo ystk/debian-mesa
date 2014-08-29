@@ -1,6 +1,7 @@
 #ifndef R600_FORMATS_H
 #define R600_FORMATS_H
 
+#include "util/u_format.h"
 #include "r600_pipe.h"
 
 /* list of formats from R700 ISA document - apply across GPUs in different registers */
@@ -86,6 +87,9 @@ static INLINE bool r600_is_vertex_format_supported(enum pipe_format format)
 	const struct util_format_description *desc = util_format_description(format);
 	unsigned i;
 
+	if (format == PIPE_FORMAT_R11G11B10_FLOAT)
+		return true;
+
 	if (!desc)
 		return false;
 
@@ -100,11 +104,13 @@ static INLINE bool r600_is_vertex_format_supported(enum pipe_format format)
 	/* No fixed, no double. */
 	if (desc->layout != UTIL_FORMAT_LAYOUT_PLAIN ||
 	    (desc->channel[i].size == 64 &&
-	     desc->channel[i].type == UTIL_FORMAT_TYPE_FLOAT))
+	     desc->channel[i].type == UTIL_FORMAT_TYPE_FLOAT) ||
+	    desc->channel[i].type == UTIL_FORMAT_TYPE_FIXED)
 		return false;
 
 	/* No scaled/norm formats with 32 bits per channel. */
 	if (desc->channel[i].size == 32 &&
+	    !desc->channel[i].pure_integer &&
 	    (desc->channel[i].type == UTIL_FORMAT_TYPE_SIGNED ||
 	     desc->channel[i].type == UTIL_FORMAT_TYPE_UNSIGNED))
 		return false;

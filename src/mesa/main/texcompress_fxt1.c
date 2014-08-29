@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  7.1
  *
  * Copyright (C) 1999-2008  Brian Paul   All Rights Reserved.
  *
@@ -17,9 +16,10 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 
@@ -34,15 +34,10 @@
 #include "colormac.h"
 #include "image.h"
 #include "macros.h"
-#include "mfeatures.h"
 #include "mipmap.h"
 #include "texcompress.h"
 #include "texcompress_fxt1.h"
 #include "texstore.h"
-#include "swrast/s_context.h"
-
-
-#if FEATURE_texture_fxt1
 
 
 static void
@@ -50,7 +45,7 @@ fxt1_encode (GLuint width, GLuint height, GLint comps,
              const void *source, GLint srcRowStride,
              void *dest, GLint destRowStride);
 
-void
+static void
 fxt1_decode_1 (const void *texture, GLint stride,
                GLint i, GLint j, GLubyte *rgba);
 
@@ -99,8 +94,7 @@ _mesa_texstore_rgb_fxt1(TEXSTORE_PARAMS)
    fxt1_encode(srcWidth, srcHeight, 3, pixels, srcRowStride,
                dst, dstRowStride);
 
-   if (tempImage)
-      free((void*) tempImage);
+   free((void*) tempImage);
 
    return GL_TRUE;
 }
@@ -149,42 +143,10 @@ _mesa_texstore_rgba_fxt1(TEXSTORE_PARAMS)
    fxt1_encode(srcWidth, srcHeight, 4, pixels, srcRowStride,
                dst, dstRowStride);
 
-   if (tempImage)
-      free((void*) tempImage);
+   free((void*) tempImage);
 
    return GL_TRUE;
 }
-
-
-void
-_mesa_fetch_texel_2d_f_rgba_fxt1( const struct swrast_texture_image *texImage,
-                                  GLint i, GLint j, GLint k, GLfloat *texel )
-{
-   /* just sample as GLubyte and convert to float here */
-   GLubyte rgba[4];
-   (void) k;
-   fxt1_decode_1(texImage->Map, texImage->RowStride, i, j, rgba);
-   texel[RCOMP] = UBYTE_TO_FLOAT(rgba[RCOMP]);
-   texel[GCOMP] = UBYTE_TO_FLOAT(rgba[GCOMP]);
-   texel[BCOMP] = UBYTE_TO_FLOAT(rgba[BCOMP]);
-   texel[ACOMP] = UBYTE_TO_FLOAT(rgba[ACOMP]);
-}
-
-
-void
-_mesa_fetch_texel_2d_f_rgb_fxt1( const struct swrast_texture_image *texImage,
-                                 GLint i, GLint j, GLint k, GLfloat *texel )
-{
-   /* just sample as GLubyte and convert to float here */
-   GLubyte rgba[4];
-   (void) k;
-   fxt1_decode_1(texImage->Map, texImage->RowStride, i, j, rgba);
-   texel[RCOMP] = UBYTE_TO_FLOAT(rgba[RCOMP]);
-   texel[GCOMP] = UBYTE_TO_FLOAT(rgba[GCOMP]);
-   texel[BCOMP] = UBYTE_TO_FLOAT(rgba[BCOMP]);
-   texel[ACOMP] = 1.0F;
-}
-
 
 
 /***************************************************************************\
@@ -1363,9 +1325,7 @@ fxt1_encode (GLuint width, GLuint height, GLint comps,
    }
 
  cleanUp:
-   if (newSource != NULL) {
-      free(newSource);
-   }
+   free(newSource);
 }
 
 
@@ -1623,7 +1583,7 @@ fxt1_decode_1ALPHA (const GLubyte *code, GLint t, GLubyte *rgba)
 }
 
 
-void
+static void
 fxt1_decode_1 (const void *texture, GLint stride, /* in pixels */
                GLint i, GLint j, GLubyte *rgba)
 {
@@ -1652,4 +1612,43 @@ fxt1_decode_1 (const void *texture, GLint stride, /* in pixels */
 }
 
 
-#endif /* FEATURE_texture_fxt1 */
+
+
+static void
+fetch_rgb_fxt1(const GLubyte *map,
+               GLint rowStride, GLint i, GLint j, GLfloat *texel)
+{
+   GLubyte rgba[4];
+   fxt1_decode_1(map, rowStride, i, j, rgba);
+   texel[RCOMP] = UBYTE_TO_FLOAT(rgba[RCOMP]);
+   texel[GCOMP] = UBYTE_TO_FLOAT(rgba[GCOMP]);
+   texel[BCOMP] = UBYTE_TO_FLOAT(rgba[BCOMP]);
+   texel[ACOMP] = 1.0F;
+}
+
+
+static void
+fetch_rgba_fxt1(const GLubyte *map,
+                GLint rowStride, GLint i, GLint j, GLfloat *texel)
+{
+   GLubyte rgba[4];
+   fxt1_decode_1(map, rowStride, i, j, rgba);
+   texel[RCOMP] = UBYTE_TO_FLOAT(rgba[RCOMP]);
+   texel[GCOMP] = UBYTE_TO_FLOAT(rgba[GCOMP]);
+   texel[BCOMP] = UBYTE_TO_FLOAT(rgba[BCOMP]);
+   texel[ACOMP] = UBYTE_TO_FLOAT(rgba[ACOMP]);
+}
+
+
+compressed_fetch_func
+_mesa_get_fxt_fetch_func(mesa_format format)
+{
+   switch (format) {
+   case MESA_FORMAT_RGB_FXT1:
+      return fetch_rgb_fxt1;
+   case MESA_FORMAT_RGBA_FXT1:
+      return fetch_rgba_fxt1;
+   default:
+      return NULL;
+   }
+}

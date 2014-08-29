@@ -31,14 +31,14 @@
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/Target/TargetInstrInfo.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Support/Format.h>
 #include <llvm/Support/MemoryObject.h>
 
 #if HAVE_LLVM >= 0x0300
 #include <llvm/Support/TargetRegistry.h>
-#include <llvm/Support/TargetSelect.h>
+#include <llvm/MC/MCSubtargetInfo.h>
 #else /* HAVE_LLVM < 0x0300 */
 #include <llvm/Target/TargetRegistry.h>
-#include <llvm/Target/TargetSelect.h>
 #endif /* HAVE_LLVM < 0x0300 */
 
 #if HAVE_LLVM >= 0x0209
@@ -53,11 +53,27 @@
 #include <llvm/MC/MCInst.h>
 #include <llvm/MC/MCInstPrinter.h>
 #endif /* HAVE_LLVM >= 0x0207 */
+#if HAVE_LLVM >= 0x0301
+#include <llvm/MC/MCRegisterInfo.h>
+#endif /* HAVE_LLVM >= 0x0301 */
+
+#if HAVE_LLVM >= 0x0303
+#include <llvm/ADT/OwningPtr.h>
+#endif
+
+#if HAVE_LLVM >= 0x0305
+#include <llvm/MC/MCContext.h>
+#endif
 
 #include "util/u_math.h"
 #include "util/u_debug.h"
 
 #include "lp_bld_debug.h"
+
+#ifdef __linux__
+#include <sys/stat.h>
+#include <fcntl.h>
+#endif
 
 
 
@@ -80,15 +96,19 @@ lp_check_alignment(const void *ptr, unsigned alignment)
 class raw_debug_ostream :
    public llvm::raw_ostream
 {
+private:
    uint64_t pos;
 
+public:
+   raw_debug_ostream() : pos(0) { }
+
    void write_impl(const char *Ptr, size_t Size);
-   uint64_t current_pos() { return pos; }
-   uint64_t current_pos() const { return pos; }
 
 #if HAVE_LLVM >= 0x207
-   uint64_t preferred_buffer_size() { return 512; }
+   uint64_t current_pos() const { return pos; }
+   size_t preferred_buffer_size() const { return 512; }
 #else
+   uint64_t current_pos() { return pos; }
    size_t preferred_buffer_size() { return 512; }
 #endif
 };
@@ -169,8 +189,8 @@ public:
  * - http://blog.llvm.org/2010/01/x86-disassembler.html
  * - http://blog.llvm.org/2010/04/intro-to-llvm-mc-project.html
  */
-extern "C" void
-lp_disassemble(const void* func)
+static size_t
+disassemble(const void* func, llvm::raw_ostream & Out)
 {
 #if HAVE_LLVM >= 0x0207
    using namespace llvm;
@@ -180,7 +200,7 @@ lp_disassemble(const void* func)
    /*
     * Limit disassembly to this extent
     */
-   const uint64_t extent = 0x10000;
+   const uint64_t extent = 96 * 1024;
 
    uint64_t max_pc = 0;
 
@@ -197,37 +217,18 @@ lp_disassemble(const void* func)
    std::string Error;
    const Target *T = TargetRegistry::lookupTarget(Triple, Error);
 
-#if HAVE_LLVM >= 0x0208
-   InitializeNativeTargetAsmPrinter();
-#else
-   InitializeAllAsmPrinters();
-#endif
-
-   InitializeAllDisassemblers();
-
-#if HAVE_LLVM >= 0x0300
+#if HAVE_LLVM >= 0x0304
+   OwningPtr<const MCAsmInfo> AsmInfo(T->createMCAsmInfo(*T->createMCRegInfo(Triple), Triple));
+#elif HAVE_LLVM >= 0x0300
    OwningPtr<const MCAsmInfo> AsmInfo(T->createMCAsmInfo(Triple));
 #else
    OwningPtr<const MCAsmInfo> AsmInfo(T->createAsmInfo(Triple));
 #endif
 
    if (!AsmInfo) {
-      debug_printf("error: no assembly info for target %s\n", Triple.c_str());
-      return;
+      Out << "error: no assembly info for target " << Triple << "\n";
+      return 0;
    }
-
-#if HAVE_LLVM >= 0x0300
-   const MCSubtargetInfo *STI = T->createMCSubtargetInfo(Triple, sys::getHostCPUName(), "");
-   OwningPtr<const MCDisassembler> DisAsm(T->createMCDisassembler(*STI));
-#else 
-   OwningPtr<const MCDisassembler> DisAsm(T->createMCDisassembler());
-#endif 
-   if (!DisAsm) {
-      debug_printf("error: no disassembler for target %s\n", Triple.c_str());
-      return;
-   }
-
-   raw_debug_ostream Out;
 
 #if HAVE_LLVM >= 0x0300
    unsigned int AsmPrinterVariant = AsmInfo->getAssemblerDialect();
@@ -235,7 +236,40 @@ lp_disassemble(const void* func)
    int AsmPrinterVariant = AsmInfo->getAssemblerDialect();
 #endif
 
-#if HAVE_LLVM >= 0x0300
+#if HAVE_LLVM >= 0x0301
+   OwningPtr<const MCRegisterInfo> MRI(T->createMCRegInfo(Triple));
+   if (!MRI) {
+      Out << "error: no register info for target " << Triple.c_str() << "\n";
+      return 0;
+   }
+
+   OwningPtr<const MCInstrInfo> MII(T->createMCInstrInfo());
+   if (!MII) {
+      Out << "error: no instruction info for target " << Triple.c_str() << "\n";
+      return 0;
+   }
+#endif
+
+#if HAVE_LLVM >= 0x0305
+   OwningPtr<const MCSubtargetInfo> STI(T->createMCSubtargetInfo(Triple, sys::getHostCPUName(), ""));
+   OwningPtr<MCContext> MCCtx(new MCContext(AsmInfo.get(), MRI.get(), 0));
+   OwningPtr<const MCDisassembler> DisAsm(T->createMCDisassembler(*STI, *MCCtx));
+#elif HAVE_LLVM >= 0x0300
+   OwningPtr<const MCSubtargetInfo> STI(T->createMCSubtargetInfo(Triple, sys::getHostCPUName(), ""));
+   OwningPtr<const MCDisassembler> DisAsm(T->createMCDisassembler(*STI));
+#else
+   OwningPtr<const MCDisassembler> DisAsm(T->createMCDisassembler());
+#endif
+   if (!DisAsm) {
+      Out << "error: no disassembler for target " << Triple << "\n";
+      return 0;
+   }
+
+
+#if HAVE_LLVM >= 0x0301
+   OwningPtr<MCInstPrinter> Printer(
+         T->createMCInstPrinter(AsmPrinterVariant, *AsmInfo, *MII, *MRI, *STI));
+#elif HAVE_LLVM == 0x0300
    OwningPtr<MCInstPrinter> Printer(
          T->createMCInstPrinter(AsmPrinterVariant, *AsmInfo, *STI));
 #elif HAVE_LLVM >= 0x0208
@@ -246,8 +280,8 @@ lp_disassemble(const void* func)
          T->createMCInstPrinter(AsmPrinterVariant, *AsmInfo, Out));
 #endif
    if (!Printer) {
-      debug_printf("error: no instruction printer for target %s\n", Triple.c_str());
-      return;
+      Out << "error: no instruction printer for target " << Triple.c_str() << "\n";
+      return 0;
    }
 
 #if HAVE_LLVM >= 0x0301
@@ -261,11 +295,11 @@ lp_disassemble(const void* func)
 #if defined(DEBUG) || defined(PROFILE)
    options.NoFramePointerElim = true;
 #endif
-   TargetMachine *TM = T->createTargetMachine(Triple, sys::getHostCPUName(), "", options);
+   OwningPtr<TargetMachine> TM(T->createTargetMachine(Triple, sys::getHostCPUName(), "", options));
 #elif HAVE_LLVM == 0x0300
-   TargetMachine *TM = T->createTargetMachine(Triple, sys::getHostCPUName(), "");
+   OwningPtr<TargetMachine> TM(T->createTargetMachine(Triple, sys::getHostCPUName(), ""));
 #else
-   TargetMachine *TM = T->createTargetMachine(Triple, "");
+   OwningPtr<TargetMachine> TM(T->createTargetMachine(Triple, ""));
 #endif
 
    const TargetInstrInfo *TII = TM->getInstrInfo();
@@ -286,7 +320,7 @@ lp_disassemble(const void* func)
        * so that between runs.
        */
 
-      debug_printf("%6lu:\t", (unsigned long)pc);
+      Out << llvm::format("%6lu:\t", (unsigned long)pc);
 
       if (!DisAsm->getInstruction(Inst, Size, memoryObject,
                                  pc,
@@ -295,7 +329,7 @@ lp_disassemble(const void* func)
 #else
 				  nulls())) {
 #endif
-         debug_printf("invalid\n");
+         Out << "invalid";
          pc += 1;
       }
 
@@ -306,25 +340,23 @@ lp_disassemble(const void* func)
       if (0) {
          unsigned i;
          for (i = 0; i < Size; ++i) {
-            debug_printf("%02x ", ((const uint8_t*)bytes)[pc + i]);
+            Out << llvm::format("%02x ", ((const uint8_t*)bytes)[pc + i]);
          }
          for (; i < 16; ++i) {
-            debug_printf("   ");
+            Out << "   ";
          }
       }
 
       /*
        * Print the instruction.
        */
-
 #if HAVE_LLVM >= 0x0300
-      Printer->printInst(&Inst, Out, "");
+	 Printer->printInst(&Inst, Out, "");
 #elif HAVE_LLVM >= 0x208
-      Printer->printInst(&Inst, Out);
+	 Printer->printInst(&Inst, Out);
 #else
-      Printer->printInst(&Inst);
+	 Printer->printInst(&Inst);
 #endif
-      Out.flush();
 
       /*
        * Advance.
@@ -372,7 +404,7 @@ lp_disassemble(const void* func)
                 * Output the address relative to the function start, given
                 * that MC will print the addresses relative the current pc.
                 */
-               debug_printf("\t\t; %lu", (unsigned long)jump);
+               Out << "\t\t; " << jump;
 
                /*
                 * Ignore far jumps given it could be actually a tail return to
@@ -387,7 +419,7 @@ lp_disassemble(const void* func)
          }
       }
 
-      debug_printf("\n");
+      Out << "\n";
 
       /*
        * Stop disassembling on return statements, if there is no record of a
@@ -406,12 +438,73 @@ lp_disassemble(const void* func)
     */
 
    if (0) {
-      debug_printf("disassemble %p %p\n", bytes, bytes + pc);
+      _debug_printf("disassemble %p %p\n", bytes, bytes + pc);
    }
 
-   debug_printf("\n");
+   Out << "\n";
+   Out.flush();
+
+   return pc;
 #else /* HAVE_LLVM < 0x0207 */
    (void)func;
+   return 0;
 #endif /* HAVE_LLVM < 0x0207 */
 }
+
+
+extern "C" void
+lp_disassemble(LLVMValueRef func, const void *code) {
+   raw_debug_ostream Out;
+   disassemble(code, Out);
+}
+
+
+/*
+ * Linux perf profiler integration.
+ *
+ * See also:
+ * - http://penberg.blogspot.co.uk/2009/06/jato-has-profiler.html
+ * - https://github.com/penberg/jato/commit/73ad86847329d99d51b386f5aba692580d1f8fdc
+ * - http://git.kernel.org/?p=linux/kernel/git/torvalds/linux.git;a=commitdiff;h=80d496be89ed7dede5abee5c057634e80a31c82d
+ */
+extern "C" void
+lp_profile(LLVMValueRef func, const void *code)
+{
+#if defined(__linux__) && (defined(DEBUG) || defined(PROFILE))
+   static boolean first_time = TRUE;
+   static FILE *perf_map_file = NULL;
+   static int perf_asm_fd = -1;
+   if (first_time) {
+      /*
+       * We rely on the disassembler for determining a function's size, but
+       * the disassembly is a leaky and slow operation, so avoid running
+       * this except when running inside linux perf, which can be inferred
+       * by the PERF_BUILDID_DIR environment variable.
+       */
+      if (getenv("PERF_BUILDID_DIR")) {
+         pid_t pid = getpid();
+         char filename[256];
+         util_snprintf(filename, sizeof filename, "/tmp/perf-%llu.map", (unsigned long long)pid);
+         perf_map_file = fopen(filename, "wt");
+         util_snprintf(filename, sizeof filename, "/tmp/perf-%llu.map.asm", (unsigned long long)pid);
+         mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+         perf_asm_fd = open(filename, O_WRONLY | O_CREAT, mode);
+      }
+      first_time = FALSE;
+   }
+   if (perf_map_file) {
+      const char *symbol = LLVMGetValueName(func);
+      unsigned long addr = (uintptr_t)code;
+      llvm::raw_fd_ostream Out(perf_asm_fd, false);
+      Out << symbol << ":\n";
+      unsigned long size = disassemble(code, Out);
+      fprintf(perf_map_file, "%lx %lx %s\n", addr, size, symbol);
+      fflush(perf_map_file);
+   }
+#else
+   (void)func;
+   (void)code;
+#endif
+}
+
 

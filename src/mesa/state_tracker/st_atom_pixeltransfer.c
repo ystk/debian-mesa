@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -101,10 +101,9 @@ load_color_map_texture(struct gl_context *ctx, struct pipe_resource *pt)
    uint *dest;
    uint i, j;
 
-   transfer = pipe_get_transfer(pipe,
-                                pt, 0, 0, PIPE_TRANSFER_WRITE,
-                                0, 0, texSize, texSize);
-   dest = (uint *) pipe_transfer_map(pipe, transfer);
+   dest = (uint *) pipe_transfer_map(pipe,
+                                     pt, 0, 0, PIPE_TRANSFER_WRITE,
+                                     0, 0, texSize, texSize, &transfer);
 
    /* Pack four 1D maps into a 2D texture:
     * R map is placed horizontally, indexed by S, in channel 0
@@ -116,17 +115,17 @@ load_color_map_texture(struct gl_context *ctx, struct pipe_resource *pt)
       for (j = 0; j < texSize; j++) {
          union util_color uc;
          int k = (i * texSize + j);
-         ubyte r = ctx->PixelMaps.RtoR.Map8[j * rSize / texSize];
-         ubyte g = ctx->PixelMaps.GtoG.Map8[i * gSize / texSize];
-         ubyte b = ctx->PixelMaps.BtoB.Map8[j * bSize / texSize];
-         ubyte a = ctx->PixelMaps.AtoA.Map8[i * aSize / texSize];
-         util_pack_color_ub(r, g, b, a, pt->format, &uc);
-         *(dest + k) = uc.ui;
+         float rgba[4];
+         rgba[0] = ctx->PixelMaps.RtoR.Map[j * rSize / texSize];
+         rgba[1] = ctx->PixelMaps.GtoG.Map[i * gSize / texSize];
+         rgba[2] = ctx->PixelMaps.BtoB.Map[j * bSize / texSize];
+         rgba[3] = ctx->PixelMaps.AtoA.Map[i * aSize / texSize];
+         util_pack_color(rgba, pt->format, &uc);
+         *(dest + k) = uc.ui[0];
       }
    }
 
    pipe_transfer_unmap(pipe, transfer);
-   pipe->transfer_destroy(pipe, transfer);
 }
 
 
@@ -162,11 +161,11 @@ get_pixel_transfer_program(struct gl_context *ctx, const struct state_key *key)
    inst[ic].DstReg.File = PROGRAM_TEMPORARY;
    inst[ic].DstReg.Index = colorTemp;
    inst[ic].SrcReg[0].File = PROGRAM_INPUT;
-   inst[ic].SrcReg[0].Index = FRAG_ATTRIB_TEX0;
+   inst[ic].SrcReg[0].Index = VARYING_SLOT_TEX0;
    inst[ic].TexSrcUnit = 0;
    inst[ic].TexSrcTarget = TEXTURE_2D_INDEX;
    ic++;
-   fp->Base.InputsRead = BITFIELD64_BIT(FRAG_ATTRIB_TEX0);
+   fp->Base.InputsRead = BITFIELD64_BIT(VARYING_SLOT_TEX0);
    fp->Base.OutputsWritten = BITFIELD64_BIT(FRAG_RESULT_COLOR);
    fp->Base.SamplersUsed = 0x1;  /* sampler 0 (bit 0) is used */
 

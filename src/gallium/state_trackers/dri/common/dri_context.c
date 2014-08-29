@@ -34,18 +34,27 @@
 #include "dri_screen.h"
 #include "dri_drawable.h"
 #include "dri_context.h"
+#include "state_tracker/drm_driver.h"
 
 #include "pipe/p_context.h"
 #include "state_tracker/st_context.h"
 
 static void
-dri_pp_query(struct dri_context *ctx)
+dri_fill_st_options(struct st_config_options *options,
+                    const struct driOptionCache * optionCache)
 {
-   unsigned int i;
-
-   for (i = 0; i < PP_FILTERS; i++) {
-      ctx->pp_enabled[i] = driQueryOptioni(&ctx->optionCache, pp_filters[i].name);
-   }
+   options->disable_blend_func_extended =
+      driQueryOptionb(optionCache, "disable_blend_func_extended");
+   options->disable_glsl_line_continuations =
+      driQueryOptionb(optionCache, "disable_glsl_line_continuations");
+   options->disable_shader_bit_encoding =
+      driQueryOptionb(optionCache, "disable_shader_bit_encoding");
+   options->force_glsl_extensions_warn =
+      driQueryOptionb(optionCache, "force_glsl_extensions_warn");
+   options->force_glsl_version =
+      driQueryOptioni(optionCache, "force_glsl_version");
+   options->force_s3tc_enable =
+      driQueryOptionb(optionCache, "force_s3tc_enable");
 }
 
 GLboolean
@@ -54,6 +63,7 @@ dri_create_context(gl_api api, const struct gl_config * visual,
 		   unsigned major_version,
 		   unsigned minor_version,
 		   uint32_t flags,
+                   bool notify_reset,
 		   unsigned *error,
 		   void *sharedContextPrivate)
 {
@@ -73,8 +83,10 @@ dri_create_context(gl_api api, const struct gl_config * visual,
    case API_OPENGLES2:
       attribs.profile = ST_PROFILE_OPENGL_ES2;
       break;
-   case API_OPENGL:
-      attribs.profile = ST_PROFILE_DEFAULT;
+   case API_OPENGL_COMPAT:
+   case API_OPENGL_CORE:
+      attribs.profile = api == API_OPENGL_COMPAT ? ST_PROFILE_DEFAULT
+                                                 : ST_PROFILE_OPENGL_CORE;
       attribs.major = major_version;
       attribs.minor = minor_version;
 
@@ -86,6 +98,16 @@ dri_create_context(gl_api api, const struct gl_config * visual,
       break;
    default:
       *error = __DRI_CTX_ERROR_BAD_API;
+      goto fail;
+   }
+
+   if (flags & ~(__DRI_CTX_FLAG_DEBUG | __DRI_CTX_FLAG_FORWARD_COMPATIBLE)) {
+      *error = __DRI_CTX_ERROR_UNKNOWN_FLAG;
+      goto fail;
+   }
+
+   if (notify_reset) {
+      *error = __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE;
       goto fail;
    }
 
@@ -103,9 +125,7 @@ dri_create_context(gl_api api, const struct gl_config * visual,
    ctx->cPriv = cPriv;
    ctx->sPriv = sPriv;
 
-   driParseConfigFiles(&ctx->optionCache,
-		       &screen->optionCache, sPriv->myNum, "dri");
-
+   dri_fill_st_options(&attribs.options, &screen->optionCache);
    dri_fill_st_visual(&attribs.visual, screen, visual);
    ctx->st = stapi->create_context(stapi, &screen->base, &attribs, &ctx_err,
 				   st_share);
@@ -138,10 +158,10 @@ dri_create_context(gl_api api, const struct gl_config * visual,
    ctx->st->st_manager_private = (void *) ctx;
    ctx->stapi = stapi;
 
-   // Context successfully created. See if post-processing is requested.
-   dri_pp_query(ctx);
-
-   ctx->pp = pp_init(screen->base.screen, ctx->pp_enabled);
+   if (ctx->st->cso_context) {
+      ctx->pp = pp_init(ctx->st->pipe, screen->pp_enabled, ctx->st->cso_context);
+      ctx->hud = hud_create(ctx->st->pipe, ctx->st->cso_context);
+   }
 
    *error = __DRI_CTX_ERROR_SUCCESS;
    return GL_TRUE;
@@ -150,7 +170,7 @@ dri_create_context(gl_api api, const struct gl_config * visual,
    if (ctx && ctx->st)
       ctx->st->destroy(ctx->st);
 
-   FREE(ctx);
+   free(ctx);
    return GL_FALSE;
 }
 
@@ -159,23 +179,22 @@ dri_destroy_context(__DRIcontext * cPriv)
 {
    struct dri_context *ctx = dri_context(cPriv);
 
-   /* note: we are freeing values and nothing more because
-    * driParseConfigFiles allocated values only - the rest
-    * is owned by screen optionCache.
-    */
-   FREE(ctx->optionCache.values);
+   if (ctx->hud) {
+      hud_destroy(ctx->hud);
+   }
 
    /* No particular reason to wait for command completion before
-    * destroying a context, but it is probably worthwhile flushing it
+    * destroying a context, but we flush the context here
     * to avoid having to add code elsewhere to cope with flushing a
     * partially destroyed context.
     */
    ctx->st->flush(ctx->st, 0, NULL);
    ctx->st->destroy(ctx->st);
 
-   if (ctx->pp) pp_free(ctx->pp);
+   if (ctx->pp)
+      pp_free(ctx->pp);
 
-   FREE(ctx);
+   free(ctx);
 }
 
 GLboolean
@@ -188,7 +207,11 @@ dri_unbind_context(__DRIcontext * cPriv)
 
    if (--ctx->bind_count == 0) {
       if (ctx->st == ctx->stapi->get_current(ctx->stapi)) {
-         ctx->st->flush(ctx->st, ST_FLUSH_FRONT, NULL);
+         /* For conformance, unbind is supposed to flush the context.
+          * However, if we do it here we might end up flushing a partially
+          * destroyed context. Instead, we flush in dri_make_current and
+          * in dri_destroy_context which should cover all the cases.
+          */
          stapi->make_current(stapi, NULL, NULL, NULL);
       }
    }
@@ -207,14 +230,15 @@ dri_make_current(__DRIcontext * cPriv,
    struct dri_drawable *read = dri_drawable(driReadPriv);
    struct st_context_iface *old_st = ctx->stapi->get_current(ctx->stapi);
 
+   /* Flush the old context here so we don't have to flush on unbind() */
    if (old_st && old_st != ctx->st)
       old_st->flush(old_st, ST_FLUSH_FRONT, NULL);
 
    ++ctx->bind_count;
 
-   if (!driDrawPriv && !driReadPriv)
+   if (!draw && !read)
       return ctx->stapi->make_current(ctx->stapi, ctx->st, NULL, NULL);
-   else if (!driDrawPriv || !driReadPriv)
+   else if (!draw || !read)
       return GL_FALSE;
 
    if (ctx->dPriv != driDrawPriv) {
@@ -246,7 +270,7 @@ dri_get_current(__DRIscreen *sPriv)
 
    st = stapi->get_current(stapi);
 
-   return (struct dri_context *) (st) ? st->st_manager_private : NULL;
+   return (struct dri_context *) st ? st->st_manager_private : NULL;
 }
 
 /* vim: set sw=3 ts=8 sts=3 expandtab: */

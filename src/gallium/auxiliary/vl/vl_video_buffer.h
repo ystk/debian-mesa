@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -29,7 +29,7 @@
 #define vl_video_buffer_h
 
 #include "pipe/p_context.h"
-#include "pipe/p_video_decoder.h"
+#include "pipe/p_video_codec.h"
 
 #include "vl_defines.h"
 
@@ -42,10 +42,10 @@ struct vl_video_buffer
 {
    struct pipe_video_buffer base;
    unsigned                 num_planes;
-   struct pipe_resource     *resources[VL_MAX_PLANES];
-   struct pipe_sampler_view *sampler_view_planes[VL_MAX_PLANES];
-   struct pipe_sampler_view *sampler_view_components[VL_MAX_PLANES];
-   struct pipe_surface      *surfaces[VL_MAX_PLANES];
+   struct pipe_resource     *resources[VL_NUM_COMPONENTS];
+   struct pipe_sampler_view *sampler_view_planes[VL_NUM_COMPONENTS];
+   struct pipe_sampler_view *sampler_view_components[VL_NUM_COMPONENTS];
+   struct pipe_surface      *surfaces[VL_MAX_SURFACES];
 };
 
 /**
@@ -53,6 +53,12 @@ struct vl_video_buffer
  */
 const enum pipe_format *
 vl_video_buffer_formats(struct pipe_screen *screen, enum pipe_format format);
+
+/**
+ * get YUV plane order
+ */
+const unsigned *
+vl_video_buffer_plane_order(enum pipe_format format);
 
 /**
  * get maximum size of video buffers
@@ -67,14 +73,15 @@ vl_video_buffer_max_size(struct pipe_screen *screen);
 boolean
 vl_video_buffer_is_format_supported(struct pipe_screen *screen,
                                     enum pipe_format format,
-                                    enum pipe_video_profile profile);
+                                    enum pipe_video_profile profile,
+                                    enum pipe_video_entrypoint entrypoint);
 
 /*
  * set the associated data for the given video buffer
  */
 void
 vl_video_buffer_set_associated_data(struct pipe_video_buffer *vbuf,
-                                    struct pipe_video_decoder *vdec,
+                                    struct pipe_video_codec *vcodec,
                                     void *associated_data,
                                     void (*destroy_associated_data)(void *));
 
@@ -83,25 +90,40 @@ vl_video_buffer_set_associated_data(struct pipe_video_buffer *vbuf,
  */
 void *
 vl_video_buffer_get_associated_data(struct pipe_video_buffer *vbuf,
-                                    struct pipe_video_decoder *vdec);
+                                    struct pipe_video_codec *vcodec);
+
+/**
+ * fill a resource template for the given plane
+ */
+void
+vl_video_buffer_template(struct pipe_resource *templ,
+                         const struct pipe_video_buffer *templat,
+                         enum pipe_format resource_format,
+                         unsigned depth, unsigned array_size,
+                         unsigned usage, unsigned plane);
 
 /**
  * creates a video buffer, can be used as a standard implementation for pipe->create_video_buffer
  */
 struct pipe_video_buffer *
 vl_video_buffer_create(struct pipe_context *pipe,
-                       enum pipe_format buffer_format,
-                       enum pipe_video_chroma_format chroma_format,
-                       unsigned width, unsigned height);
+                       const struct pipe_video_buffer *templat);
 
 /**
- * extended create function, gets depth, usage and formats for each plane seperately
+ * extended create function, gets depth, array_size, usage and formats for each plane seperately
  */
 struct pipe_video_buffer *
 vl_video_buffer_create_ex(struct pipe_context *pipe,
-                          unsigned width, unsigned height, unsigned depth,
-                          enum pipe_video_chroma_format chroma_format,
-                          const enum pipe_format resource_formats[VL_MAX_PLANES],
-                          unsigned usage);
+                          const struct pipe_video_buffer *templat,
+                          const enum pipe_format resource_formats[VL_NUM_COMPONENTS],
+                          unsigned depth, unsigned array_size, unsigned usage);
+
+/**
+ * even more extended create function, provide the pipe_resource for each plane
+ */
+struct pipe_video_buffer *
+vl_video_buffer_create_ex2(struct pipe_context *pipe,
+                           const struct pipe_video_buffer *templat,
+                           struct pipe_resource *resources[VL_NUM_COMPONENTS]);
 
 #endif /* vl_video_buffer_h */

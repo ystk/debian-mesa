@@ -17,9 +17,10 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 
@@ -32,6 +33,7 @@
 
 #include "glheader.h"
 #include "bufferobj.h"
+#include "glformats.h"
 #include "image.h"
 #include "imports.h"
 #include "mtypes.h"
@@ -147,7 +149,8 @@ _mesa_map_pbo_source(struct gl_context *ctx,
       buf = (GLubyte *) ctx->Driver.MapBufferRange(ctx, 0,
 						   unpack->BufferObj->Size,
 						   GL_MAP_READ_BIT,
-						   unpack->BufferObj);
+						   unpack->BufferObj,
+                                                   MAP_INTERNAL);
       if (!buf)
          return NULL;
 
@@ -172,11 +175,12 @@ _mesa_map_pbo_source(struct gl_context *ctx,
  */
 const GLvoid *
 _mesa_map_validate_pbo_source(struct gl_context *ctx,
-                                 GLuint dimensions,
-                                 const struct gl_pixelstore_attrib *unpack,
-                                 GLsizei width, GLsizei height, GLsizei depth,
-                                 GLenum format, GLenum type, GLsizei clientMemSize,
-                                 const GLvoid *ptr, const char *where)
+                              GLuint dimensions,
+                              const struct gl_pixelstore_attrib *unpack,
+                              GLsizei width, GLsizei height, GLsizei depth,
+                              GLenum format, GLenum type,
+                              GLsizei clientMemSize,
+                              const GLvoid *ptr, const char *where)
 {
    ASSERT(dimensions == 1 || dimensions == 2 || dimensions == 3);
 
@@ -198,7 +202,7 @@ _mesa_map_validate_pbo_source(struct gl_context *ctx,
       return ptr;
    }
 
-   if (_mesa_bufferobj_mapped(unpack->BufferObj)) {
+   if (_mesa_check_disallowed_mapping(unpack->BufferObj)) {
       /* buffer is already mapped - that's an error */
       _mesa_error(ctx, GL_INVALID_OPERATION, "%s(PBO is mapped)", where);
       return NULL;
@@ -218,7 +222,7 @@ _mesa_unmap_pbo_source(struct gl_context *ctx,
 {
    ASSERT(unpack != &ctx->Pack); /* catch pack/unpack mismatch */
    if (_mesa_is_bufferobj(unpack->BufferObj)) {
-      ctx->Driver.UnmapBuffer(ctx, unpack->BufferObj);
+      ctx->Driver.UnmapBuffer(ctx, unpack->BufferObj, MAP_INTERNAL);
    }
 }
 
@@ -243,7 +247,8 @@ _mesa_map_pbo_dest(struct gl_context *ctx,
       buf = (GLubyte *) ctx->Driver.MapBufferRange(ctx, 0,
 						   pack->BufferObj->Size,
 						   GL_MAP_WRITE_BIT,
-						   pack->BufferObj);
+						   pack->BufferObj,
+                                                   MAP_INTERNAL);
       if (!buf)
          return NULL;
 
@@ -268,11 +273,11 @@ _mesa_map_pbo_dest(struct gl_context *ctx,
  */
 GLvoid *
 _mesa_map_validate_pbo_dest(struct gl_context *ctx,
-                               GLuint dimensions,
-                               const struct gl_pixelstore_attrib *unpack,
-                               GLsizei width, GLsizei height, GLsizei depth,
-                               GLenum format, GLenum type, GLsizei clientMemSize,
-                               GLvoid *ptr, const char *where)
+                            GLuint dimensions,
+                            const struct gl_pixelstore_attrib *unpack,
+                            GLsizei width, GLsizei height, GLsizei depth,
+                            GLenum format, GLenum type, GLsizei clientMemSize,
+                            GLvoid *ptr, const char *where)
 {
    ASSERT(dimensions == 1 || dimensions == 2 || dimensions == 3);
 
@@ -294,7 +299,7 @@ _mesa_map_validate_pbo_dest(struct gl_context *ctx,
       return ptr;
    }
 
-   if (_mesa_bufferobj_mapped(unpack->BufferObj)) {
+   if (_mesa_check_disallowed_mapping(unpack->BufferObj)) {
       /* buffer is already mapped - that's an error */
       _mesa_error(ctx, GL_INVALID_OPERATION, "%s(PBO is mapped)", where);
       return NULL;
@@ -314,7 +319,7 @@ _mesa_unmap_pbo_dest(struct gl_context *ctx,
 {
    ASSERT(pack != &ctx->Unpack); /* catch pack/unpack mismatch */
    if (_mesa_is_bufferobj(pack->BufferObj)) {
-      ctx->Driver.UnmapBuffer(ctx, pack->BufferObj);
+      ctx->Driver.UnmapBuffer(ctx, pack->BufferObj, MAP_INTERNAL);
    }
 }
 
@@ -339,16 +344,20 @@ _mesa_validate_pbo_teximage(struct gl_context *ctx, GLuint dimensions,
       return pixels;
    }
    if (!_mesa_validate_pbo_access(dimensions, unpack, width, height, depth,
-                                     format, type, INT_MAX, pixels)) {
-      _mesa_error(ctx, GL_INVALID_OPERATION, funcName, "(invalid PBO access)");
+                                  format, type, INT_MAX, pixels)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s%uD(invalid PBO access)",
+                  funcName, dimensions);
       return NULL;
    }
 
-   buf = (GLubyte *) ctx->Driver.MapBufferRange(ctx, 0, unpack->BufferObj->Size,
+   buf = (GLubyte *) ctx->Driver.MapBufferRange(ctx, 0,
+                                                unpack->BufferObj->Size,
 						GL_MAP_READ_BIT,
-						unpack->BufferObj);
+						unpack->BufferObj,
+                                                MAP_INTERNAL);
    if (!buf) {
-      _mesa_error(ctx, GL_INVALID_OPERATION, funcName, "(PBO is mapped)");
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s%uD(PBO is mapped)", funcName,
+                  dimensions);
       return NULL;
    }
 
@@ -365,7 +374,8 @@ _mesa_validate_pbo_teximage(struct gl_context *ctx, GLuint dimensions,
  */
 const GLvoid *
 _mesa_validate_pbo_compressed_teximage(struct gl_context *ctx,
-                                 GLsizei imageSize, const GLvoid *pixels,
+                                 GLuint dimensions, GLsizei imageSize,
+                                 const GLvoid *pixels,
                                  const struct gl_pixelstore_attrib *packing,
                                  const char *funcName)
 {
@@ -378,16 +388,19 @@ _mesa_validate_pbo_compressed_teximage(struct gl_context *ctx,
    if ((const GLubyte *) pixels + imageSize >
        ((const GLubyte *) 0) + packing->BufferObj->Size) {
       /* out of bounds read! */
-      _mesa_error(ctx, GL_INVALID_OPERATION, funcName, "(invalid PBO access)");
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s%uD(invalid PBO access)",
+                  funcName, dimensions);
       return NULL;
    }
 
    buf = (GLubyte*) ctx->Driver.MapBufferRange(ctx, 0,
 					       packing->BufferObj->Size,
 					       GL_MAP_READ_BIT,
-					       packing->BufferObj);
+					       packing->BufferObj,
+                                               MAP_INTERNAL);
    if (!buf) {
-      _mesa_error(ctx, GL_INVALID_OPERATION, funcName, "(PBO is mapped");
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s%uD(PBO is mapped)", funcName,
+                  dimensions);
       return NULL;
    }
 
@@ -404,8 +417,6 @@ _mesa_unmap_teximage_pbo(struct gl_context *ctx,
                          const struct gl_pixelstore_attrib *unpack)
 {
    if (_mesa_is_bufferobj(unpack->BufferObj)) {
-      ctx->Driver.UnmapBuffer(ctx, unpack->BufferObj);
+      ctx->Driver.UnmapBuffer(ctx, unpack->BufferObj, MAP_INTERNAL);
    }
 }
-
-

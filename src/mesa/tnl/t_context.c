@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  7.2
  *
  * Copyright (C) 1999-2008  Brian Paul   All Rights Reserved.
  *
@@ -17,12 +16,13 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  *
  * Authors:
- *    Keith Whitwell <keith@tungstengraphics.com>
+ *    Keith Whitwell <keithw@vmware.com>
  */
 
 
@@ -46,10 +46,11 @@ GLboolean
 _tnl_CreateContext( struct gl_context *ctx )
 {
    TNLcontext *tnl;
+   GLuint i;
 
    /* Create the TNLcontext structure
     */
-   ctx->swtnl_context = tnl = (TNLcontext *) CALLOC( sizeof(TNLcontext) );
+   ctx->swtnl_context = tnl = calloc(1, sizeof(TNLcontext));
 
    if (!tnl) {
       return GL_FALSE;
@@ -76,12 +77,23 @@ _tnl_CreateContext( struct gl_context *ctx )
     */
    tnl->Driver.Render.PrimTabElts = _tnl_render_tab_elts;
    tnl->Driver.Render.PrimTabVerts = _tnl_render_tab_verts;
-   tnl->Driver.NotifyMaterialChange = _mesa_validate_all_lighting_tables;
+   tnl->Driver.NotifyMaterialChange = _tnl_validate_shine_tables;
 
    tnl->nr_blocks = 0;
 
+   /* Lighting miscellaneous */
+   tnl->_ShineTabList = MALLOC_STRUCT( tnl_shine_tab );
+   make_empty_list( tnl->_ShineTabList );
+   /* Allocate 10 (arbitrary) shininess lookup tables */
+   for (i = 0 ; i < 10 ; i++) {
+      struct tnl_shine_tab *s = MALLOC_STRUCT( tnl_shine_tab );
+      s->shininess = -1;
+      s->refcount = 0;
+      insert_at_tail( tnl->_ShineTabList, s );
+   }
+
    /* plug in the VBO drawing function */
-   vbo_set_draw_func(ctx, _tnl_vbo_draw_prims);
+   vbo_set_draw_func(ctx, _tnl_draw_prims);
 
    _math_init_transformation();
    _math_init_translate();
@@ -93,11 +105,18 @@ _tnl_CreateContext( struct gl_context *ctx )
 void
 _tnl_DestroyContext( struct gl_context *ctx )
 {
+   struct tnl_shine_tab *s, *tmps;
    TNLcontext *tnl = TNL_CONTEXT(ctx);
+
+   /* Free lighting shininess exponentiation table */
+   foreach_s( s, tmps, tnl->_ShineTabList ) {
+      free( s );
+   }
+   free( tnl->_ShineTabList );
 
    _tnl_destroy_pipeline( ctx );
 
-   FREE(tnl);
+   free(tnl);
    ctx->swtnl_context = NULL;
 }
 
@@ -123,7 +142,7 @@ _tnl_InvalidateState( struct gl_context *ctx, GLuint new_state )
     */
    tnl->render_inputs_bitset = BITFIELD64_BIT(_TNL_ATTRIB_POS);
 
-   if (!fp || (fp->Base.InputsRead & FRAG_BIT_COL0)) {
+   if (!fp || (fp->Base.InputsRead & VARYING_BIT_COL0)) {
      tnl->render_inputs_bitset |= BITFIELD64_BIT(_TNL_ATTRIB_COLOR0);
    }
 
@@ -132,13 +151,13 @@ _tnl_InvalidateState( struct gl_context *ctx, GLuint new_state )
 
    for (i = 0; i < ctx->Const.MaxTextureCoordUnits; i++) {
      if (ctx->Texture._EnabledCoordUnits & (1 << i) ||
-	 (fp && fp->Base.InputsRead & FRAG_BIT_TEX(i))) {
+	 (fp && fp->Base.InputsRead & VARYING_BIT_TEX(i))) {
        tnl->render_inputs_bitset |= BITFIELD64_BIT(_TNL_ATTRIB_TEX(i));
      }
    }
 
    if (ctx->Fog.Enabled
-       || (fp != NULL && (fp->Base.InputsRead & FRAG_BIT_FOGC) != 0)) {
+       || (fp != NULL && (fp->Base.InputsRead & VARYING_BIT_FOGC) != 0)) {
       /* Either fixed-function fog or a fragment program needs fog coord.
        */
       tnl->render_inputs_bitset |= BITFIELD64_BIT(_TNL_ATTRIB_FOG);
@@ -158,7 +177,7 @@ _tnl_InvalidateState( struct gl_context *ctx, GLuint new_state )
    if (vp) {
       GLuint i;
       for (i = 0; i < MAX_VARYING; i++) {
-	 if (vp->Base.OutputsWritten & BITFIELD64_BIT(VERT_RESULT_VAR0 + i)) {
+	 if (vp->Base.OutputsWritten & BITFIELD64_BIT(VARYING_SLOT_VAR0 + i)) {
             tnl->render_inputs_bitset |= BITFIELD64_BIT(_TNL_ATTRIB_GENERIC(i));
          }
       }

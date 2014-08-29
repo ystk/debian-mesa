@@ -1,6 +1,6 @@
 /**************************************************************************
  *
- * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2008 VMware, Inc.
  * Copyright 2009-2010 Chia-I Wu <olvaffe@gmail.com>
  * Copyright 2010-2011 LunarG, Inc.
  * All Rights Reserved.
@@ -331,6 +331,7 @@ _eglValidateConfig(const _EGLConfig *conf, EGLBoolean for_matching)
             mask = EGL_OPENGL_ES_BIT |
                    EGL_OPENVG_BIT |
                    EGL_OPENGL_ES2_BIT |
+                   EGL_OPENGL_ES3_BIT_KHR |
                    EGL_OPENGL_BIT;
             break;
          default:

@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2003 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -44,6 +44,31 @@
  */
 
 static void
+i915_util_blitter_save_states(struct i915_context *i915)
+{
+   util_blitter_save_blend(i915->blitter, (void *)i915->blend);
+   util_blitter_save_depth_stencil_alpha(i915->blitter, (void *)i915->depth_stencil);
+   util_blitter_save_stencil_ref(i915->blitter, &i915->stencil_ref);
+   util_blitter_save_rasterizer(i915->blitter, (void *)i915->rasterizer);
+   util_blitter_save_fragment_shader(i915->blitter, i915->fs);
+   util_blitter_save_vertex_shader(i915->blitter, i915->vs);
+   util_blitter_save_viewport(i915->blitter, &i915->viewport);
+   util_blitter_save_scissor(i915->blitter, &i915->scissor);
+   util_blitter_save_vertex_elements(i915->blitter, i915->velems);
+   util_blitter_save_vertex_buffer_slot(i915->blitter,
+                                    i915->vertex_buffers);
+
+   util_blitter_save_framebuffer(i915->blitter, &i915->framebuffer);
+
+   util_blitter_save_fragment_sampler_states(i915->blitter,
+                                             i915->num_samplers,
+                                             (void**)i915->fragment_sampler);
+   util_blitter_save_fragment_sampler_views(i915->blitter,
+                                            i915->num_fragment_sampler_views,
+                                            i915->fragment_sampler_views);
+}
+
+static void
 i915_surface_copy_render(struct pipe_context *pipe,
                          struct pipe_resource *dst, unsigned dst_level,
                          unsigned dstx, unsigned dsty, unsigned dstz,
@@ -59,28 +84,16 @@ i915_surface_copy_render(struct pipe_context *pipe,
       return;
    }
 
-   util_blitter_save_blend(i915->blitter, (void *)i915->blend);
-   util_blitter_save_depth_stencil_alpha(i915->blitter, (void *)i915->depth_stencil);
-   util_blitter_save_stencil_ref(i915->blitter, &i915->stencil_ref);
-   util_blitter_save_rasterizer(i915->blitter, (void *)i915->rasterizer);
-   util_blitter_save_fragment_shader(i915->blitter, i915->saved_fs);
-   util_blitter_save_vertex_shader(i915->blitter, i915->saved_vs);
-   util_blitter_save_viewport(i915->blitter, &i915->viewport);
-   util_blitter_save_vertex_elements(i915->blitter, i915->saved_velems);
-   util_blitter_save_vertex_buffers(i915->blitter, i915->saved_nr_vertex_buffers,
-                                    i915->saved_vertex_buffers);
+   if (!util_blitter_is_copy_supported(i915->blitter, dst, src)) {
+      util_resource_copy_region(pipe, dst, dst_level, dstx, dsty, dstz,
+                                src, src_level, src_box);
+      return;
+   }
 
-   util_blitter_save_framebuffer(i915->blitter, &i915->framebuffer);
-
-   util_blitter_save_fragment_sampler_states(i915->blitter,
-                                             i915->saved_nr_samplers,
-                                             i915->saved_samplers);
-   util_blitter_save_fragment_sampler_views(i915->blitter,
-                                            i915->saved_nr_sampler_views,
-                                            i915->saved_sampler_views);
+   i915_util_blitter_save_states(i915);
 
    util_blitter_copy_texture(i915->blitter, dst, dst_level, dstx, dsty, dstz,
-                            src, src_level, src_box, TRUE);
+                            src, src_level, src_box);
 }
 
 static void
@@ -199,6 +212,38 @@ i915_surface_copy_blitter(struct pipe_context *pipe,
 }
 
 static void
+i915_blit(struct pipe_context *pipe, const struct pipe_blit_info *blit_info)
+{
+   struct i915_context *i915 = i915_context(pipe);
+   struct pipe_blit_info info = *blit_info;
+
+   if (util_try_blit_via_copy_region(pipe, &info)) {
+      return; /* done */
+   }
+
+   if (info.mask & PIPE_MASK_S) {
+      debug_printf("i915: cannot blit stencil, skipping\n");
+      info.mask &= ~PIPE_MASK_S;
+   }
+
+   if (!util_blitter_is_blit_supported(i915->blitter, &info)) {
+      debug_printf("i915: blit unsupported %s -> %s\n",
+                   util_format_short_name(info.src.resource->format),
+                   util_format_short_name(info.dst.resource->format));
+      return;
+   }
+
+   i915_util_blitter_save_states(i915);
+
+   util_blitter_blit(i915->blitter, &info);
+}
+
+static void
+i915_flush_resource(struct pipe_context *ctx, struct pipe_resource *resource)
+{
+}
+
+static void
 i915_clear_render_target_blitter(struct pipe_context *pipe,
                                  struct pipe_surface *dst,
                                  const union pipe_color_union *color,
@@ -221,7 +266,7 @@ i915_clear_render_target_blitter(struct pipe_context *pipe,
                    tex->buffer, offset,
                    (short) dstx, (short) dsty,
                    (short) width, (short) height,
-                   uc.ui );
+                   uc.ui[0] );
 }
 
 static void
@@ -291,7 +336,6 @@ i915_create_surface(struct pipe_context *ctx,
       ps->u.tex.level = surf_tmpl->u.tex.level;
       ps->u.tex.first_layer = surf_tmpl->u.tex.first_layer;
       ps->u.tex.last_layer = surf_tmpl->u.tex.last_layer;
-      ps->usage = surf_tmpl->usage;
       ps->context = ctx;
    }
    return ps;
@@ -318,6 +362,8 @@ i915_init_surface_functions(struct i915_context *i915)
       i915->base.clear_render_target = i915_clear_render_target_render;
       i915->base.clear_depth_stencil = i915_clear_depth_stencil_render;
    }
+   i915->base.blit = i915_blit;
+   i915->base.flush_resource = i915_flush_resource;
    i915->base.create_surface = i915_create_surface;
    i915->base.surface_destroy = i915_surface_destroy;
 }

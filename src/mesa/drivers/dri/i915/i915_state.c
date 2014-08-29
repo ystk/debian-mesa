@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2003 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -33,6 +33,7 @@
 #include "main/fbobject.h"
 #include "main/dd.h"
 #include "main/state.h"
+#include "main/stencil.h"
 #include "tnl/tnl.h"
 #include "tnl/t_context.h"
 
@@ -63,14 +64,14 @@ i915_update_stencil(struct gl_context * ctx)
     */
    /* _NEW_POLYGON | _NEW_STENCIL */
    if (ctx->Polygon.FrontFace == GL_CW) {
-      front_ref = ctx->Stencil.Ref[0];
+      front_ref = _mesa_get_stencil_ref(ctx, 0);
       front_mask = ctx->Stencil.ValueMask[0];
       front_writemask = ctx->Stencil.WriteMask[0];
       front_func = ctx->Stencil.Function[0];
       front_fail = ctx->Stencil.FailFunc[0];
       front_pass_z_fail = ctx->Stencil.ZFailFunc[0];
       front_pass_z_pass = ctx->Stencil.ZPassFunc[0];
-      back_ref = ctx->Stencil.Ref[ctx->Stencil._BackFace];
+      back_ref = _mesa_get_stencil_ref(ctx, ctx->Stencil._BackFace);
       back_mask = ctx->Stencil.ValueMask[ctx->Stencil._BackFace];
       back_writemask = ctx->Stencil.WriteMask[ctx->Stencil._BackFace];
       back_func = ctx->Stencil.Function[ctx->Stencil._BackFace];
@@ -78,14 +79,14 @@ i915_update_stencil(struct gl_context * ctx)
       back_pass_z_fail = ctx->Stencil.ZFailFunc[ctx->Stencil._BackFace];
       back_pass_z_pass = ctx->Stencil.ZPassFunc[ctx->Stencil._BackFace];
    } else {
-      front_ref = ctx->Stencil.Ref[ctx->Stencil._BackFace];
+      front_ref = _mesa_get_stencil_ref(ctx, ctx->Stencil._BackFace);
       front_mask = ctx->Stencil.ValueMask[ctx->Stencil._BackFace];
       front_writemask = ctx->Stencil.WriteMask[ctx->Stencil._BackFace];
       front_func = ctx->Stencil.Function[ctx->Stencil._BackFace];
       front_fail = ctx->Stencil.FailFunc[ctx->Stencil._BackFace];
       front_pass_z_fail = ctx->Stencil.ZFailFunc[ctx->Stencil._BackFace];
       front_pass_z_pass = ctx->Stencil.ZPassFunc[ctx->Stencil._BackFace];
-      back_ref = ctx->Stencil.Ref[0];
+      back_ref = _mesa_get_stencil_ref(ctx, 0);
       back_mask = ctx->Stencil.ValueMask[0];
       back_writemask = ctx->Stencil.WriteMask[0];
       back_func = ctx->Stencil.Function[0];
@@ -403,38 +404,29 @@ intelCalcViewport(struct gl_context * ctx)
 
    if (_mesa_is_winsys_fbo(ctx->DrawBuffer)) {
       _math_matrix_viewport(&intel->ViewportMatrix,
-			    ctx->Viewport.X,
-			    ctx->DrawBuffer->Height - ctx->Viewport.Y,
-			    ctx->Viewport.Width,
-			    -ctx->Viewport.Height,
-			    ctx->Viewport.Near,
-			    ctx->Viewport.Far,
+			    ctx->ViewportArray[0].X,
+			    ctx->DrawBuffer->Height - ctx->ViewportArray[0].Y,
+			    ctx->ViewportArray[0].Width,
+			    -ctx->ViewportArray[0].Height,
+			    ctx->ViewportArray[0].Near,
+			    ctx->ViewportArray[0].Far,
 			    1.0);
    } else {
       _math_matrix_viewport(&intel->ViewportMatrix,
-			    ctx->Viewport.X,
-			    ctx->Viewport.Y,
-			    ctx->Viewport.Width,
-			    ctx->Viewport.Height,
-			    ctx->Viewport.Near,
-			    ctx->Viewport.Far,
+			    ctx->ViewportArray[0].X,
+			    ctx->ViewportArray[0].Y,
+			    ctx->ViewportArray[0].Width,
+			    ctx->ViewportArray[0].Height,
+			    ctx->ViewportArray[0].Near,
+			    ctx->ViewportArray[0].Far,
 			    1.0);
    }
 }
 
 
-/** Called from ctx->Driver.Viewport() */
-static void
-i915Viewport(struct gl_context * ctx,
-              GLint x, GLint y, GLsizei width, GLsizei height)
-{
-   intelCalcViewport(ctx);
-}
-
-
 /** Called from ctx->Driver.DepthRange() */
 static void
-i915DepthRange(struct gl_context * ctx, GLclampd nearval, GLclampd farval)
+i915DepthRange(struct gl_context *ctx)
 {
    intelCalcViewport(ctx);
 }
@@ -509,7 +501,7 @@ i915PolygonStipple(struct gl_context * ctx, const GLubyte * mask)
  * Hardware clipping
  */
 static void
-i915Scissor(struct gl_context * ctx, GLint x, GLint y, GLsizei w, GLsizei h)
+i915Scissor(struct gl_context * ctx)
 {
    struct i915_context *i915 = I915_CONTEXT(ctx);
    int x1, y1, x2, y2;
@@ -517,22 +509,28 @@ i915Scissor(struct gl_context * ctx, GLint x, GLint y, GLsizei w, GLsizei h)
    if (!ctx->DrawBuffer)
       return;
 
-   DBG("%s %d,%d %dx%d\n", __FUNCTION__, x, y, w, h);
+   DBG("%s %d,%d %dx%d\n", __FUNCTION__,
+       ctx->Scissor.ScissorArray[0].X,     ctx->Scissor.ScissorArray[0].Y,
+       ctx->Scissor.ScissorArray[0].Width, ctx->Scissor.ScissorArray[0].Height);
 
    if (_mesa_is_winsys_fbo(ctx->DrawBuffer)) {
-      x1 = x;
-      y1 = ctx->DrawBuffer->Height - (y + h);
-      x2 = x + w - 1;
-      y2 = y1 + h - 1;
+      x1 = ctx->Scissor.ScissorArray[0].X;
+      y1 = ctx->DrawBuffer->Height - (ctx->Scissor.ScissorArray[0].Y
+                                      + ctx->Scissor.ScissorArray[0].Height);
+      x2 = ctx->Scissor.ScissorArray[0].X
+         + ctx->Scissor.ScissorArray[0].Width - 1;
+      y2 = y1 + ctx->Scissor.ScissorArray[0].Height - 1;
       DBG("%s %d..%d,%d..%d (inverted)\n", __FUNCTION__, x1, x2, y1, y2);
    }
    else {
       /* FBO - not inverted
        */
-      x1 = x;
-      y1 = y;
-      x2 = x + w - 1;
-      y2 = y + h - 1;
+      x1 = ctx->Scissor.ScissorArray[0].X;
+      y1 = ctx->Scissor.ScissorArray[0].Y;
+      x2 = ctx->Scissor.ScissorArray[0].X
+         + ctx->Scissor.ScissorArray[0].Width - 1;
+      y2 = ctx->Scissor.ScissorArray[0].Y
+         + ctx->Scissor.ScissorArray[0].Height - 1;
       DBG("%s %d..%d,%d..%d (not inverted)\n", __FUNCTION__, x1, x2, y1, y2);
    }
    
@@ -671,7 +669,7 @@ i915_update_sprite_point_enable(struct gl_context *ctx)
       /* _NEW_POINT */
       if (ctx->Point.CoordReplace[i] && ctx->Point.PointSprite)
          coord_replace_bits |= (1 << i);
-      if (inputsRead & FRAG_BIT_TEX(i))
+      if (inputsRead & VARYING_BIT_TEX(i))
          tex_coord_unit_bits |= (1 << i);
    }
 
@@ -1054,6 +1052,15 @@ i915_update_provoking_vertex(struct gl_context * ctx)
     }
 }
 
+/* Fallback to swrast for select and feedback.
+ */
+static void
+i915RenderMode(struct gl_context *ctx, GLenum mode)
+{
+   struct intel_context *intel = intel_context(ctx);
+   FALLBACK(intel, INTEL_FALLBACK_RENDERMODE, (mode != GL_RENDER));
+}
+
 void
 i915InitStateFunctions(struct dd_function_table *functions)
 {
@@ -1074,13 +1081,13 @@ i915InitStateFunctions(struct dd_function_table *functions)
    functions->PointSize = i915PointSize;
    functions->PointParameterfv = i915PointParameterfv;
    functions->PolygonStipple = i915PolygonStipple;
+   functions->RenderMode = i915RenderMode;
    functions->Scissor = i915Scissor;
    functions->ShadeModel = i915ShadeModel;
    functions->StencilFuncSeparate = i915StencilFuncSeparate;
    functions->StencilMaskSeparate = i915StencilMaskSeparate;
    functions->StencilOpSeparate = i915StencilOpSeparate;
    functions->DepthRange = i915DepthRange;
-   functions->Viewport = i915Viewport;
 }
 
 

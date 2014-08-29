@@ -35,13 +35,6 @@ env.CodeGenerate(
     command = python_cmd + ' $SCRIPT $SOURCE > $TARGET'
 )
 
-env.CodeGenerate(
-    target = 'util/u_half.c',
-    script = 'util/u_half.py',
-    source = [],
-    command = python_cmd + ' $SCRIPT > $TARGET'
-)
-
 env.Depends('util/u_format_table.c', [
     '#src/gallium/auxiliary/util/u_format_parse.py',
     'util/u_format_pack.py', 
@@ -57,10 +50,6 @@ if env['llvm']:
         'GALLIVM_SOURCES',
         'GALLIVM_CPP_SOURCES'
     ])
-
-    if env['toolchain'] == 'crossmingw':
-        # compile lp_bld_misc.cpp without -gstabs option
-        source = env.compile_without_gstabs(source, "gallivm/lp_bld_misc.cpp")
 
 gallium = env.ConvenienceLibrary(
     target = 'gallium',

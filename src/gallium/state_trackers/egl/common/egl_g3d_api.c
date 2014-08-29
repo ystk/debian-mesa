@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  7.9
  *
  * Copyright (C) 2009-2010 Chia-I Wu <olv@0xlab.org>
  *
@@ -53,7 +52,7 @@ egl_g3d_choose_st(_EGLDriver *drv, _EGLContext *ctx,
 
    switch (ctx->ClientAPI) {
    case EGL_OPENGL_ES_API:
-      switch (ctx->ClientVersion) {
+      switch (ctx->ClientMajorVersion) {
       case 1:
          api = ST_API_OPENGL;
          *profile = ST_PROFILE_OPENGL_ES1;
@@ -63,8 +62,8 @@ egl_g3d_choose_st(_EGLDriver *drv, _EGLContext *ctx,
          *profile = ST_PROFILE_OPENGL_ES2;
          break;
       default:
-         _eglLog(_EGL_WARNING, "unknown client version %d",
-               ctx->ClientVersion);
+         _eglLog(_EGL_WARNING, "unknown client major version %d",
+               ctx->ClientMajorVersion);
          break;
       }
       break;
@@ -316,10 +315,14 @@ egl_g3d_create_surface(_EGLDriver *drv, _EGLDisplay *dpy, _EGLConfig *conf,
 
 static _EGLSurface *
 egl_g3d_create_window_surface(_EGLDriver *drv, _EGLDisplay *dpy,
-                              _EGLConfig *conf, EGLNativeWindowType win,
+                              _EGLConfig *conf, void *native_window,
                               const EGLint *attribs)
 {
+   EGLNativeWindowType win;
    struct egl_g3d_create_surface_arg arg;
+
+   STATIC_ASSERT(sizeof(EGLNativeWindowType) == sizeof(native_window));
+   win = (EGLNativeWindowType) native_window;
 
    memset(&arg, 0, sizeof(arg));
    arg.type = EGL_WINDOW_BIT;
@@ -330,10 +333,14 @@ egl_g3d_create_window_surface(_EGLDriver *drv, _EGLDisplay *dpy,
 
 static _EGLSurface *
 egl_g3d_create_pixmap_surface(_EGLDriver *drv, _EGLDisplay *dpy,
-                              _EGLConfig *conf, EGLNativePixmapType pix,
+                              _EGLConfig *conf, void *native_pixmap,
                               const EGLint *attribs)
 {
+   EGLNativePixmapType pix;
    struct egl_g3d_create_surface_arg arg;
+
+   STATIC_ASSERT(sizeof(EGLNativePixmapType) == sizeof(native_pixmap));
+   pix = (EGLNativePixmapType) native_pixmap;
 
    memset(&arg, 0, sizeof(arg));
    arg.type = EGL_PIXMAP_BIT;
@@ -444,7 +451,7 @@ egl_g3d_create_pbuffer_from_client_buffer(_EGLDriver *drv, _EGLDisplay *dpy,
    gsurf->client_buffer = buffer;
 
    /* validate now so that it fails if the client buffer is invalid */
-   if (!gsurf->stfbi->validate(gsurf->stfbi,
+   if (!gsurf->stfbi->validate(NULL, gsurf->stfbi,
             &gsurf->stvis.render_buffer, 1, &ptex)) {
       egl_g3d_destroy_st_framebuffer(gsurf->stfbi);
       FREE(gsurf);
@@ -635,11 +642,15 @@ egl_g3d_post_sub_buffer(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surf,
 
 static EGLBoolean
 egl_g3d_copy_buffers(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surf,
-                     EGLNativePixmapType target)
+                     void *native_pixmap_target)
 {
    struct egl_g3d_display *gdpy = egl_g3d_display(dpy);
    struct egl_g3d_surface *gsurf = egl_g3d_surface(surf);
    _EGLContext *ctx = _eglGetCurrentContext();
+   EGLNativePixmapType target;
+
+   STATIC_ASSERT(sizeof(EGLNativePixmapType) == sizeof(native_pixmap_target));
+   target = (EGLNativePixmapType) native_pixmap_target;
 
    if (!gsurf->render_texture)
       return EGL_TRUE;
@@ -873,6 +884,19 @@ egl_g3d_unbind_wayland_display_wl(_EGLDriver *drv, _EGLDisplay *dpy,
    return gdpy->native->wayland_bufmgr->unbind_display(gdpy->native, wl_dpy);
 }
 
+static EGLBoolean
+egl_g3d_query_wayland_buffer_wl(_EGLDriver *drv, _EGLDisplay *dpy,
+                                struct wl_resource *buffer,
+                                EGLint attribute, EGLint *value)
+{
+   struct egl_g3d_display *gdpy = egl_g3d_display(dpy);
+
+   if (!gdpy->native->wayland_bufmgr)
+      return EGL_FALSE;
+
+   return gdpy->native->wayland_bufmgr->query_buffer(gdpy->native,
+                                                     buffer, attribute, value);
+}
 #endif /* EGL_WL_bind_wayland_display */
 
 void
@@ -907,7 +931,7 @@ egl_g3d_init_driver_api(_EGLDriver *drv)
 #ifdef EGL_WL_bind_wayland_display
    drv->API.BindWaylandDisplayWL = egl_g3d_bind_wayland_display_wl;
    drv->API.UnbindWaylandDisplayWL = egl_g3d_unbind_wayland_display_wl;
-
+   drv->API.QueryWaylandBufferWL = egl_g3d_query_wayland_buffer_wl;
 #endif
 
    drv->API.CreateSyncKHR = egl_g3d_create_sync;
