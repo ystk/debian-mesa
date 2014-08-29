@@ -58,7 +58,23 @@ is_dominated_by_previous_instruction(vec4_instruction *inst)
 }
 
 static bool
-try_constant_propagation(vec4_instruction *inst, int arg, src_reg *values[4])
+is_channel_updated(vec4_instruction *inst, src_reg *values[4], int ch)
+{
+   const src_reg *src = values[ch];
+
+   /* consider GRF only */
+   assert(inst->dst.file == GRF);
+   if (!src || src->file != GRF)
+      return false;
+
+   return (src->reg == inst->dst.reg &&
+	   src->reg_offset == inst->dst.reg_offset &&
+	   inst->dst.writemask & (1 << BRW_GET_SWZ(src->swizzle, ch)));
+}
+
+static bool
+try_constant_propagation(struct brw_context *brw, vec4_instruction *inst,
+                         int arg, src_reg *values[4])
 {
    /* For constant propagation, we only handle the same constant
     * across all 4 channels.  Some day, we should handle the 8-bit
@@ -95,16 +111,43 @@ try_constant_propagation(vec4_instruction *inst, int arg, src_reg *values[4])
       inst->src[arg] = value;
       return true;
 
+   case SHADER_OPCODE_POW:
+   case SHADER_OPCODE_INT_QUOTIENT:
+   case SHADER_OPCODE_INT_REMAINDER:
+      if (brw->gen < 8)
+         break;
+      /* fallthrough */
+   case BRW_OPCODE_DP2:
+   case BRW_OPCODE_DP3:
+   case BRW_OPCODE_DP4:
+   case BRW_OPCODE_DPH:
+   case BRW_OPCODE_BFI1:
+   case BRW_OPCODE_ASR:
+   case BRW_OPCODE_SHL:
+   case BRW_OPCODE_SHR:
+   case BRW_OPCODE_SUBB:
+      if (arg == 1) {
+         inst->src[arg] = value;
+         return true;
+      }
+      break;
+
+   case BRW_OPCODE_MACH:
    case BRW_OPCODE_MUL:
    case BRW_OPCODE_ADD:
+   case BRW_OPCODE_OR:
+   case BRW_OPCODE_AND:
+   case BRW_OPCODE_XOR:
+   case BRW_OPCODE_ADDC:
       if (arg == 1) {
 	 inst->src[arg] = value;
 	 return true;
       } else if (arg == 0 && inst->src[1].file != IMM) {
 	 /* Fit this constant in by commuting the operands.  Exception: we
-	  * can't do this for 32-bit integer MUL because it's asymmetric.
+	  * can't do this for 32-bit integer MUL/MACH because it's asymmetric.
 	  */
-	 if (inst->opcode == BRW_OPCODE_MUL &&
+	 if ((inst->opcode == BRW_OPCODE_MUL ||
+              inst->opcode == BRW_OPCODE_MACH) &&
 	     (inst->src[1].type == BRW_REGISTER_TYPE_D ||
 	      inst->src[1].type == BRW_REGISTER_TYPE_UD))
 	    break;
@@ -160,8 +203,17 @@ try_constant_propagation(vec4_instruction *inst, int arg, src_reg *values[4])
 }
 
 static bool
-try_copy_propagation(struct intel_context *intel,
-		     vec4_instruction *inst, int arg, src_reg *values[4])
+is_logic_op(enum opcode opcode)
+{
+   return (opcode == BRW_OPCODE_AND ||
+           opcode == BRW_OPCODE_OR  ||
+           opcode == BRW_OPCODE_XOR ||
+           opcode == BRW_OPCODE_NOT);
+}
+
+bool
+vec4_visitor::try_copy_propagation(vec4_instruction *inst, int arg,
+                                   src_reg *values[4])
 {
    /* For constant propagation, we only handle the same constant
     * across all 4 channels.  Some day, we should handle the 8-bit
@@ -197,6 +249,11 @@ try_copy_propagation(struct intel_context *intel,
        value.file != ATTR)
       return false;
 
+   if (brw->gen >= 8 && (value.negate || value.abs) &&
+       is_logic_op(inst->opcode)) {
+      return false;
+   }
+
    if (inst->src[arg].abs) {
       value.negate = false;
       value.abs = true;
@@ -204,11 +261,26 @@ try_copy_propagation(struct intel_context *intel,
    if (inst->src[arg].negate)
       value.negate = !value.negate;
 
-   /* FINISHME: We can't copy-propagate things that aren't normal
-    * vec8s into gen6 math instructions, because of the weird src
-    * handling for those instructions.  Just ignore them for now.
+   bool has_source_modifiers = value.negate || value.abs;
+
+   /* gen6 math and gen7+ SENDs from GRFs ignore source modifiers on
+    * instructions.
     */
-   if (intel->gen >= 6 && inst->is_math())
+   if ((has_source_modifiers || value.file == UNIFORM ||
+        value.swizzle != BRW_SWIZZLE_XYZW) && !can_do_source_mods(inst))
+      return false;
+
+   if (has_source_modifiers && value.type != inst->src[arg].type)
+      return false;
+
+   bool is_3src_inst = (inst->opcode == BRW_OPCODE_LRP ||
+                        inst->opcode == BRW_OPCODE_MAD ||
+                        inst->opcode == BRW_OPCODE_BFE ||
+                        inst->opcode == BRW_OPCODE_BFI2);
+   if (is_3src_inst && value.file == UNIFORM)
+      return false;
+
+   if (inst->is_send_from_grf())
       return false;
 
    /* We can't copy-propagate a UD negation into a condmod
@@ -224,6 +296,7 @@ try_copy_propagation(struct intel_context *intel,
    if (value.equals(&inst->src[arg]))
       return false;
 
+   value.type = inst->src[arg].type;
    inst->src[arg] = value;
    return true;
 }
@@ -291,8 +364,8 @@ vec4_visitor::opt_copy_propagation()
 	 if (c != 4)
 	    continue;
 
-	 if (try_constant_propagation(inst, i, values) ||
-	     try_copy_propagation(intel, inst, i, values))
+	 if (try_constant_propagation(brw, inst, i, values) ||
+	     try_copy_propagation(inst, i, values))
 	    progress = true;
       }
 
@@ -320,11 +393,7 @@ vec4_visitor::opt_copy_propagation()
 	 else {
 	    for (int i = 0; i < virtual_grf_reg_count; i++) {
 	       for (int j = 0; j < 4; j++) {
-		  if (inst->dst.writemask & (1 << j) &&
-		      cur_value[i][j] &&
-		      cur_value[i][j]->file == GRF &&
-		      cur_value[i][j]->reg == inst->dst.reg &&
-		      cur_value[i][j]->reg_offset == inst->dst.reg_offset) {
+		  if (is_channel_updated(inst, cur_value[i], j)){
 		     cur_value[i][j] = NULL;
 		  }
 	       }
@@ -334,7 +403,7 @@ vec4_visitor::opt_copy_propagation()
    }
 
    if (progress)
-      live_intervals_valid = false;
+      invalidate_live_intervals();
 
    return progress;
 }

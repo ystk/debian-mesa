@@ -459,9 +459,9 @@ bind_samplers(struct xa_context *ctx,
 
     }
 
-    cso_set_samplers(ctx->cso, ctx->num_bound_samplers,
+    cso_set_samplers(ctx->cso, PIPE_SHADER_FRAGMENT, ctx->num_bound_samplers,
 		     (const struct pipe_sampler_state **)samplers);
-    cso_set_fragment_sampler_views(ctx->cso, ctx->num_bound_samplers,
+    cso_set_sampler_views(ctx->cso, PIPE_SHADER_FRAGMENT, ctx->num_bound_samplers,
 				   ctx->bound_sampler_views);
 }
 
@@ -472,13 +472,15 @@ xa_composite_prepare(struct xa_context *ctx,
     struct xa_surface *dst_srf = comp->dst->srf;
     int ret;
 
+    if (comp->mask && !comp->mask->srf)
+	return -XA_ERR_INVAL;
+
     ret = xa_ctx_srf_create(ctx, dst_srf);
     if (ret != XA_ERR_NONE)
 	return ret;
 
     ctx->dst = dst_srf;
-    renderer_bind_destination(ctx, ctx->srf, ctx->srf->width,
-			      ctx->srf->height);
+    renderer_bind_destination(ctx, ctx->srf);
 
     ret = bind_composite_blend_state(ctx, comp);
     if (ret != XA_ERR_NONE)
@@ -513,6 +515,8 @@ xa_composite_rect(struct xa_context *ctx,
 	const float *src_matrix = NULL;
 	const float *mask_matrix = NULL;
 
+	xa_scissor_update(ctx, dstX, dstY, dstX + width, dstY + height);
+
 	if (comp->src->has_transform)
 	    src_matrix = comp->src->transform;
 	if (comp->mask && comp->mask->has_transform)
@@ -527,7 +531,6 @@ XA_EXPORT void
 xa_composite_done(struct xa_context *ctx)
 {
     renderer_draw_flush(ctx);
-    ctx->pipe->flush(ctx->pipe, &ctx->last_fence);
 
     ctx->comp = NULL;
     ctx->has_solid_color = FALSE;

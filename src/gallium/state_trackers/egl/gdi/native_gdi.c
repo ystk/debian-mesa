@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  7.9
  *
  * Copyright (C) 2010 LunarG Inc.
  *
@@ -358,8 +357,7 @@ gdi_display_destroy(struct native_display *ndpy)
 {
    struct gdi_display *gdpy = gdi_display(ndpy);
 
-   if (gdpy->configs)
-      FREE(gdpy->configs);
+   FREE(gdpy->configs);
 
    ndpy_uninit(ndpy);
 

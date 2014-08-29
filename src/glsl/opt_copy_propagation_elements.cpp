@@ -49,6 +49,8 @@
 
 static bool debug = false;
 
+namespace {
+
 class acp_entry : public exec_node
 {
 public:
@@ -93,6 +95,7 @@ public:
    ir_copy_propagation_elements_visitor()
    {
       this->progress = false;
+      this->killed_all = false;
       this->mem_ctx = ralloc_context(NULL);
       this->shader_mem_ctx = NULL;
       this->acp = new(mem_ctx) exec_list;
@@ -133,6 +136,8 @@ public:
    /* Context for allocating new shader nodes. */
    void *shader_mem_ctx;
 };
+
+} /* unnamed namespace */
 
 ir_visitor_status
 ir_copy_propagation_elements_visitor::visit_enter(ir_function_signature *ir)
@@ -181,7 +186,7 @@ ir_copy_propagation_elements_visitor::visit_leave(ir_assignment *ir)
 }
 
 ir_visitor_status
-ir_copy_propagation_elements_visitor::visit_leave(ir_swizzle *ir)
+ir_copy_propagation_elements_visitor::visit_leave(ir_swizzle *)
 {
    /* Don't visit the values of swizzles since they are handled while
     * visiting the swizzle itself.
@@ -239,8 +244,8 @@ ir_copy_propagation_elements_visitor::handle_rvalue(ir_rvalue **ir)
    /* Try to find ACP entries covering swizzle_chan[], hoping they're
     * the same source variable.
     */
-   foreach_iter(exec_list_iterator, iter, *this->acp) {
-      acp_entry *entry = (acp_entry *)iter.get();
+   foreach_list(n, this->acp) {
+      acp_entry *entry = (acp_entry *) n;
 
       if (var == entry->lhs) {
 	 for (int c = 0; c < chans; c++) {
@@ -288,14 +293,14 @@ ir_visitor_status
 ir_copy_propagation_elements_visitor::visit_enter(ir_call *ir)
 {
    /* Do copy propagation on call parameters, but skip any out params */
-   exec_list_iterator sig_param_iter = ir->get_callee()->parameters.iterator();
-   foreach_iter(exec_list_iterator, iter, ir->actual_parameters) {
-      ir_variable *sig_param = (ir_variable *)sig_param_iter.get();
-      ir_instruction *ir = (ir_instruction *)iter.get();
-      if (sig_param->mode != ir_var_out && sig_param->mode != ir_var_inout) {
+   foreach_two_lists(formal_node, &ir->callee->parameters,
+                     actual_node, &ir->actual_parameters) {
+      ir_variable *sig_param = (ir_variable *) formal_node;
+      ir_rvalue *ir = (ir_rvalue *) actual_node;
+      if (sig_param->data.mode != ir_var_function_out
+          && sig_param->data.mode != ir_var_function_inout) {
          ir->accept(this);
       }
-      sig_param_iter.next();
    }
 
    /* Since we're unlinked, we don't (necessarily) know the side effects of
@@ -319,8 +324,8 @@ ir_copy_propagation_elements_visitor::handle_if_block(exec_list *instructions)
    this->killed_all = false;
 
    /* Populate the initial acp with a copy of the original */
-   foreach_iter(exec_list_iterator, iter, *orig_acp) {
-      acp_entry *a = (acp_entry *)iter.get();
+   foreach_list(n, orig_acp) {
+      acp_entry *a = (acp_entry *) n;
       this->acp->push_tail(new(this->mem_ctx) acp_entry(a));
    }
 

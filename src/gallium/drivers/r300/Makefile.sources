@@ -28,6 +28,7 @@ C_SOURCES := \
 	compiler/radeon_compiler_util.c \
 	compiler/radeon_emulate_branches.c \
 	compiler/radeon_emulate_loops.c \
+	compiler/radeon_inline_literals.c \
 	compiler/radeon_program.c \
 	compiler/radeon_program_print.c \
 	compiler/radeon_opcodes.c \
@@ -45,6 +46,7 @@ C_SOURCES := \
 	compiler/radeon_optimize.c \
 	compiler/radeon_remove_constants.c \
 	compiler/radeon_rename_regs.c \
+	compiler/radeon_vert_fc.c \
 	compiler/radeon_variable.c \
 	compiler/r3xx_fragprog.c \
 	compiler/r300_fragprog.c \
@@ -55,3 +57,15 @@ C_SOURCES := \
 	compiler/r3xx_vertprog.c \
 	compiler/r3xx_vertprog_dump.c \
 	compiler/memory_pool.c
+
+COMPILER_TESTS_SOURCES := \
+	compiler/tests/r300_compiler_tests.c \
+	compiler/tests/radeon_compiler_optimize_tests.c \
+	compiler/tests/radeon_compiler_regalloc_tests.c \
+	compiler/tests/radeon_compiler_util_tests.c \
+	compiler/tests/rc_test_helpers.c \
+	compiler/tests/unit_test.c
+
+HELPER_SOURCES := \
+	ralloc.c \
+	register_allocate.c

@@ -17,8 +17,11 @@ libEGL.so.1 libegl1-mesa #MINVER# | libegl1-x11
  eglCreatePbufferFromClientBuffer@Base 7.8.1
  eglCreatePbufferSurface@Base 7.8.1
  eglCreatePixmapSurface@Base 7.8.1
+ eglCreatePlatformPixmapSurfaceEXT@Base 10.2
+ eglCreatePlatformWindowSurfaceEXT@Base 10.2
  eglCreateScreenSurfaceMESA@Base 7.8.1
  eglCreateSyncKHR@Base 7.9
+ eglCreateWaylandBufferFromImageWL@Base 10.0.1
  eglCreateWindowSurface@Base 7.8.1
  eglDestroyContext@Base 7.8.1
  eglDestroyImageKHR@Base 7.8.1
@@ -36,6 +39,7 @@ libEGL.so.1 libegl1-mesa #MINVER# | libegl1-x11
  eglGetModeAttribMESA@Base 7.8.1
  eglGetSyncAttribKHR@Base 7.9
  eglGetModesMESA@Base 7.8.1
+ eglGetPlatformDisplayEXT@Base 10.2
  eglGetProcAddress@Base 7.8.1
  eglGetScreensMESA@Base 7.8.1
  eglInitialize@Base 7.8.1
@@ -49,6 +53,7 @@ libEGL.so.1 libegl1-mesa #MINVER# | libegl1-x11
  eglQueryScreenSurfaceMESA@Base 7.8.1
  eglQueryString@Base 7.8.1
  eglQuerySurface@Base 7.8.1
+ eglQueryWaylandBufferWL@Base 8.1~0
  eglReleaseTexImage@Base 7.8.1
  eglReleaseThread@Base 7.8.1
  eglScreenPositionMESA@Base 7.8.1
@@ -57,6 +62,7 @@ libEGL.so.1 libegl1-mesa #MINVER# | libegl1-x11
  eglSurfaceAttrib@Base 7.8.1
  eglSwapBuffers@Base 7.8.1
  eglSwapBuffersRegionNOK@Base 7.9
+ eglSwapBuffersWithDamageEXT@Base 9.2~0
  eglSwapInterval@Base 7.8.1
  eglTerminate@Base 7.8.1
  eglUnbindWaylandDisplayWL@Base 7.11~0

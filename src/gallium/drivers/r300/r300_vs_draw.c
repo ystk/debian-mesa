@@ -17,7 +17,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -94,11 +94,12 @@ static void emit_output(struct tgsi_transform_context *ctx,
 
     decl = tgsi_default_full_declaration();
     decl.Declaration.File = TGSI_FILE_OUTPUT;
-    decl.Declaration.Interpolate = interp;
+    decl.Declaration.Interpolate = 1;
     decl.Declaration.Semantic = TRUE;
     decl.Semantic.Name = name;
     decl.Semantic.Index = index;
     decl.Range.First = decl.Range.Last = reg;
+    decl.Interp.Interpolate = interp;
     ctx->emit_declaration(ctx, &decl);
     ++vsctx->num_outputs;
 }

@@ -35,10 +35,6 @@ sources := \
 	glcpp/glcpp-lex.c \
 	glcpp/glcpp-parse.c
 
-ifneq ($(LOCAL_IS_HOST_MODULE),true)
-sources += builtin_function.cpp
-endif
-
 LOCAL_SRC_FILES := $(filter-out $(sources), $(LOCAL_SRC_FILES))
 
 LOCAL_C_INCLUDES += $(intermediates) $(intermediates)/glcpp $(MESA_TOP)/src/glsl/glcpp
@@ -52,10 +48,10 @@ define local-l-or-ll-to-c-or-cpp
 	$(hide) $(LEX) --nounistd -o$@ $<
 endef
 
-define local-y-to-c-and-h
+define glsl_local-y-to-c-and-h
 	@mkdir -p $(dir $@)
 	@echo "Mesa Yacc: $(PRIVATE_MODULE) <= $<"
-	$(hide) $(YACC) -o $@ $<
+	$(hide) $(YACC) -o $@ -p "glcpp_parser_" $<
 endef
 
 define local-yy-to-cpp-and-h
@@ -80,19 +76,4 @@ $(intermediates)/glcpp/glcpp-lex.c: $(LOCAL_PATH)/glcpp/glcpp-lex.l
 	$(call local-l-or-ll-to-c-or-cpp)
 
 $(intermediates)/glcpp/glcpp-parse.c: $(LOCAL_PATH)/glcpp/glcpp-parse.y
-	$(call local-y-to-c-and-h)
-
-BUILTIN_COMPILER := $(BUILD_OUT_EXECUTABLES)/mesa_builtin_compiler$(BUILD_EXECUTABLE_SUFFIX)
-
-builtin_function_deps := \
-	$(LOCAL_PATH)/builtins/tools/generate_builtins.py \
-	$(LOCAL_PATH)/builtins/tools/texture_builtins.py \
-	$(BUILTIN_COMPILER) \
-	$(wildcard $(LOCAL_PATH)/builtins/profiles/*) \
-       	$(wildcard $(LOCAL_PATH)/builtins/ir/*)
-
-$(intermediates)/builtin_function.cpp: PRIVATE_SCRIPT := $(MESA_PYTHON2) $(LOCAL_PATH)/builtins/tools/generate_builtins.py
-$(intermediates)/builtin_function.cpp: $(builtin_function_deps)
-	@mkdir -p $(dir $@)
-	@echo "Gen GLSL: $(PRIVATE_MODULE) <= $(notdir $@)"
-	$(hide) $(PRIVATE_SCRIPT) $(BUILTIN_COMPILER) > $@ || rm -f $@
+	$(call glsl_local-y-to-c-and-h)

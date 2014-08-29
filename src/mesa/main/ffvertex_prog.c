@@ -1,6 +1,6 @@
 /**************************************************************************
  *
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -36,7 +36,6 @@
 #include "main/glheader.h"
 #include "main/mtypes.h"
 #include "main/macros.h"
-#include "main/mfeatures.h"
 #include "main/enums.h"
 #include "main/ffvertex_prog.h"
 #include "program/program.h"
@@ -165,7 +164,7 @@ static void make_state_key( struct gl_context *ctx, struct state_key *key )
 
    if (ctx->RenderMode == GL_FEEDBACK) {
       /* make sure the vertprog emits color and tex0 */
-      key->fragprog_inputs_read |= (FRAG_BIT_COL0 | FRAG_BIT_TEX0);
+      key->fragprog_inputs_read |= (VARYING_BIT_COL0 | VARYING_BIT_TEX0);
    }
 
    key->separate_specular = (ctx->Light.Model.ColorControl ==
@@ -181,7 +180,7 @@ static void make_state_key( struct gl_context *ctx, struct state_key *key )
 	 key->light_twoside = 1;
 
       if (ctx->Light.ColorMaterialEnabled) {
-	 key->light_color_material_mask = ctx->Light.ColorMaterialBitmask;
+	 key->light_color_material_mask = ctx->Light._ColorMaterialBitmask;
       }
 
       for (i = 0; i < MAX_LIGHTS; i++) {
@@ -229,20 +228,18 @@ static void make_state_key( struct gl_context *ctx, struct state_key *key )
    if (ctx->Point._Attenuated)
       key->point_attenuated = 1;
 
-#if FEATURE_point_size_array
-   if (ctx->Array.ArrayObj->VertexAttrib[VERT_ATTRIB_POINT_SIZE].Enabled)
+   if (ctx->Array.VAO->VertexAttrib[VERT_ATTRIB_POINT_SIZE].Enabled)
       key->point_array = 1;
-#endif
 
    if (ctx->Texture._TexGenEnabled ||
        ctx->Texture._TexMatEnabled ||
-       ctx->Texture._EnabledUnits)
+       ctx->Texture._MaxEnabledTexImageUnit != -1)
       key->texture_enabled_global = 1;
 
    for (i = 0; i < MAX_TEXTURE_COORD_UNITS; i++) {
       struct gl_texture_unit *texUnit = &ctx->Texture.Unit[i];
 
-      if (texUnit->_ReallyEnabled)
+      if (texUnit->_Current)
 	 key->unit[i].texunit_really_enabled = 1;
 
       if (ctx->Point.PointSprite)
@@ -378,7 +375,7 @@ static struct ureg swizzle1( struct ureg reg, int x )
 
 static struct ureg get_temp( struct tnl_program *p )
 {
-   int bit = _mesa_ffs( ~p->temp_in_use );
+   int bit = ffs( ~p->temp_in_use );
    if (!bit) {
       _mesa_problem(NULL, "%s: out of temporaries\n", __FILE__);
       exit(1);
@@ -458,7 +455,7 @@ static struct ureg register_input( struct tnl_program *p, GLuint input )
 
 
 /**
- * \param input  one of VERT_RESULT_x tokens.
+ * \param input  one of VARYING_SLOT_x tokens.
  */
 static struct ureg register_output( struct tnl_program *p, GLuint output )
 {
@@ -546,7 +543,6 @@ static void emit_dst( struct prog_dst_register *dst,
    dst->WriteMask = mask ? mask : WRITEMASK_XYZW;
    dst->CondMask = COND_TR;  /* always pass cond test */
    dst->CondSwizzle = SWIZZLE_NOOP;
-   dst->CondSrc = 0;
    /* Check that bitfield sizes aren't exceeded */
    ASSERT(dst->Index == reg.idx);
 }
@@ -611,7 +607,6 @@ static void emit_op3fn(struct tnl_program *p,
 
    inst = &p->program->Base.Instructions[nr];
    inst->Opcode = (enum prog_opcode) op;
-   inst->Data = 0;
 
    emit_arg( &inst->SrcReg[0], src0 );
    emit_arg( &inst->SrcReg[1], src1 );
@@ -703,16 +698,11 @@ static void emit_normalize_vec3( struct tnl_program *p,
 				 struct ureg dest,
 				 struct ureg src )
 {
-#if 0
-   /* XXX use this when drivers are ready for NRM3 */
-   emit_op1(p, OPCODE_NRM3, dest, WRITEMASK_XYZ, src);
-#else
    struct ureg tmp = get_temp(p);
    emit_op2(p, OPCODE_DP3, tmp, WRITEMASK_X, src, src);
    emit_op1(p, OPCODE_RSQ, tmp, WRITEMASK_X, tmp);
    emit_op2(p, OPCODE_MUL, dest, 0, src, swizzle1(tmp, X));
    release_temp(p, tmp);
-#endif
 }
 
 
@@ -836,7 +826,7 @@ static struct ureg get_transformed_normal( struct tnl_program *p )
 static void build_hpos( struct tnl_program *p )
 {
    struct ureg pos = register_input( p, VERT_ATTRIB_POS );
-   struct ureg hpos = register_output( p, VERT_RESULT_HPOS );
+   struct ureg hpos = register_output( p, VARYING_SLOT_POS );
    struct ureg mvp[4];
 
    if (p->mvp_with_dp4) {
@@ -1091,22 +1081,22 @@ static void build_lighting( struct tnl_program *p )
    /* If no lights, still need to emit the scenecolor.
     */
    {
-      struct ureg res0 = register_output( p, VERT_RESULT_COL0 );
+      struct ureg res0 = register_output( p, VARYING_SLOT_COL0 );
       emit_op1(p, OPCODE_MOV, res0, 0, _col0);
    }
 
    if (separate) {
-      struct ureg res1 = register_output( p, VERT_RESULT_COL1 );
+      struct ureg res1 = register_output( p, VARYING_SLOT_COL1 );
       emit_op1(p, OPCODE_MOV, res1, 0, _col1);
    }
 
    if (twoside) {
-      struct ureg res0 = register_output( p, VERT_RESULT_BFC0 );
+      struct ureg res0 = register_output( p, VARYING_SLOT_BFC0 );
       emit_op1(p, OPCODE_MOV, res0, 0, _bfc0);
    }
 
    if (twoside && separate) {
-      struct ureg res1 = register_output( p, VERT_RESULT_BFC1 );
+      struct ureg res1 = register_output( p, VARYING_SLOT_BFC1 );
       emit_op1(p, OPCODE_MOV, res1, 0, _bfc1);
    }
 
@@ -1192,14 +1182,14 @@ static void build_lighting( struct tnl_program *p )
 	       if (separate) {
 		  mask0 = WRITEMASK_XYZ;
 		  mask1 = WRITEMASK_XYZ;
-		  res0 = register_output( p, VERT_RESULT_COL0 );
-		  res1 = register_output( p, VERT_RESULT_COL1 );
+		  res0 = register_output( p, VARYING_SLOT_COL0 );
+		  res1 = register_output( p, VARYING_SLOT_COL1 );
 	       }
 	       else {
 		  mask0 = 0;
 		  mask1 = WRITEMASK_XYZ;
 		  res0 = _col0;
-		  res1 = register_output( p, VERT_RESULT_COL0 );
+		  res1 = register_output( p, VARYING_SLOT_COL0 );
 	       }
 	    }
             else {
@@ -1247,14 +1237,14 @@ static void build_lighting( struct tnl_program *p )
 	       if (separate) {
 		  mask0 = WRITEMASK_XYZ;
 		  mask1 = WRITEMASK_XYZ;
-		  res0 = register_output( p, VERT_RESULT_BFC0 );
-		  res1 = register_output( p, VERT_RESULT_BFC1 );
+		  res0 = register_output( p, VARYING_SLOT_BFC0 );
+		  res1 = register_output( p, VARYING_SLOT_BFC1 );
 	       }
 	       else {
 		  mask0 = 0;
 		  mask1 = WRITEMASK_XYZ;
 		  res0 = _bfc0;
-		  res1 = register_output( p, VERT_RESULT_BFC0 );
+		  res1 = register_output( p, VARYING_SLOT_BFC0 );
 	       }
 	    }
             else {
@@ -1309,27 +1299,29 @@ static void build_lighting( struct tnl_program *p )
 
 static void build_fog( struct tnl_program *p )
 {
-   struct ureg fog = register_output(p, VERT_RESULT_FOGC);
+   struct ureg fog = register_output(p, VARYING_SLOT_FOGC);
    struct ureg input;
 
    if (p->state->fog_source_is_depth) {
 
       switch (p->state->fog_distance_mode) {
       case FDM_EYE_RADIAL: /* Z = sqrt(Xe*Xe + Ye*Ye + Ze*Ze) */
-	input = get_eye_position(p);
-	emit_op2(p, OPCODE_DP3, fog, WRITEMASK_X, input, input);
-	emit_op1(p, OPCODE_RSQ, fog, WRITEMASK_X, fog);
-	emit_op1(p, OPCODE_RCP, fog, WRITEMASK_X, fog);
-	break;
+         input = get_eye_position(p);
+         emit_op2(p, OPCODE_DP3, fog, WRITEMASK_X, input, input);
+         emit_op1(p, OPCODE_RSQ, fog, WRITEMASK_X, fog);
+         emit_op1(p, OPCODE_RCP, fog, WRITEMASK_X, fog);
+         break;
       case FDM_EYE_PLANE: /* Z = Ze */
-	input = get_eye_position_z(p);
-	emit_op1(p, OPCODE_MOV, fog, WRITEMASK_X, input);
-	break;
+         input = get_eye_position_z(p);
+         emit_op1(p, OPCODE_MOV, fog, WRITEMASK_X, input);
+         break;
       case FDM_EYE_PLANE_ABS: /* Z = abs(Ze) */
-	input = get_eye_position_z(p);
-	emit_op1(p, OPCODE_ABS, fog, WRITEMASK_X, input);
-	break;
-      default: assert(0); break; /* can't happen */
+         input = get_eye_position_z(p);
+         emit_op1(p, OPCODE_ABS, fog, WRITEMASK_X, input);
+         break;
+      default:
+         assert(!"Bad fog mode in build_fog()");
+         break;
       }
 
    }
@@ -1410,7 +1402,7 @@ static void build_texture_transform( struct tnl_program *p )
 
    for (i = 0; i < MAX_TEXTURE_COORD_UNITS; i++) {
 
-      if (!(p->state->fragprog_inputs_read & FRAG_BIT_TEX(i)))
+      if (!(p->state->fragprog_inputs_read & VARYING_BIT_TEX(i)))
 	 continue;
 
       if (p->state->unit[i].coord_replace)
@@ -1420,7 +1412,7 @@ static void build_texture_transform( struct tnl_program *p )
 	  p->state->unit[i].texmat_enabled) {
 
 	 GLuint texmat_enabled = p->state->unit[i].texmat_enabled;
-	 struct ureg out = register_output(p, VERT_RESULT_TEX0 + i);
+	 struct ureg out = register_output(p, VARYING_SLOT_TEX0 + i);
 	 struct ureg out_texgen = undef;
 
 	 if (p->state->unit[i].texgen_enabled) {
@@ -1515,7 +1507,7 @@ static void build_texture_transform( struct tnl_program *p )
 	 release_temps(p);
       }
       else {
-	 emit_passthrough(p, VERT_ATTRIB_TEX0+i, VERT_RESULT_TEX0+i);
+	 emit_passthrough(p, VERT_ATTRIB_TEX0+i, VARYING_SLOT_TEX0+i);
       }
    }
 }
@@ -1529,7 +1521,7 @@ static void build_atten_pointsize( struct tnl_program *p )
    struct ureg eye = get_eye_position_z(p);
    struct ureg state_size = register_param2(p, STATE_INTERNAL, STATE_POINT_SIZE_CLAMPED);
    struct ureg state_attenuation = register_param1(p, STATE_POINT_ATTENUATION);
-   struct ureg out = register_output(p, VERT_RESULT_PSIZ);
+   struct ureg out = register_output(p, VARYING_SLOT_PSIZ);
    struct ureg ut = get_temp(p);
 
    /* dist = |eyez| */
@@ -1565,35 +1557,35 @@ static void build_atten_pointsize( struct tnl_program *p )
 static void build_array_pointsize( struct tnl_program *p )
 {
    struct ureg in = register_input(p, VERT_ATTRIB_POINT_SIZE);
-   struct ureg out = register_output(p, VERT_RESULT_PSIZ);
+   struct ureg out = register_output(p, VARYING_SLOT_PSIZ);
    emit_op1(p, OPCODE_MOV, out, WRITEMASK_X, in);
 }
 
 
 static void build_tnl_program( struct tnl_program *p )
 {
-   /* Emit the program, starting with modelviewproject:
+   /* Emit the program, starting with the modelview, projection transforms:
     */
    build_hpos(p);
 
    /* Lighting calculations:
     */
-   if (p->state->fragprog_inputs_read & (FRAG_BIT_COL0|FRAG_BIT_COL1)) {
+   if (p->state->fragprog_inputs_read & (VARYING_BIT_COL0|VARYING_BIT_COL1)) {
       if (p->state->light_global_enabled)
 	 build_lighting(p);
       else {
-	 if (p->state->fragprog_inputs_read & FRAG_BIT_COL0)
-	    emit_passthrough(p, VERT_ATTRIB_COLOR0, VERT_RESULT_COL0);
+	 if (p->state->fragprog_inputs_read & VARYING_BIT_COL0)
+	    emit_passthrough(p, VERT_ATTRIB_COLOR0, VARYING_SLOT_COL0);
 
-	 if (p->state->fragprog_inputs_read & FRAG_BIT_COL1)
-	    emit_passthrough(p, VERT_ATTRIB_COLOR1, VERT_RESULT_COL1);
+	 if (p->state->fragprog_inputs_read & VARYING_BIT_COL1)
+	    emit_passthrough(p, VERT_ATTRIB_COLOR1, VARYING_SLOT_COL1);
       }
    }
 
-   if (p->state->fragprog_inputs_read & FRAG_BIT_FOGC)
+   if (p->state->fragprog_inputs_read & VARYING_BIT_FOGC)
       build_fog(p);
 
-   if (p->state->fragprog_inputs_read & FRAG_BITS_TEX_ANY)
+   if (p->state->fragprog_inputs_read & VARYING_BITS_TEX_ANY)
       build_texture_transform(p);
 
    if (p->state->point_attenuated)
@@ -1658,7 +1650,6 @@ create_new_program( const struct state_key *key,
 /**
  * Return a vertex program which implements the current fixed-function
  * transform/lighting/texgen operations.
- * XXX move this into core mesa (main/)
  */
 struct gl_vertex_program *
 _mesa_get_fixed_func_vertex_program(struct gl_context *ctx)
@@ -1672,22 +1663,21 @@ _mesa_get_fixed_func_vertex_program(struct gl_context *ctx)
 
    /* Look for an already-prepared program for this state:
     */
-   prog = (struct gl_vertex_program *)
-      _mesa_search_program_cache(ctx->VertexProgram.Cache, &key, sizeof(key));
+   prog = gl_vertex_program(
+      _mesa_search_program_cache(ctx->VertexProgram.Cache, &key, sizeof(key)));
 
    if (!prog) {
       /* OK, we'll have to build a new one */
       if (0)
          printf("Build new TNL program\n");
 
-      prog = (struct gl_vertex_program *)
-         ctx->Driver.NewProgram(ctx, GL_VERTEX_PROGRAM_ARB, 0);
+      prog = gl_vertex_program(ctx->Driver.NewProgram(ctx, GL_VERTEX_PROGRAM_ARB, 0));
       if (!prog)
          return NULL;
 
       create_new_program( &key, prog,
-                          ctx->mvp_with_dp4,
-                          ctx->Const.VertexProgram.MaxTemps );
+                          ctx->ShaderCompilerOptions[MESA_SHADER_VERTEX].OptimizeForAOS,
+                          ctx->Const.Program[MESA_SHADER_VERTEX].MaxTemps );
 
 #if 0
       if (ctx->Driver.ProgramStringNotify)

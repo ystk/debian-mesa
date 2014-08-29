@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -33,9 +33,9 @@
 
 struct vl_mpg12_bs
 {
-   struct pipe_video_decoder *decoder;
+   struct pipe_video_codec *decoder;
 
-   struct pipe_mpeg12_picture_desc desc;
+   struct pipe_mpeg12_picture_desc *desc;
    struct dct_coeff *intra_dct_tbl;
 
    struct vl_vlc vlc;
@@ -43,13 +43,14 @@ struct vl_mpg12_bs
 };
 
 void
-vl_mpg12_bs_init(struct vl_mpg12_bs *bs, struct pipe_video_decoder *decoder);
+vl_mpg12_bs_init(struct vl_mpg12_bs *bs, struct pipe_video_codec *decoder);
 
 void
-vl_mpg12_bs_set_picture_desc(struct vl_mpg12_bs *bs, struct pipe_mpeg12_picture_desc *picture);
-
-void
-vl_mpg12_bs_decode(struct vl_mpg12_bs *bs, unsigned num_buffers,
-                   const void * const *buffers, const unsigned *sizes);
+vl_mpg12_bs_decode(struct vl_mpg12_bs *bs,
+                   struct pipe_video_buffer *target,
+                   struct pipe_mpeg12_picture_desc *picture,
+                   unsigned num_buffers,
+                   const void * const *buffers,
+                   const unsigned *sizes);
 
 #endif /* vl_mpeg12_bitstream_h */

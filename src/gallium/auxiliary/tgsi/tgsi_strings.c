@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007-2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007-2008 VMware, Inc.
  * Copyright 2012 VMware, Inc.
  * All Rights Reserved.
  * 
@@ -32,14 +32,15 @@
 #include "tgsi_strings.h"
 
 
-const char *tgsi_processor_type_names[3] =
+const char *tgsi_processor_type_names[4] =
 {
    "FRAG",
    "VERT",
-   "GEOM"
+   "GEOM",
+   "COMP"
 };
 
-const char *tgsi_file_names[TGSI_FILE_COUNT] =
+static const char *tgsi_file_names[] =
 {
    "NULL",
    "CONST",
@@ -51,9 +52,8 @@ const char *tgsi_file_names[TGSI_FILE_COUNT] =
    "IMM",
    "PRED",
    "SV",
-   "IMMX",
-   "TEMPX",
-   "RES"
+   "RES",
+   "SVIEW"
 };
 
 const char *tgsi_semantic_names[TGSI_SEMANTIC_COUNT] =
@@ -72,12 +72,25 @@ const char *tgsi_semantic_names[TGSI_SEMANTIC_COUNT] =
    "VERTEXID",
    "STENCIL",
    "CLIPDIST",
-   "CLIPVERTEX"
+   "CLIPVERTEX",
+   "GRID_SIZE",
+   "BLOCK_ID",
+   "BLOCK_SIZE",
+   "THREAD_ID",
+   "TEXCOORD",
+   "PCOORD",
+   "VIEWPORT_INDEX",
+   "LAYER",
+   "CULLDIST",
+   "SAMPLEID",
+   "SAMPLEPOS",
+   "SAMPLEMASK",
+   "INVOCATIONID",
 };
 
 const char *tgsi_texture_names[TGSI_TEXTURE_COUNT] =
 {
-   "UNKNOWN",
+   "BUFFER",
    "1D",
    "2D",
    "3D",
@@ -86,11 +99,16 @@ const char *tgsi_texture_names[TGSI_TEXTURE_COUNT] =
    "SHADOW1D",
    "SHADOW2D",
    "SHADOWRECT",
-   "1DARRAY",
-   "2DARRAY",
-   "SHADOW1DARRAY",
-   "SHADOW2DARRAY",
-   "SHADOWCUBE"
+   "1D_ARRAY",
+   "2D_ARRAY",
+   "SHADOW1D_ARRAY",
+   "SHADOW2D_ARRAY",
+   "SHADOWCUBE",
+   "2D_MSAA",
+   "2D_ARRAY_MSAA",
+   "CUBEARRAY",
+   "SHADOWCUBEARRAY",
+   "UNKNOWN",
 };
 
 const char *tgsi_property_names[TGSI_PROPERTY_COUNT] =
@@ -102,7 +120,8 @@ const char *tgsi_property_names[TGSI_PROPERTY_COUNT] =
    "FS_COORD_PIXEL_CENTER",
    "FS_COLOR0_WRITES_ALL_CBUFS",
    "FS_DEPTH_LAYOUT",
-   "VS_PROHIBIT_UCPS"
+   "VS_PROHIBIT_UCPS",
+   "GS_INVOCATIONS",
 };
 
 const char *tgsi_type_names[5] =
@@ -163,7 +182,6 @@ const char *tgsi_immediate_type_names[3] =
 static INLINE void
 tgsi_strings_check(void)
 {
-   STATIC_ASSERT(Elements(tgsi_file_names) == TGSI_FILE_COUNT);
    STATIC_ASSERT(Elements(tgsi_semantic_names) == TGSI_SEMANTIC_COUNT);
    STATIC_ASSERT(Elements(tgsi_texture_names) == TGSI_TEXTURE_COUNT);
    STATIC_ASSERT(Elements(tgsi_property_names) == TGSI_PROPERTY_COUNT);
@@ -174,4 +192,15 @@ tgsi_strings_check(void)
    (void) tgsi_immediate_type_names;
    (void) tgsi_fs_coord_origin_names;
    (void) tgsi_fs_coord_pixel_center_names;
+}
+
+
+const char *
+tgsi_file_name(unsigned file)
+{
+   STATIC_ASSERT(Elements(tgsi_file_names) == TGSI_FILE_COUNT);
+   if (file < Elements(tgsi_file_names))
+      return tgsi_file_names[file];
+   else
+      return "invalid file";
 }

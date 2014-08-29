@@ -1,6 +1,6 @@
 /**************************************************************************
  *
- * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2008 VMware, Inc.
  * Copyright 2009-2010 Chia-I Wu <olvaffe@gmail.com>
  * Copyright 2010-2011 LunarG, Inc.
  * All Rights Reserved.
@@ -58,8 +58,8 @@ typedef EGLBoolean (*MakeCurrent_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurfa
 typedef EGLBoolean (*QueryContext_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLContext *ctx, EGLint attribute, EGLint *value);
 
 /* surface funcs */
-typedef _EGLSurface *(*CreateWindowSurface_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLConfig *config, EGLNativeWindowType window, const EGLint *attrib_list);
-typedef _EGLSurface *(*CreatePixmapSurface_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLConfig *config, EGLNativePixmapType pixmap, const EGLint *attrib_list);
+typedef _EGLSurface *(*CreateWindowSurface_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLConfig *config, void *native_window, const EGLint *attrib_list);
+typedef _EGLSurface *(*CreatePixmapSurface_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLConfig *config, void *native_pixmap, const EGLint *attrib_list);
 typedef _EGLSurface *(*CreatePbufferSurface_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLConfig *config, const EGLint *attrib_list);
 typedef EGLBoolean (*DestroySurface_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surface);
 typedef EGLBoolean (*QuerySurface_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surface, EGLint attribute, EGLint *value);
@@ -68,7 +68,7 @@ typedef EGLBoolean (*BindTexImage_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurf
 typedef EGLBoolean (*ReleaseTexImage_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surface, EGLint buffer);
 typedef EGLBoolean (*SwapInterval_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surf, EGLint interval);
 typedef EGLBoolean (*SwapBuffers_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *draw);
-typedef EGLBoolean (*CopyBuffers_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surface, EGLNativePixmapType target);
+typedef EGLBoolean (*CopyBuffers_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surface, void *native_pixmap_target);
 
 /* misc funcs */
 typedef const char *(*QueryString_t)(_EGLDriver *drv, _EGLDisplay *dpy, EGLint name);
@@ -123,9 +123,21 @@ typedef EGLBoolean (*ExportDRMImageMESA_t)(_EGLDriver *drv, _EGLDisplay *disp, _
 struct wl_display;
 typedef EGLBoolean (*BindWaylandDisplayWL_t)(_EGLDriver *drv, _EGLDisplay *disp, struct wl_display *display);
 typedef EGLBoolean (*UnbindWaylandDisplayWL_t)(_EGLDriver *drv, _EGLDisplay *disp, struct wl_display *display);
+typedef EGLBoolean (*QueryWaylandBufferWL_t)(_EGLDriver *drv, _EGLDisplay *displ, struct wl_resource *buffer, EGLint attribute, EGLint *value);
+#endif
+
+#ifdef EGL_WL_create_wayland_buffer_from_image
+typedef struct wl_buffer * (*CreateWaylandBufferFromImageWL_t)(_EGLDriver *drv, _EGLDisplay *disp, _EGLImage *img);
 #endif
 
 typedef EGLBoolean (*PostSubBufferNV_t)(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surface, EGLint x, EGLint y, EGLint width, EGLint height);
+
+typedef EGLint (*QueryBufferAge_t)(_EGLDriver *drv,
+                                   _EGLDisplay *dpy, _EGLSurface *surface);
+
+#ifdef EGL_EXT_swap_buffers_with_damage
+typedef EGLBoolean (*SwapBuffersWithDamageEXT_t) (_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surface, const EGLint *rects, EGLint n_rects);
+#endif
 
 /**
  * The API dispatcher jumps through these functions
@@ -199,9 +211,20 @@ struct _egl_api
 #ifdef EGL_WL_bind_wayland_display
    BindWaylandDisplayWL_t BindWaylandDisplayWL;
    UnbindWaylandDisplayWL_t UnbindWaylandDisplayWL;
+   QueryWaylandBufferWL_t QueryWaylandBufferWL;
 #endif
 
+#ifdef EGL_WL_create_wayland_buffer_from_image
+   CreateWaylandBufferFromImageWL_t CreateWaylandBufferFromImageWL;
+#endif
+
+#ifdef EGL_EXT_swap_buffers_with_damage
+   SwapBuffersWithDamageEXT_t SwapBuffersWithDamageEXT;
+#endif /* EGL_EXT_swap_buffers_with_damage */
+
    PostSubBufferNV_t PostSubBufferNV;
+
+   QueryBufferAge_t QueryBufferAge;
 };
 
 #endif /* EGLAPI_INCLUDED */

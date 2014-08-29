@@ -37,6 +37,7 @@
 #include "util/u_format.h"
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
+#include "util/u_box.h"
 #include "pipe/p_context.h"
 #include "state_tracker/drisw_api.h"
 #include "state_tracker/st_context.h"
@@ -71,6 +72,18 @@ put_image(__DRIdrawable *dPriv, void *data, unsigned width, unsigned height)
 }
 
 static INLINE void
+put_image2(__DRIdrawable *dPriv, void *data, int x, int y,
+           unsigned width, unsigned height, unsigned stride)
+{
+   __DRIscreen *sPriv = dPriv->driScreenPriv;
+   const __DRIswrastLoaderExtension *loader = sPriv->swrast_loader;
+
+   loader->putImage2(dPriv, __DRI_SWRAST_IMAGE_OP_SWAP,
+                     x, y, width, height, stride,
+                     data, dPriv->loaderPrivate);
+}
+
+static INLINE void
 get_image(__DRIdrawable *dPriv, int x, int y, int width, int height, void *data)
 {
    __DRIscreen *sPriv = dPriv->driScreenPriv;
@@ -99,9 +112,19 @@ drisw_put_image(struct dri_drawable *drawable,
    put_image(dPriv, data, width, height);
 }
 
+static void
+drisw_put_image2(struct dri_drawable *drawable,
+                 void *data, int x, int y, unsigned width, unsigned height,
+                 unsigned stride)
+{
+   __DRIdrawable *dPriv = drawable->dPriv;
+
+   put_image2(dPriv, data, x, y, width, height, stride);
+}
+
 static INLINE void
 drisw_present_texture(__DRIdrawable *dPriv,
-                      struct pipe_resource *ptex)
+                      struct pipe_resource *ptex, struct pipe_box *sub_box)
 {
    struct dri_drawable *drawable = dri_drawable(dPriv);
    struct dri_screen *screen = dri_screen(drawable->sPriv);
@@ -109,7 +132,7 @@ drisw_present_texture(__DRIdrawable *dPriv,
    if (swrast_no_present)
       return;
 
-   screen->base.screen->flush_frontbuffer(screen->base.screen, ptex, 0, 0, drawable);
+   screen->base.screen->flush_frontbuffer(screen->base.screen, ptex, 0, 0, drawable, sub_box);
 }
 
 static INLINE void
@@ -126,7 +149,7 @@ static INLINE void
 drisw_copy_to_front(__DRIdrawable * dPriv,
                     struct pipe_resource *ptex)
 {
-   drisw_present_texture(dPriv, ptex);
+   drisw_present_texture(dPriv, ptex, NULL);
 
    drisw_invalidate_drawable(dPriv);
 }
@@ -158,10 +181,34 @@ drisw_swap_buffers(__DRIdrawable *dPriv)
 }
 
 static void
-drisw_flush_frontbuffer(struct dri_drawable *drawable,
+drisw_copy_sub_buffer(__DRIdrawable *dPriv, int x, int y,
+                      int w, int h)
+{
+   struct dri_context *ctx = dri_get_current(dPriv->driScreenPriv);
+   struct dri_drawable *drawable = dri_drawable(dPriv);
+   struct pipe_resource *ptex;
+   struct pipe_box box;
+   if (!ctx)
+      return;
+
+   ptex = drawable->textures[ST_ATTACHMENT_BACK_LEFT];
+
+   if (ptex) {
+      if (ctx->pp && drawable->textures[ST_ATTACHMENT_DEPTH_STENCIL])
+         pp_run(ctx->pp, ptex, ptex, drawable->textures[ST_ATTACHMENT_DEPTH_STENCIL]);
+
+      ctx->st->flush(ctx->st, ST_FLUSH_FRONT, NULL);
+
+      u_box_2d(x, dPriv->h - y - h, w, h, &box);
+      drisw_present_texture(dPriv, ptex, &box);
+   }
+}
+
+static void
+drisw_flush_frontbuffer(struct dri_context *ctx,
+                        struct dri_drawable *drawable,
                         enum st_attachment_type statt)
 {
-   struct dri_context *ctx = dri_get_current(drawable->sPriv);
    struct pipe_resource *ptex;
 
    if (!ctx)
@@ -182,7 +229,8 @@ drisw_flush_frontbuffer(struct dri_drawable *drawable,
  * framebuffer is resized or destroyed.
  */
 static void
-drisw_allocate_textures(struct dri_drawable *drawable,
+drisw_allocate_textures(struct dri_context *stctx,
+                        struct dri_drawable *drawable,
                         const enum st_attachment_type *statts,
                         unsigned count)
 {
@@ -257,17 +305,17 @@ drisw_update_tex_buffer(struct dri_drawable *drawable,
 
    get_drawable_info(dPriv, &x, &y, &w, &h);
 
-   transfer = pipe_get_transfer(pipe, res,
-                                0, 0, // level, layer,
-                                PIPE_TRANSFER_WRITE,
-                                x, y, w, h);
-   map = pipe_transfer_map(pipe, transfer);
+   map = pipe_transfer_map(pipe, res,
+                           0, 0, // level, layer,
+                           PIPE_TRANSFER_WRITE,
+                           x, y, w, h, &transfer);
 
    /* Copy the Drawable content to the mapped texture buffer */
    get_image(dPriv, x, y, w, h, map);
 
-   /* The pipe transfer has a pitch rounded up to the nearest 64 pixels. */
-   ximage_stride = w * cpp;
+   /* The pipe transfer has a pitch rounded up to the nearest 64 pixels.
+      get_image() has a pitch rounded up to 4 bytes.  */
+   ximage_stride = ((w * cpp) + 3) & -4;
    for (line = h-1; line; --line) {
       memmove(&map[line * transfer->stride],
               &map[line * ximage_stride],
@@ -275,7 +323,6 @@ drisw_update_tex_buffer(struct dri_drawable *drawable,
    }
 
    pipe_transfer_unmap(pipe, transfer);
-   pipe_transfer_destroy(pipe, transfer);
 }
 
 /*
@@ -288,7 +335,8 @@ static const __DRIextension *drisw_screen_extensions[] = {
 };
 
 static struct drisw_loader_funcs drisw_lf = {
-   .put_image = drisw_put_image
+   .put_image = drisw_put_image,
+   .put_image2 = drisw_put_image2
 };
 
 static const __DRIconfig **
@@ -313,7 +361,7 @@ drisw_init_screen(__DRIscreen * sPriv)
    pscreen = drisw_create_screen(&drisw_lf);
    /* dri_init_screen_helper checks pscreen for us */
 
-   configs = dri_init_screen_helper(screen, pscreen, 32);
+   configs = dri_init_screen_helper(screen, pscreen);
    if (!configs)
       goto fail;
 
@@ -359,12 +407,15 @@ const struct __DriverAPIRec driDriverAPI = {
    .SwapBuffers = drisw_swap_buffers,
    .MakeCurrent = dri_make_current,
    .UnbindContext = dri_unbind_context,
+   .CopySubBuffer = drisw_copy_sub_buffer,
 };
 
 /* This is the table of extensions that the loader will dlsym() for. */
 PUBLIC const __DRIextension *__driDriverExtensions[] = {
     &driCoreExtension.base,
     &driSWRastExtension.base,
+    &driCopySubBufferExtension.base,
+    &gallium_config_options.base,
     NULL
 };
 

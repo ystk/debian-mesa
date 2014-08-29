@@ -2390,7 +2390,10 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
  * Program this register with a 32-bit value in ARGB8888 or ARGB2101010
  * formats, ignoring the fields.
  */
-#define RB3D_COLOR_CLEAR_VALUE                   0x4e14
+#define R300_RB3D_COLOR_CLEAR_VALUE                   0x4E14
+/* For FP16 AA. */
+#define R500_RB3D_COLOR_CLEAR_VALUE_AR                0x46C0
+#define R500_RB3D_COLOR_CLEAR_VALUE_GB                0x46C4
 
 /* gap */
 
@@ -2484,6 +2487,18 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 #	define R300_RB3D_DITHER_CTL_ALPHA_DITHER_MODE_ROUND      (1 << 2)
 #	define R300_RB3D_DITHER_CTL_ALPHA_DITHER_MODE_LUT        (2 << 2)
 /* reserved */
+
+#define R300_RB3D_CMASK_OFFSET0 0x4E54
+#define R300_RB3D_CMASK_OFFSET1 0x4E58
+#define R300_RB3D_CMASK_OFFSET2 0x4E5C
+#define R300_RB3D_CMASK_OFFSET3 0x4E60
+#define R300_RB3D_CMASK_PITCH0  0x4E64
+#define R300_RB3D_CMASK_PITCH1  0x4E68
+#define R300_RB3D_CMASK_PITCH2  0x4E6C
+#define R300_RB3D_CMASK_PITCH3  0x4E70
+#define R300_RB3D_CMASK_WRINDEX 0x4E74
+#define R300_RB3D_CMASK_DWORD   0x4E78
+#define R300_RB3D_CMASK_RDINDEX 0x4E7C
 
 /* Resolve buffer destination address. The cache must be empty before changing
  * this register if the cb is in resolve mode. Unpipelined
@@ -2945,13 +2960,15 @@ enum {
 
 /*\}*/
 
-#define PVS_OP_DST_OPERAND(opcode, math_inst, macro_inst, reg_index, reg_writemask, reg_class)	\
+#define PVS_OP_DST_OPERAND(opcode, math_inst, macro_inst, reg_index, reg_writemask, reg_class, saturate)	\
 	 (((opcode & PVS_DST_OPCODE_MASK) << PVS_DST_OPCODE_SHIFT)	\
 	 | ((math_inst & PVS_DST_MATH_INST_MASK) << PVS_DST_MATH_INST_SHIFT)	\
 	 | ((macro_inst & PVS_DST_MACRO_INST_MASK) << PVS_DST_MACRO_INST_SHIFT)	\
 	 | ((reg_index & PVS_DST_OFFSET_MASK) << PVS_DST_OFFSET_SHIFT)	\
 	 | ((reg_writemask & 0xf) << PVS_DST_WE_X_SHIFT)	/* X Y Z W */	\
-	 | ((reg_class & PVS_DST_REG_TYPE_MASK) << PVS_DST_REG_TYPE_SHIFT))
+	 | ((reg_class & PVS_DST_REG_TYPE_MASK) << PVS_DST_REG_TYPE_SHIFT)) \
+         | ((math_inst) ? (((saturate) & PVS_DST_ME_SAT_MASK) << PVS_DST_ME_SAT_SHIFT) : \
+                          (((saturate) & PVS_DST_VE_SAT_MASK) << PVS_DST_VE_SAT_SHIFT))
 
 #define PVS_SRC_OPERAND(in_reg_index, comp_x, comp_y, comp_z, comp_w, reg_class, negate)	\
 	(((in_reg_index & PVS_SRC_OFFSET_MASK) << PVS_SRC_OFFSET_SHIFT)				\
@@ -3504,6 +3521,7 @@ enum {
  * 2. CLEAR_VALUE: Value to write into HIZ RAM.
  */
 #define R300_PACKET3_3D_CLEAR_HIZ           0x00003700
+#define R300_PACKET3_3D_CLEAR_CMASK         0x00003800
 
 /* Draws a set of primitives using vertex buffers pointed by the state data.
  * At least 2 Parameters:

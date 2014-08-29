@@ -5,7 +5,7 @@ Custom builders and methods.
 """
 
 #
-# Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+# Copyright 2008 VMware, Inc.
 # All Rights Reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
@@ -23,7 +23,7 @@ Custom builders and methods.
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
 # OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
 # MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
-# IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+# IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
 # ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 # TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -95,7 +95,7 @@ def createConvenienceLibBuilder(env):
 
 # TODO: handle import statements with multiple modules
 # TODO: handle from import statements
-import_re = re.compile(r'^import\s+(\S+)$', re.M)
+import_re = re.compile(r'^\s*import\s+(\S+)\s*$', re.M)
 
 def python_scan(node, env, path):
     # http://www.scons.org/doc/0.98.5/HTML/scons-user/c2781.html#AEN2789
@@ -113,6 +113,7 @@ def python_scan(node, env, path):
             if os.path.exists(file):
                 results.append(env.File(file))
                 break
+    #print node, map(str, results)
     return results
 
 python_scanner = SCons.Scanner.Scanner(function = python_scan, skeys = ['.py'])
@@ -174,6 +175,9 @@ def _pkg_check_modules(env, name, modules):
     if subprocess.call(["pkg-config", "--exists", ' '.join(modules)]) != 0:
         return
 
+    # Strip version expressions from modules
+    modules = [module.split(' ', 1)[0] for module in modules]
+
     # Other flags may affect the compilation of unrelated targets, so store
     # them with a prefix, (e.g., XXX_CFLAGS, XXX_LIBS, etc)
     try:
@@ -189,7 +193,7 @@ def _pkg_check_modules(env, name, modules):
 
 def pkg_check_modules(env, name, modules):
 
-    sys.stdout.write('Checking for %s...' % name)
+    sys.stdout.write('Checking for %s (%s)...' % (name, ' '.join(modules)))
     _pkg_check_modules(env, name, modules)
     result = env['HAVE_' + name]
     sys.stdout.write(' %s\n' % ['no', 'yes'][int(bool(result))])
@@ -232,6 +236,20 @@ def parse_source_list(env, filename, names=None):
     # parse the source list file
     parser = source_list.SourceListParser()
     src = env.File(filename).srcnode()
+
+    cur_srcdir = env.Dir('.').srcnode().abspath
+    top_srcdir = env.Dir('#').abspath
+    top_builddir = os.path.join(top_srcdir, env['build_dir'])
+
+    # Normalize everything to / slashes
+    cur_srcdir = cur_srcdir.replace('\\', '/')
+    top_srcdir = top_srcdir.replace('\\', '/')
+    top_builddir = top_builddir.replace('\\', '/')
+
+    # Populate the symbol table of the Makefile parser.
+    parser.add_symbol('top_srcdir', top_srcdir)
+    parser.add_symbol('top_builddir', top_builddir)
+
     sym_table = parser.parse(src.abspath)
 
     if names:
@@ -246,7 +264,21 @@ def parse_source_list(env, filename, names=None):
     src_lists = {}
     for sym in symbols:
         val = sym_table[sym]
-        src_lists[sym] = [f for f in val.split(' ') if f]
+        srcs = []
+        for f in val.split():
+            if f:
+                # Process source paths
+                if f.startswith(top_builddir + '/src'):
+                    # Automake puts build output on a `src` subdirectory, but
+                    # SCons does not, so strip it here.
+                    f = top_builddir + f[len(top_builddir + '/src'):]
+                if f.startswith(cur_srcdir + '/'):
+                    # Prefer relative source paths, as absolute files tend to
+                    # cause duplicate actions.
+                    f = f[len(cur_srcdir + '/'):]
+                srcs.append(f)
+
+        src_lists[sym] = srcs
 
     # if names are given, concatenate the lists
     if names:

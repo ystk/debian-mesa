@@ -2,10 +2,11 @@ Import('*')
 
 env = env.Clone()
 
-if env['platform'] in ['linux']:
-	env.Append(CCFLAGS = ['-fvisibility=hidden'])
+if env['suncc']:
+	print 'warning: not building svga'
+	Return()
 
-if env['gcc']:
+if env['gcc'] or env['clang']:
 	env.Append(CPPDEFINES = [
 		'HAVE_STDINT_H', 
 		'HAVE_SYS_TYPES_H',

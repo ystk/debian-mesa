@@ -85,6 +85,9 @@ util_dump_tex_mipfilter(unsigned value, boolean shortened);
 const char *
 util_dump_tex_filter(unsigned value, boolean shortened);
 
+const char *
+util_dump_query_type(unsigned value, boolean shortened);
+
 
 /*
  * p_state.h, through a FILE
@@ -164,6 +167,12 @@ util_dump_vertex_element(FILE *stream,
 
 void
 util_dump_draw_info(FILE *stream, const struct pipe_draw_info *state);
+
+void
+util_dump_box(FILE *stream, const struct pipe_box *box);
+
+void
+util_dump_blit_info(FILE *stream, const struct pipe_blit_info *info);
 
 /* FIXME: Move the other debug_dump_xxx functions out of u_debug.h into here. */
 

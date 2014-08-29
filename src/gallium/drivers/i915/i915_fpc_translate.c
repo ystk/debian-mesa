@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -31,6 +31,7 @@
 #include "i915_reg.h"
 #include "i915_context.h"
 #include "i915_fpc.h"
+#include "i915_debug_private.h"
 
 #include "pipe/p_shader_tokens.h"
 #include "util/u_math.h"
@@ -49,7 +50,7 @@
  * Simple pass-through fragment shader to use when we don't have
  * a real shader (or it fails to compile for some reason).
  */
-static unsigned passthrough[] =
+static unsigned passthrough_decl[] =
 {
    _3DSTATE_PIXEL_SHADER_PROGRAM | ((2*3)-1),
 
@@ -61,7 +62,10 @@ static unsigned passthrough[] =
     D0_CHANNEL_ALL),
    0,
    0,
+};
 
+static unsigned passthrough_program[] =
+{
    /* move to output color:
     */
    (A0_MOV |
@@ -125,10 +129,13 @@ negate(int reg, int x, int y, int z, int w)
 static void
 i915_use_passthrough_shader(struct i915_fragment_shader *fs)
 {
-   fs->program = (uint *) MALLOC(sizeof(passthrough));
+   fs->program = (uint *) MALLOC(sizeof(passthrough_program));
+   fs->decl = (uint *) MALLOC(sizeof(passthrough_decl));
    if (fs->program) {
-      memcpy(fs->program, passthrough, sizeof(passthrough));
-      fs->program_len = Elements(passthrough);
+      memcpy(fs->program, passthrough_program, sizeof(passthrough_program));
+      memcpy(fs->decl, passthrough_decl, sizeof(passthrough_decl));
+      fs->program_len = Elements(passthrough_program);
+      fs->decl_len = Elements(passthrough_decl);
    }
    fs->num_constants = 0;
 }
@@ -173,7 +180,7 @@ static uint get_mapping(struct i915_fragment_shader* fs, int unit)
 static uint
 src_vector(struct i915_fp_compile *p,
            const struct i915_full_src_register *source,
-           struct i915_fragment_shader* fs)
+           struct i915_fragment_shader *fs)
 {
    uint index = source->Register.Index;
    uint src = 0, sem_name, sem_ind;
@@ -375,8 +382,8 @@ translate_tex_src_target(struct i915_fp_compile *p, uint tex)
 /**
  * Return the number of coords needed to access a given TGSI_TEXTURE_*
  */
-static uint
-texture_num_coords(struct i915_fp_compile *p, uint tex)
+uint
+i915_num_coords(uint tex)
 {
    switch (tex) {
    case TGSI_TEXTURE_SHADOW1D:
@@ -394,7 +401,7 @@ texture_num_coords(struct i915_fp_compile *p, uint tex)
       return 3;
 
    default:
-      i915_program_error(p, "Num coords");
+      debug_printf("Unknown texture target for num coords");
       return 2;
    }
 }
@@ -421,7 +428,7 @@ emit_tex(struct i915_fp_compile *p,
                     sampler,
                     coord,
                     opcode,
-                    texture_num_coords(p, texture) );
+                    i915_num_coords(texture) );
 }
 
 
@@ -434,7 +441,7 @@ static void
 emit_simple_arith(struct i915_fp_compile *p,
                   const struct i915_full_instruction *inst,
                   uint opcode, uint numArgs,
-                  struct i915_fragment_shader* fs)
+                  struct i915_fragment_shader *fs)
 {
    uint arg1, arg2, arg3;
 
@@ -459,7 +466,7 @@ static void
 emit_simple_arith_swap2(struct i915_fp_compile *p,
                         const struct i915_full_instruction *inst,
                         uint opcode, uint numArgs,
-                        struct i915_fragment_shader* fs)
+                        struct i915_fragment_shader *fs)
 {
    struct i915_full_instruction inst2;
 
@@ -506,6 +513,22 @@ i915_translate_instruction(struct i915_fp_compile *p,
       emit_simple_arith(p, inst, A0_ADD, 2, fs);
       break;
 
+   case TGSI_OPCODE_CEIL:
+      src0 = src_vector(p, &inst->Src[0], fs);
+      tmp = i915_get_utemp(p);
+      flags = get_result_flags(inst);
+      i915_emit_arith(p,
+                      A0_FLR,
+                      tmp,
+                      flags & A0_DEST_CHANNEL_ALL, 0,
+                      negate(src0, 1, 1, 1, 1), 0, 0);
+      i915_emit_arith(p,
+                      A0_MOV,
+                      get_result_vector(p, &inst->Dst[0]),
+                      flags, 0,
+                      negate(tmp, 1, 1, 1, 1), 0, 0);
+      break;
+
    case TGSI_OPCODE_CMP:
       src0 = src_vector(p, &inst->Src[0], fs);
       src1 = src_vector(p, &inst->Src[1], fs);
@@ -528,7 +551,7 @@ i915_translate_instruction(struct i915_fp_compile *p,
       i915_emit_arith(p, A0_MOD, tmp, A0_DEST_CHANNEL_X, 0, tmp, 0, 0);
 
       /* 
-       * t0.xy = MUL x.xx11, x.x1111  ; x^2, x, 1, 1
+       * t0.xy = MUL x.xx11, x.x111  ; x^2, x, 1, 1
        * t0 = MUL t0.xyxy t0.xx11 ; x^4, x^3, x^2, 1
        * t0 = MUL t0.xxz1 t0.z111    ; x^6 x^4 x^2 1
        * result = DP4 t0, cos_constants
@@ -640,7 +663,7 @@ i915_translate_instruction(struct i915_fp_compile *p,
       emit_simple_arith(p, inst, A0_FRC, 1, fs);
       break;
 
-   case TGSI_OPCODE_KIL:
+   case TGSI_OPCODE_KILL_IF:
       /* kill if src[0].x < 0 || src[0].y < 0 ... */
       src0 = src_vector(p, &inst->Src[0], fs);
       tmp = i915_get_utemp(p);
@@ -654,10 +677,8 @@ i915_translate_instruction(struct i915_fp_compile *p,
                       1);                    /* num_coord */
       break;
 
-   case TGSI_OPCODE_KILP:
-      /* We emit an unconditional kill; we may want to revisit
-       * if we ever implement conditionals.
-       */
+   case TGSI_OPCODE_KILL:
+      /* unconditional kill */
       tmp = i915_get_utemp(p);
 
       i915_emit_texld(p,
@@ -1088,7 +1109,7 @@ i915_translate_instruction(struct i915_fp_compile *p,
 
 
 static void i915_translate_token(struct i915_fp_compile *p,
-                                 const union i915_full_token* token,
+                                 const union i915_full_token *token,
                                  struct i915_fragment_shader *fs)
 {
    struct i915_fragment_shader *ifs = p->shader;
@@ -1277,17 +1298,26 @@ i915_fini_compile(struct i915_context *i915, struct i915_fp_compile *p)
 
       /* Copy compilation results to fragment program struct: 
        */
+      assert(!ifs->decl);
       assert(!ifs->program);
-      ifs->program
-         = (uint *) MALLOC((program_size + decl_size) * sizeof(uint));
-      if (ifs->program) {
-         ifs->program_len = program_size + decl_size;
 
-         memcpy(ifs->program,
+      ifs->decl
+         = (uint *) MALLOC(decl_size * sizeof(uint));
+      ifs->program
+         = (uint *) MALLOC(program_size * sizeof(uint));
+
+      if (ifs->decl) {
+         ifs->decl_len = decl_size;
+
+         memcpy(ifs->decl,
                 p->declarations,
                 decl_size * sizeof(uint));
+      }
 
-         memcpy(ifs->program + decl_size,
+      if (ifs->program) {
+         ifs->program_len = program_size;
+
+         memcpy(ifs->program,
                 p->program,
                 program_size * sizeof(uint));
       }

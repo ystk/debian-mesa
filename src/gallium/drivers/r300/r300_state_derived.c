@@ -316,6 +316,7 @@ static void r300_update_rs_block(struct r300_context *r300)
     struct r300_shader_semantics *fs_inputs = &r300_fs(r300)->shader->inputs;
     struct r300_rs_block rs = {0};
     int i, col_count = 0, tex_count = 0, fp_offset = 0, count, loc = 0, tex_ptr = 0;
+    int gen_offset = 0;
     void (*rX00_rs_col)(struct r300_rs_block*, int, int, enum r300_rs_swizzle);
     void (*rX00_rs_col_write)(struct r300_rs_block*, int, int, enum r300_rs_col_write_type);
     void (*rX00_rs_tex)(struct r300_rs_block*, int, int, enum r300_rs_swizzle);
@@ -436,8 +437,60 @@ static void r300_update_rs_block(struct r300_context *r300)
         fprintf(stderr, "r300: ERROR: FS input FACE unassigned.\n");
     }
 
+    /* Re-use color varyings for texcoords if possible.
+     *
+     * The colors are interpolated as 20-bit floats (reduced precision),
+     * Use this hack only if there are too many generic varyings.
+     * (number of generic varyings + fog + wpos > 8) */
+    if (r300->screen->caps.is_r500 && !any_bcolor_used && !r300->flatshade &&
+	fs_inputs->face == ATTR_UNUSED &&
+        vs_outputs->num_generic + (vs_outputs->fog != ATTR_UNUSED) +
+        (fs_inputs->wpos != ATTR_UNUSED) > 8) {
+	for (i = 0; i < ATTR_GENERIC_COUNT && col_count < 2; i++) {
+	    /* Cannot use color varyings for sprite coords. */
+	    if (fs_inputs->generic[i] != ATTR_UNUSED &&
+		(r300->sprite_coord_enable & (1 << i))) {
+		break;
+	    }
+
+	    if (vs_outputs->generic[i] != ATTR_UNUSED) {
+		/* Set up the color in VAP. */
+		rs.vap_vsm_vtx_assm |= R300_INPUT_CNTL_COLOR;
+		rs.vap_out_vtx_fmt[0] |=
+			R300_VAP_OUTPUT_VTX_FMT_0__COLOR_0_PRESENT << col_count;
+		stream_loc_notcl[loc++] = 2 + col_count;
+
+		/* Rasterize it. */
+		rX00_rs_col(&rs, col_count, col_count, SWIZ_XYZW);
+
+		/* Write it to the FS input register if it's needed by the FS. */
+		if (fs_inputs->generic[i] != ATTR_UNUSED) {
+		    rX00_rs_col_write(&rs, col_count, fp_offset, WRITE_COLOR);
+		    fp_offset++;
+
+		    DBG(r300, DBG_RS,
+			"r300: Rasterized generic %i redirected to color %i and written to FS.\n",
+		        i, col_count);
+		} else {
+		    DBG(r300, DBG_RS, "r300: Rasterized generic %i redirected to color %i unused.\n",
+		        i, col_count);
+		}
+		col_count++;
+	    } else {
+		/* Skip the FS input register, leave it uninitialized. */
+		/* If we try to set it to (0,0,0,1), it will lock up. */
+		if (fs_inputs->generic[i] != ATTR_UNUSED) {
+		    fp_offset++;
+
+		    DBG(r300, DBG_RS, "r300: FS input generic %i unassigned%s.\n", i);
+		}
+	    }
+	}
+	gen_offset = i;
+    }
+
     /* Rasterize texture coordinates. */
-    for (i = 0; i < ATTR_GENERIC_COUNT && tex_count < 8; i++) {
+    for (i = gen_offset; i < ATTR_GENERIC_COUNT && tex_count < 8; i++) {
 	boolean sprite_coord = false;
 
 	if (fs_inputs->generic[i] != ATTR_UNUSED) {
@@ -646,18 +699,24 @@ static uint32_t r300_get_border_color(enum pipe_format format,
             /* The Y component is used for the border color. */
             border_swizzled[1] = border_swizzled[0] + 1.0f/32;
             util_pack_color(border_swizzled, PIPE_FORMAT_B4G4R4A4_UNORM, &uc);
-            return uc.ui;
+            return uc.ui[0];
         case PIPE_FORMAT_RGTC2_SNORM:
         case PIPE_FORMAT_LATC2_SNORM:
             util_pack_color(border_swizzled, PIPE_FORMAT_R8G8B8A8_SNORM, &uc);
-            return uc.ui;
+            return uc.ui[0];
         case PIPE_FORMAT_RGTC2_UNORM:
         case PIPE_FORMAT_LATC2_UNORM:
             util_pack_color(border_swizzled, PIPE_FORMAT_R8G8B8A8_UNORM, &uc);
-            return uc.ui;
+            return uc.ui[0];
+        case PIPE_FORMAT_DXT1_SRGB:
+        case PIPE_FORMAT_DXT1_SRGBA:
+        case PIPE_FORMAT_DXT3_SRGBA:
+        case PIPE_FORMAT_DXT5_SRGBA:
+            util_pack_color(border_swizzled, PIPE_FORMAT_B8G8R8A8_SRGB, &uc);
+            return uc.ui[0];
         default:
             util_pack_color(border_swizzled, PIPE_FORMAT_B8G8R8A8_UNORM, &uc);
-            return uc.ui;
+            return uc.ui[0];
         }
     }
 
@@ -685,10 +744,18 @@ static uint32_t r300_get_border_color(enum pipe_format format,
 
         default:
         case 8:
-            if (desc->channel[0].type == UTIL_FORMAT_TYPE_SIGNED)
-               util_pack_color(border_swizzled, PIPE_FORMAT_R8G8B8A8_SNORM, &uc);
-            else
-               util_pack_color(border_swizzled, PIPE_FORMAT_R8G8B8A8_UNORM, &uc);
+            if (desc->channel[0].type == UTIL_FORMAT_TYPE_SIGNED) {
+                util_pack_color(border_swizzled, PIPE_FORMAT_R8G8B8A8_SNORM, &uc);
+            } else if (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB) {
+                if (desc->nr_channels == 2) {
+                    border_swizzled[3] = border_swizzled[1];
+                    util_pack_color(border_swizzled, PIPE_FORMAT_L8A8_SRGB, &uc);
+                } else {
+                    util_pack_color(border_swizzled, PIPE_FORMAT_R8G8B8A8_SRGB, &uc);
+                }
+            } else {
+                util_pack_color(border_swizzled, PIPE_FORMAT_R8G8B8A8_UNORM, &uc);
+            }
             break;
 
         case 10:
@@ -722,7 +789,7 @@ static uint32_t r300_get_border_color(enum pipe_format format,
             break;
     }
 
-    return uc.ui;
+    return uc.ui[0];
 }
 
 static void r300_merge_textures_and_samplers(struct r300_context* r300)
@@ -769,7 +836,7 @@ static void r300_merge_textures_and_samplers(struct r300_context* r300)
             base_level = view->base.u.tex.first_level;
             min_level = sampler->min_lod;
             level_count = MIN3(sampler->max_lod,
-                               tex->b.b.b.last_level - base_level,
+                               tex->b.b.last_level - base_level,
                                view->base.u.tex.last_level - base_level);
 
             if (base_level + min_level) {
@@ -832,14 +899,14 @@ static void r300_merge_textures_and_samplers(struct r300_context* r300)
             }
 
             /* to emulate 1D textures through 2D ones correctly */
-            if (tex->b.b.b.target == PIPE_TEXTURE_1D) {
+            if (tex->b.b.target == PIPE_TEXTURE_1D) {
                 texstate->filter0 &= ~R300_TX_WRAP_T_MASK;
                 texstate->filter0 |= R300_TX_WRAP_T(R300_TX_CLAMP_TO_EDGE);
             }
 
             /* The hardware doesn't like CLAMP and CLAMP_TO_BORDER
              * for the 3rd coordinate if the texture isn't 3D. */
-            if (tex->b.b.b.target != PIPE_TEXTURE_3D) {
+            if (tex->b.b.target != PIPE_TEXTURE_3D) {
                 texstate->filter0 &= ~R300_TX_WRAP_R_MASK;
             }
 

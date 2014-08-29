@@ -31,18 +31,19 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  * Authors:
  *   Kevin E. Martin <martin@valinux.com>
  *   Gareth Hughes <gareth@valinux.com>
- *   Keith Whitwell <keith@tungstengraphics.com>
+ *   Keith Whitwell <keithw@vmware.com>
  */
 
 #include <stdbool.h>
 #include "main/glheader.h"
 #include "main/api_arrayelt.h"
+#include "main/api_exec.h"
 #include "main/context.h"
 #include "main/simple_list.h"
 #include "main/imports.h"
 #include "main/extensions.h"
-#include "main/mfeatures.h"
 #include "main/version.h"
+#include "main/vtxfmt.h"
 
 #include "swrast/swrast.h"
 #include "swrast_setup/swrast_setup.h"
@@ -63,6 +64,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "radeon_tcl.h"
 #include "radeon_queryobj.h"
 #include "radeon_blit.h"
+#include "radeon_fog.h"
 
 #include "utils.h"
 #include "xmlpool.h" /* for symbolic values of enum-type options */
@@ -133,7 +135,7 @@ static void r100_emit_query_finish(radeonContextPtr radeon)
    BATCH_LOCALS(radeon);
    struct radeon_query_object *query = radeon->query.current;
 
-   BEGIN_BATCH_NO_AUTOSTATE(4);
+   BEGIN_BATCH(4);
    OUT_BATCH(CP_PACKET0(RADEON_RB3D_ZPASS_ADDR, 0));
    OUT_BATCH_RELOC(0, query->bo, query->curr_offset, 0, RADEON_GEM_DOMAIN_GTT, 0);
    END_BATCH();
@@ -166,6 +168,7 @@ r100CreateContext( gl_api api,
 		   unsigned major_version,
 		   unsigned minor_version,
 		   uint32_t flags,
+                   bool notify_reset,
 		   unsigned *error,
 		   void *sharedContextPrivate)
 {
@@ -177,17 +180,22 @@ r100CreateContext( gl_api api,
    int i;
    int tcl_mode, fthrottle_mode;
 
-   /* API and flag filtering is handled in dri2CreateContextAttribs.
-    */
-   (void) api;
-   (void) flags;
+   if (flags & ~__DRI_CTX_FLAG_DEBUG) {
+      *error = __DRI_CTX_ERROR_UNKNOWN_FLAG;
+      return false;
+   }
+
+   if (notify_reset) {
+      *error = __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE;
+      return false;
+   }
 
    assert(glVisual);
    assert(driContextPriv);
    assert(screen);
 
    /* Allocate the Radeon context */
-   rmesa = (r100ContextPtr) CALLOC( sizeof(*rmesa) );
+   rmesa = calloc(1, sizeof(*rmesa));
    if ( !rmesa ) {
       *error = __DRI_CTX_ERROR_NO_MEMORY;
       return GL_FALSE;
@@ -226,10 +234,10 @@ r100CreateContext( gl_api api,
    radeonInitTextureFuncs( &rmesa->radeon, &functions );
    radeonInitQueryObjFunctions(&functions);
 
-   if (!radeonInitContext(&rmesa->radeon, &functions,
+   if (!radeonInitContext(&rmesa->radeon, api, &functions,
 			  glVisual, driContextPriv,
 			  sharedContextPrivate)) {
-     FREE(rmesa);
+     free(rmesa);
      *error = __DRI_CTX_ERROR_NO_MEMORY;
      return GL_FALSE;
    }
@@ -237,22 +245,25 @@ r100CreateContext( gl_api api,
    rmesa->radeon.swtcl.RenderIndex = ~0;
    rmesa->radeon.hw.all_dirty = GL_TRUE;
 
-   /* Set the maximum texture size small enough that we can guarentee that
-    * all texture units can bind a maximal texture and have all of them in
-    * texturable memory at once. Depending on the allow_large_textures driconf
-    * setting allow larger textures.
-    */
+   ctx = &rmesa->radeon.glCtx;
 
-   ctx = rmesa->radeon.glCtx;
+   driContextSetFlags(ctx, flags);
+
+   /* Initialize the software rasterizer and helper modules.
+    */
+   _swrast_CreateContext( ctx );
+   _vbo_CreateContext( ctx );
+   _tnl_CreateContext( ctx );
+   _swsetup_CreateContext( ctx );
+   _ae_create_context( ctx );
+
    ctx->Const.MaxTextureUnits = driQueryOptioni (&rmesa->radeon.optionCache,
 						 "texture_units");
-   ctx->Const.MaxTextureImageUnits = ctx->Const.MaxTextureUnits;
+   ctx->Const.Program[MESA_SHADER_FRAGMENT].MaxTextureImageUnits = ctx->Const.MaxTextureUnits;
    ctx->Const.MaxTextureCoordUnits = ctx->Const.MaxTextureUnits;
    ctx->Const.MaxCombinedTextureImageUnits = ctx->Const.MaxTextureUnits;
 
    ctx->Const.StripTextureBorder = GL_TRUE;
-
-   i = driQueryOptioni( &rmesa->radeon.optionCache, "allow_large_textures");
 
    /* FIXME: When no memory manager is available we should set this 
     * to some reasonable value based on texture memory pool size */
@@ -291,15 +302,7 @@ r100CreateContext( gl_api api,
    ctx->Const.MaxColorAttachments = 1;
    ctx->Const.MaxRenderbufferSize = 2048;
 
-   _mesa_set_mvp_with_dp4( ctx, GL_TRUE );
-
-   /* Initialize the software rasterizer and helper modules.
-    */
-   _swrast_CreateContext( ctx );
-   _vbo_CreateContext( ctx );
-   _tnl_CreateContext( ctx );
-   _swsetup_CreateContext( ctx );
-   _ae_create_context( ctx );
+   ctx->ShaderCompilerOptions[MESA_SHADER_VERTEX].OptimizeForAOS = true;
 
    /* Install the customized pipeline:
     */
@@ -325,38 +328,30 @@ r100CreateContext( gl_api api,
       _math_matrix_set_identity( &rmesa->tmpmat[i] );
    }
 
+   ctx->Extensions.ARB_occlusion_query = true;
    ctx->Extensions.ARB_texture_border_clamp = true;
+   ctx->Extensions.ARB_texture_cube_map = true;
    ctx->Extensions.ARB_texture_env_combine = true;
    ctx->Extensions.ARB_texture_env_crossbar = true;
    ctx->Extensions.ARB_texture_env_dot3 = true;
-   ctx->Extensions.EXT_fog_coord = true;
-   ctx->Extensions.EXT_packed_depth_stencil = true;
-   ctx->Extensions.EXT_secondary_color = true;
+   ctx->Extensions.ARB_texture_mirror_clamp_to_edge = true;
+   ctx->Extensions.ATI_texture_env_combine3 = true;
+   ctx->Extensions.ATI_texture_mirror_once = true;
    ctx->Extensions.EXT_texture_env_dot3 = true;
    ctx->Extensions.EXT_texture_filter_anisotropic = true;
    ctx->Extensions.EXT_texture_mirror_clamp = true;
-   ctx->Extensions.ATI_texture_env_combine3 = true;
-   ctx->Extensions.ATI_texture_mirror_once = true;
    ctx->Extensions.MESA_ycbcr_texture = true;
-   ctx->Extensions.NV_blend_square = true;
-#if FEATURE_OES_EGL_image
+   ctx->Extensions.NV_texture_rectangle = true;
    ctx->Extensions.OES_EGL_image = true;
-#endif
 
-   ctx->Extensions.EXT_framebuffer_object = true;
-
-   ctx->Extensions.ARB_texture_cube_map = true;
-
-   if (rmesa->radeon.glCtx->Mesa_DXTn) {
+   if (rmesa->radeon.glCtx.Mesa_DXTn) {
       ctx->Extensions.EXT_texture_compression_s3tc = true;
-      ctx->Extensions.S3_s3tc = true;
+      ctx->Extensions.ANGLE_texture_compression_dxt = true;
    }
    else if (driQueryOptionb (&rmesa->radeon.optionCache, "force_s3tc_enable")) {
       ctx->Extensions.EXT_texture_compression_s3tc = true;
+      ctx->Extensions.ANGLE_texture_compression_dxt = true;
    }
-
-   ctx->Extensions.NV_texture_rectangle = true;
-   ctx->Extensions.ARB_occlusion_query = true;
 
    /* XXX these should really go right after _mesa_init_driver_functions() */
    radeon_fbo_init(&rmesa->radeon);
@@ -393,7 +388,7 @@ r100CreateContext( gl_api api,
 	 rmesa->radeon.radeonScreen->chip_flags &= ~RADEON_CHIPSET_TCL;
 	 fprintf(stderr, "Disabling HW TCL support\n");
       }
-      TCL_FALLBACK(rmesa->radeon.glCtx, RADEON_TCL_FALLBACK_TCL_DISABLE, 1);
+      TCL_FALLBACK(&rmesa->radeon.glCtx, RADEON_TCL_FALLBACK_TCL_DISABLE, 1);
    }
 
    if (rmesa->radeon.radeonScreen->chip_flags & RADEON_CHIPSET_TCL) {
@@ -401,13 +396,10 @@ r100CreateContext( gl_api api,
    }
 
    _mesa_compute_version(ctx);
-   if (ctx->VersionMajor < major_version
-       || (ctx->VersionMajor == major_version
-	   && ctx->VersionMinor < minor_version)) {
-      radeonDestroyContext(driContextPriv);
-      *error = __DRI_CTX_ERROR_BAD_VERSION;
-      return GL_FALSE;
-   }
+
+   /* Exec table initialization requires the version to be computed */
+   _mesa_initialize_dispatch_tables(ctx);
+   _mesa_initialize_vbo_vtxfmt(ctx);
 
    *error = __DRI_CTX_ERROR_SUCCESS;
    return GL_TRUE;

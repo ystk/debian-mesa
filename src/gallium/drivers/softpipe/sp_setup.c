@@ -1,6 +1,6 @@
 /**************************************************************************
  *
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -28,7 +28,7 @@
 /**
  * \brief  Primitive rasterization/rendering (points, lines, triangles)
  *
- * \author  Keith Whitwell <keith@tungstengraphics.com>
+ * \author  Keith Whitwell <keithw@vmware.com>
  * \author  Brian Paul
  */
 
@@ -163,6 +163,10 @@ clip_emit_quad(struct setup_context *setup, struct quad_header *quad)
    if (quad->inout.mask) {
       struct softpipe_context *sp = setup->softpipe;
 
+#if DEBUG_FRAGS
+      setup->numFragsEmitted += util_bitcount(quad->inout.mask);
+#endif
+
       sp->quad.first->run( sp->quad.first, &quad, 1 );
    }
 }
@@ -234,6 +238,9 @@ flush_spans(struct setup_context *setup)
                setup->quad[q].inout.mask = quadmask;
                setup->quad_ptrs[q] = &setup->quad[q];
                q++;
+#if DEBUG_FRAGS
+               setup->numFragsEmitted += util_bitcount(quadmask);
+#endif
             }
             mask0 >>= 2;
             mask1 >>= 2;
@@ -387,7 +394,7 @@ setup_sort_vertices(struct setup_context *setup,
     *  - pixel center (0.5, 0.5) for GL, or
     *  - assume (0.0, 0.0) for other APIs.
     */
-   if (setup->softpipe->rasterizer->gl_rasterization_rules) {
+   if (setup->softpipe->rasterizer->half_pixel_center) {
       setup->pixel_offset = 0.5f;
    } else {
       setup->pixel_offset = 0.0f;
@@ -504,14 +511,6 @@ tri_linear_coeff(struct setup_context *setup,
    coef->a0[i] = (v[0] -
                   (dadx * (setup->vmin[0][0] - setup->pixel_offset) +
                    dady * (setup->vmin[0][1] - setup->pixel_offset)));
-
-   /*
-   debug_printf("attr[%d].%c: %f dx:%f dy:%f\n",
-		slot, "xyzw"[i],
-		setup->coef[slot].a0[i],
-		setup->coef[slot].dadx[i],
-		setup->coef[slot].dady[i]);
-   */
 }
 
 
@@ -542,13 +541,6 @@ tri_persp_coeff(struct setup_context *setup,
    float dadx = a * setup->oneoverarea;
    float dady = b * setup->oneoverarea;
 
-   /*
-   debug_printf("tri persp %d,%d: %f %f %f\n", vertSlot, i,
-          	setup->vmin[vertSlot][i],
-          	setup->vmid[vertSlot][i],
-       		setup->vmax[vertSlot][i]
-          );
-   */
    assert(i <= 3);
 
    coef->dadx[i] = dadx;
@@ -571,15 +563,15 @@ setup_fragcoord_coeff(struct setup_context *setup, uint slot)
    const struct tgsi_shader_info *fsInfo = &setup->softpipe->fs_variant->info;
 
    /*X*/
-   setup->coef[slot].a0[0] = fsInfo->pixel_center_integer ? 0.0 : 0.5;
-   setup->coef[slot].dadx[0] = 1.0;
-   setup->coef[slot].dady[0] = 0.0;
+   setup->coef[slot].a0[0] = fsInfo->pixel_center_integer ? 0.0f : 0.5f;
+   setup->coef[slot].dadx[0] = 1.0f;
+   setup->coef[slot].dady[0] = 0.0f;
    /*Y*/
    setup->coef[slot].a0[1] =
 		   (fsInfo->origin_lower_left ? setup->softpipe->framebuffer.height-1 : 0)
-		   + (fsInfo->pixel_center_integer ? 0.0 : 0.5);
-   setup->coef[slot].dadx[1] = 0.0;
-   setup->coef[slot].dady[1] = fsInfo->origin_lower_left ? -1.0 : 1.0;
+		   + (fsInfo->pixel_center_integer ? 0.0f : 0.5f);
+   setup->coef[slot].dadx[1] = 0.0f;
+   setup->coef[slot].dady[1] = fsInfo->origin_lower_left ? -1.0f : 1.0f;
    /*Z*/
    setup->coef[slot].a0[2] = setup->posCoef.a0[2];
    setup->coef[slot].dadx[2] = setup->posCoef.dadx[2];
@@ -625,11 +617,11 @@ setup_tri_coefficients(struct setup_context *setup)
 
       switch (vinfo->attrib[fragSlot].interp_mode) {
       case INTERP_CONSTANT:
-         for (j = 0; j < NUM_CHANNELS; j++)
+         for (j = 0; j < TGSI_NUM_CHANNELS; j++)
             const_coeff(setup, &setup->coef[fragSlot], vertSlot, j);
          break;
       case INTERP_LINEAR:
-         for (j = 0; j < NUM_CHANNELS; j++) {
+         for (j = 0; j < TGSI_NUM_CHANNELS; j++) {
             tri_apply_cylindrical_wrap(setup->vmin[vertSlot][j],
                                        setup->vmid[vertSlot][j],
                                        setup->vmax[vertSlot][j],
@@ -639,7 +631,7 @@ setup_tri_coefficients(struct setup_context *setup)
          }
          break;
       case INTERP_PERSPECTIVE:
-         for (j = 0; j < NUM_CHANNELS; j++) {
+         for (j = 0; j < TGSI_NUM_CHANNELS; j++) {
             tri_apply_cylindrical_wrap(setup->vmin[vertSlot][j],
                                        setup->vmid[vertSlot][j],
                                        setup->vmax[vertSlot][j],
@@ -660,6 +652,16 @@ setup_tri_coefficients(struct setup_context *setup)
          setup->coef[fragSlot].a0[0] = setup->facing * -2.0f + 1.0f;
          setup->coef[fragSlot].dadx[0] = 0.0;
          setup->coef[fragSlot].dady[0] = 0.0;
+      }
+
+      if (0) {
+         for (j = 0; j < TGSI_NUM_CHANNELS; j++) {
+            debug_printf("attr[%d].%c: a0:%f dx:%f dy:%f\n",
+                         fragSlot, "xyzw"[j],
+                         setup->coef[fragSlot].a0[j],
+                         setup->coef[fragSlot].dadx[j],
+                         setup->coef[fragSlot].dady[j]);
+         }
       }
    }
 }
@@ -850,6 +852,10 @@ sp_setup_tri(struct setup_context *setup,
 
    flush_spans( setup );
 
+   if (setup->softpipe->active_statistics_queries) {
+      setup->softpipe->pipeline_statistics.c_primitives++;
+   }
+
 #if DEBUG_FRAGS
    printf("Tri: %u frags emitted, %u written\n",
           setup->numFragsEmitted,
@@ -981,11 +987,11 @@ setup_line_coefficients(struct setup_context *setup,
 
       switch (vinfo->attrib[fragSlot].interp_mode) {
       case INTERP_CONSTANT:
-         for (j = 0; j < NUM_CHANNELS; j++)
+         for (j = 0; j < TGSI_NUM_CHANNELS; j++)
             const_coeff(setup, &setup->coef[fragSlot], vertSlot, j);
          break;
       case INTERP_LINEAR:
-         for (j = 0; j < NUM_CHANNELS; j++) {
+         for (j = 0; j < TGSI_NUM_CHANNELS; j++) {
             line_apply_cylindrical_wrap(setup->vmin[vertSlot][j],
                                         setup->vmax[vertSlot][j],
                                         fsInfo->input_cylindrical_wrap[fragSlot] & (1 << j),
@@ -994,7 +1000,7 @@ setup_line_coefficients(struct setup_context *setup,
          }
          break;
       case INTERP_PERSPECTIVE:
-         for (j = 0; j < NUM_CHANNELS; j++) {
+         for (j = 0; j < TGSI_NUM_CHANNELS; j++) {
             line_apply_cylindrical_wrap(setup->vmin[vertSlot][j],
                                         setup->vmax[vertSlot][j],
                                         fsInfo->input_cylindrical_wrap[fragSlot] & (1 << j),
@@ -1241,11 +1247,11 @@ sp_setup_point(struct setup_context *setup,
       case INTERP_CONSTANT:
          /* fall-through */
       case INTERP_LINEAR:
-         for (j = 0; j < NUM_CHANNELS; j++)
+         for (j = 0; j < TGSI_NUM_CHANNELS; j++)
             const_coeff(setup, &setup->coef[fragSlot], vertSlot, j);
          break;
       case INTERP_PERSPECTIVE:
-         for (j = 0; j < NUM_CHANNELS; j++)
+         for (j = 0; j < TGSI_NUM_CHANNELS; j++)
             point_persp_coeff(setup, setup->vprovoke,
                               &setup->coef[fragSlot], vertSlot, j);
          break;

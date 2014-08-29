@@ -1,6 +1,6 @@
 /**************************************************************************
  *
- * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2008 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -56,6 +56,8 @@ util_make_vertex_passthrough_shader_with_so(struct pipe_context *pipe,
                                     const uint *semantic_indexes,
                                     const struct pipe_stream_output_info *so);
 
+extern void *
+util_make_layered_clear_vertex_shader(struct pipe_context *pipe);
 
 extern void *
 util_make_fragment_tex_shader_writemask(struct pipe_context *pipe, 
@@ -75,13 +77,64 @@ util_make_fragment_tex_shader_writedepth(struct pipe_context *pipe,
 
 
 extern void *
-util_make_fragment_passthrough_shader(struct pipe_context *pipe);
+util_make_fragment_tex_shader_writedepthstencil(struct pipe_context *pipe,
+                                                unsigned tex_target,
+                                                unsigned interp_mode);
+
+
+extern void *
+util_make_fragment_tex_shader_writestencil(struct pipe_context *pipe,
+                                           unsigned tex_target,
+                                           unsigned interp_mode);
+
+
+extern void *
+util_make_fragment_passthrough_shader(struct pipe_context *pipe,
+                                      int input_semantic,
+                                      int input_interpolate,
+                                      boolean write_all_cbufs);
+
+
+extern void *
+util_make_empty_fragment_shader(struct pipe_context *pipe);
 
 
 extern void *
 util_make_fragment_cloneinput_shader(struct pipe_context *pipe, int num_cbufs,
                                      int input_semantic,
                                      int input_interpolate);
+
+
+extern void *
+util_make_fs_blit_msaa_color(struct pipe_context *pipe,
+                             unsigned tgsi_tex);
+
+
+extern void *
+util_make_fs_blit_msaa_depth(struct pipe_context *pipe,
+                             unsigned tgsi_tex);
+
+
+extern void *
+util_make_fs_blit_msaa_depthstencil(struct pipe_context *pipe,
+                                    unsigned tgsi_tex);
+
+
+void *
+util_make_fs_blit_msaa_stencil(struct pipe_context *pipe,
+                               unsigned tgsi_tex);
+
+
+void *
+util_make_fs_msaa_resolve(struct pipe_context *pipe,
+                          unsigned tgsi_tex, unsigned nr_samples,
+                          boolean is_uint, boolean is_sint);
+
+
+void *
+util_make_fs_msaa_resolve_bilinear(struct pipe_context *pipe,
+                                   unsigned tgsi_tex, unsigned nr_samples,
+                                   boolean is_uint, boolean is_sint);
 
 #ifdef __cplusplus
 }

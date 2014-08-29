@@ -36,6 +36,7 @@
 #include "util/u_debug.h"
 #include "util/u_memory.h"
 #include "util/u_math.h"
+#include "util/u_bitmask.h"
 
 union tgsi_any_token {
    struct tgsi_header header;
@@ -46,8 +47,10 @@ union tgsi_any_token {
    struct tgsi_declaration decl;
    struct tgsi_declaration_range decl_range;
    struct tgsi_declaration_dimension decl_dim;
+   struct tgsi_declaration_interp decl_interp;
    struct tgsi_declaration_semantic decl_semantic;
-   struct tgsi_declaration_resource decl_resource;
+   struct tgsi_declaration_sampler_view decl_sampler_view;
+   struct tgsi_declaration_array array;
    struct tgsi_immediate imm;
    union  tgsi_immediate_data imm_data;
    struct tgsi_instruction insn;
@@ -56,6 +59,7 @@ union tgsi_any_token {
    struct tgsi_instruction_texture insn_texture;
    struct tgsi_texture_offset insn_texture_offset;
    struct tgsi_src_register src;
+   struct tgsi_ind_register ind;
    struct tgsi_dimension dim;
    struct tgsi_dst_register dst;
    unsigned value;
@@ -71,12 +75,12 @@ struct ureg_tokens {
 
 #define UREG_MAX_INPUT PIPE_MAX_ATTRIBS
 #define UREG_MAX_SYSTEM_VALUE PIPE_MAX_ATTRIBS
-#define UREG_MAX_OUTPUT PIPE_MAX_ATTRIBS
+#define UREG_MAX_OUTPUT PIPE_MAX_SHADER_OUTPUTS
 #define UREG_MAX_CONSTANT_RANGE 32
-#define UREG_MAX_IMMEDIATE 256
-#define UREG_MAX_TEMP 256
+#define UREG_MAX_IMMEDIATE 4096
 #define UREG_MAX_ADDR 2
 #define UREG_MAX_PRED 1
+#define UREG_MAX_ARRAY_TEMPS 256
 
 struct const_decl {
    struct {
@@ -147,11 +151,16 @@ struct ureg_program
       unsigned return_type_y;
       unsigned return_type_z;
       unsigned return_type_w;
-   } resource[PIPE_MAX_SHADER_RESOURCES];
-   unsigned nr_resources;
+   } sampler_view[PIPE_MAX_SHADER_SAMPLER_VIEWS];
+   unsigned nr_sampler_views;
 
-   unsigned temps_active[UREG_MAX_TEMP / 32];
+   struct util_bitmask *free_temps;
+   struct util_bitmask *local_temps;
+   struct util_bitmask *decl_temps;
    unsigned nr_temps;
+
+   unsigned array_temps[UREG_MAX_ARRAY_TEMPS];
+   unsigned nr_array_temps;
 
    struct const_decl const_decls;
    struct const_decl const_decls2D[PIPE_MAX_CONSTANT_BUFFERS];
@@ -159,6 +168,7 @@ struct ureg_program
    unsigned property_gs_input_prim;
    unsigned property_gs_output_prim;
    unsigned property_gs_max_vertices;
+   unsigned property_gs_invocations;
    unsigned char property_fs_coord_origin; /* = TGSI_FS_COORD_ORIGIN_* */
    unsigned char property_fs_coord_pixel_center; /* = TGSI_FS_COORD_PIXEL_CENTER_* */
    unsigned char property_fs_color0_writes_all_cbufs; /* = TGSI_FS_COLOR0_WRITES_ALL_CBUFS * */
@@ -249,6 +259,7 @@ ureg_dst_register( unsigned file,
    dst.File      = file;
    dst.WriteMask = TGSI_WRITEMASK_XYZW;
    dst.Indirect  = 0;
+   dst.IndirectFile = TGSI_FILE_NULL;
    dst.IndirectIndex = 0;
    dst.IndirectSwizzle = 0;
    dst.Saturate  = 0;
@@ -259,6 +270,7 @@ ureg_dst_register( unsigned file,
    dst.PredSwizzleZ = TGSI_SWIZZLE_Z;
    dst.PredSwizzleW = TGSI_SWIZZLE_W;
    dst.Index     = index;
+   dst.ArrayID = 0;
 
    return dst;
 }
@@ -283,6 +295,12 @@ ureg_property_gs_max_vertices(struct ureg_program *ureg,
                               unsigned max_vertices)
 {
    ureg->property_gs_max_vertices = max_vertices;
+}
+void
+ureg_property_gs_invocations(struct ureg_program *ureg,
+                             unsigned invocations)
+{
+   ureg->property_gs_invocations = invocations;
 }
 
 void
@@ -529,43 +547,79 @@ out:
    return ureg_src_register(TGSI_FILE_CONSTANT, index);
 }
 
-
-/* Allocate a new temporary.  Temporaries greater than UREG_MAX_TEMP
- * are legal, but will not be released.
- */
-struct ureg_dst ureg_DECL_temporary( struct ureg_program *ureg )
+static struct ureg_dst alloc_temporary( struct ureg_program *ureg,
+                                        boolean local )
 {
    unsigned i;
 
-   for (i = 0; i < UREG_MAX_TEMP; i += 32) {
-      int bit = ffs(~ureg->temps_active[i/32]);
-      if (bit != 0) {
-         i += bit - 1;
-         goto out;
-      }
+   /* Look for a released temporary.
+    */
+   for (i = util_bitmask_get_first_index(ureg->free_temps);
+        i != UTIL_BITMASK_INVALID_INDEX;
+        i = util_bitmask_get_next_index(ureg->free_temps, i + 1)) {
+      if (util_bitmask_get(ureg->local_temps, i) == local)
+         break;
    }
 
-   /* No reusable temps, so allocate a new one:
+   /* Or allocate a new one.
     */
-   i = ureg->nr_temps++;
+   if (i == UTIL_BITMASK_INVALID_INDEX) {
+      i = ureg->nr_temps++;
 
-out:
-   if (i < UREG_MAX_TEMP)
-      ureg->temps_active[i/32] |= 1 << (i % 32);
+      if (local)
+         util_bitmask_set(ureg->local_temps, i);
 
-   if (i >= ureg->nr_temps)
-      ureg->nr_temps = i + 1;
+      /* Start a new declaration when the local flag changes */
+      if (!i || util_bitmask_get(ureg->local_temps, i - 1) != local)
+         util_bitmask_set(ureg->decl_temps, i);
+   }
+
+   util_bitmask_clear(ureg->free_temps, i);
 
    return ureg_dst_register( TGSI_FILE_TEMPORARY, i );
 }
 
+struct ureg_dst ureg_DECL_temporary( struct ureg_program *ureg )
+{
+   return alloc_temporary(ureg, FALSE);
+}
+
+struct ureg_dst ureg_DECL_local_temporary( struct ureg_program *ureg )
+{
+   return alloc_temporary(ureg, TRUE);
+}
+
+struct ureg_dst ureg_DECL_array_temporary( struct ureg_program *ureg,
+                                           unsigned size,
+                                           boolean local )
+{
+   unsigned i = ureg->nr_temps;
+   struct ureg_dst dst = ureg_dst_register( TGSI_FILE_TEMPORARY, i );
+
+   if (local)
+      util_bitmask_set(ureg->local_temps, i);
+
+   /* Always start a new declaration at the start */
+   util_bitmask_set(ureg->decl_temps, i);
+
+   ureg->nr_temps += size;
+
+   /* and also at the end of the array */
+   util_bitmask_set(ureg->decl_temps, ureg->nr_temps);
+
+   if (ureg->nr_array_temps < UREG_MAX_ARRAY_TEMPS) {
+      ureg->array_temps[ureg->nr_array_temps++] = i;
+      dst.ArrayID = ureg->nr_array_temps;
+   }
+
+   return dst;
+}
 
 void ureg_release_temporary( struct ureg_program *ureg,
                              struct ureg_dst tmp )
 {
    if(tmp.File == TGSI_FILE_TEMPORARY)
-      if (tmp.Index < UREG_MAX_TEMP)
-         ureg->temps_active[tmp.Index/32] &= ~(1 << (tmp.Index % 32));
+      util_bitmask_set(ureg->free_temps, tmp.Index);
 }
 
 
@@ -615,34 +669,34 @@ struct ureg_src ureg_DECL_sampler( struct ureg_program *ureg,
 }
 
 /*
- * Allocate a new shader resource.
+ * Allocate a new shader sampler view.
  */
 struct ureg_src
-ureg_DECL_resource(struct ureg_program *ureg,
-                   unsigned index,
-                   unsigned target,
-                   unsigned return_type_x,
-                   unsigned return_type_y,
-                   unsigned return_type_z,
-                   unsigned return_type_w)
+ureg_DECL_sampler_view(struct ureg_program *ureg,
+                       unsigned index,
+                       unsigned target,
+                       unsigned return_type_x,
+                       unsigned return_type_y,
+                       unsigned return_type_z,
+                       unsigned return_type_w)
 {
-   struct ureg_src reg = ureg_src_register(TGSI_FILE_RESOURCE, index);
+   struct ureg_src reg = ureg_src_register(TGSI_FILE_SAMPLER_VIEW, index);
    uint i;
 
-   for (i = 0; i < ureg->nr_resources; i++) {
-      if (ureg->resource[i].index == index) {
+   for (i = 0; i < ureg->nr_sampler_views; i++) {
+      if (ureg->sampler_view[i].index == index) {
          return reg;
       }
    }
 
-   if (i < PIPE_MAX_SHADER_RESOURCES) {
-      ureg->resource[i].index = index;
-      ureg->resource[i].target = target;
-      ureg->resource[i].return_type_x = return_type_x;
-      ureg->resource[i].return_type_y = return_type_y;
-      ureg->resource[i].return_type_z = return_type_z;
-      ureg->resource[i].return_type_w = return_type_w;
-      ureg->nr_resources++;
+   if (i < PIPE_MAX_SHADER_SAMPLER_VIEWS) {
+      ureg->sampler_view[i].index = index;
+      ureg->sampler_view[i].target = target;
+      ureg->sampler_view[i].return_type_x = return_type_x;
+      ureg->sampler_view[i].return_type_y = return_type_y;
+      ureg->sampler_view[i].return_type_z = return_type_z;
+      ureg->sampler_view[i].return_type_w = return_type_w;
+      ureg->nr_sampler_views++;
       return reg;
    }
 
@@ -839,35 +893,28 @@ ureg_emit_src( struct ureg_program *ureg,
    if (src.Indirect) {
       out[0].src.Indirect = 1;
       out[n].value = 0;
-      out[n].src.File = src.IndirectFile;
-      out[n].src.SwizzleX = src.IndirectSwizzle;
-      out[n].src.SwizzleY = src.IndirectSwizzle;
-      out[n].src.SwizzleZ = src.IndirectSwizzle;
-      out[n].src.SwizzleW = src.IndirectSwizzle;
-      out[n].src.Index = src.IndirectIndex;
+      out[n].ind.File = src.IndirectFile;
+      out[n].ind.Swizzle = src.IndirectSwizzle;
+      out[n].ind.Index = src.IndirectIndex;
+      out[n].ind.ArrayID = src.ArrayID;
       n++;
    }
 
    if (src.Dimension) {
+      out[0].src.Dimension = 1;
+      out[n].dim.Dimension = 0;
+      out[n].dim.Padding = 0;
       if (src.DimIndirect) {
-         out[0].src.Dimension = 1;
          out[n].dim.Indirect = 1;
-         out[n].dim.Dimension = 0;
-         out[n].dim.Padding = 0;
          out[n].dim.Index = src.DimensionIndex;
          n++;
          out[n].value = 0;
-         out[n].src.File = src.DimIndFile;
-         out[n].src.SwizzleX = src.DimIndSwizzle;
-         out[n].src.SwizzleY = src.DimIndSwizzle;
-         out[n].src.SwizzleZ = src.DimIndSwizzle;
-         out[n].src.SwizzleW = src.DimIndSwizzle;
-         out[n].src.Index = src.DimIndIndex;
+         out[n].ind.File = src.DimIndFile;
+         out[n].ind.Swizzle = src.DimIndSwizzle;
+         out[n].ind.Index = src.DimIndIndex;
+         out[n].ind.ArrayID = src.ArrayID;
       } else {
-         out[0].src.Dimension = 1;
          out[n].dim.Indirect = 0;
-         out[n].dim.Dimension = 0;
-         out[n].dim.Padding = 0;
          out[n].dim.Index = src.DimensionIndex;
       }
       n++;
@@ -891,7 +938,7 @@ ureg_emit_dst( struct ureg_program *ureg,
    assert(dst.File != TGSI_FILE_CONSTANT);
    assert(dst.File != TGSI_FILE_INPUT);
    assert(dst.File != TGSI_FILE_SAMPLER);
-   assert(dst.File != TGSI_FILE_RESOURCE);
+   assert(dst.File != TGSI_FILE_SAMPLER_VIEW);
    assert(dst.File != TGSI_FILE_IMMEDIATE);
    assert(dst.File < TGSI_FILE_COUNT);
 
@@ -904,12 +951,10 @@ ureg_emit_dst( struct ureg_program *ureg,
    
    if (dst.Indirect) {
       out[n].value = 0;
-      out[n].src.File = TGSI_FILE_ADDRESS;
-      out[n].src.SwizzleX = dst.IndirectSwizzle;
-      out[n].src.SwizzleY = dst.IndirectSwizzle;
-      out[n].src.SwizzleZ = dst.IndirectSwizzle;
-      out[n].src.SwizzleW = dst.IndirectSwizzle;
-      out[n].src.Index = dst.IndirectIndex;
+      out[n].ind.File = dst.IndirectFile;
+      out[n].ind.Swizzle = dst.IndirectSwizzle;
+      out[n].ind.Index = dst.IndirectIndex;
+      out[n].ind.ArrayID = dst.ArrayID;
       n++;
    }
 
@@ -1075,6 +1120,10 @@ ureg_insn(struct ureg_program *ureg,
    boolean negate = FALSE;
    unsigned swizzle[4] = { 0 };
 
+   if (nr_dst && ureg_dst_is_empty(dst[0])) {
+      return;
+   }
+
    saturate = nr_dst ? dst[0].Saturate : FALSE;
    predicate = nr_dst ? dst[0].Predicate : FALSE;
    if (predicate) {
@@ -1123,6 +1172,10 @@ ureg_tex_insn(struct ureg_program *ureg,
    boolean predicate;
    boolean negate = FALSE;
    unsigned swizzle[4] = { 0 };
+
+   if (nr_dst && ureg_dst_is_empty(dst[0])) {
+      return;
+   }
 
    saturate = nr_dst ? dst[0].Saturate : FALSE;
    predicate = nr_dst ? dst[0].Predicate : FALSE;
@@ -1229,27 +1282,56 @@ emit_decl_fs(struct ureg_program *ureg,
              unsigned cylindrical_wrap,
              unsigned centroid)
 {
-   union tgsi_any_token *out = get_tokens(ureg, DOMAIN_DECL, 3);
+   union tgsi_any_token *out = get_tokens(ureg, DOMAIN_DECL, 4);
 
    out[0].value = 0;
    out[0].decl.Type = TGSI_TOKEN_TYPE_DECLARATION;
-   out[0].decl.NrTokens = 3;
+   out[0].decl.NrTokens = 4;
    out[0].decl.File = file;
    out[0].decl.UsageMask = TGSI_WRITEMASK_XYZW; /* FIXME! */
-   out[0].decl.Interpolate = interpolate;
+   out[0].decl.Interpolate = 1;
    out[0].decl.Semantic = 1;
-   out[0].decl.CylindricalWrap = cylindrical_wrap;
-   out[0].decl.Centroid = centroid;
 
    out[1].value = 0;
    out[1].decl_range.First = index;
    out[1].decl_range.Last = index;
 
    out[2].value = 0;
-   out[2].decl_semantic.Name = semantic_name;
-   out[2].decl_semantic.Index = semantic_index;
+   out[2].decl_interp.Interpolate = interpolate;
+   out[2].decl_interp.CylindricalWrap = cylindrical_wrap;
+   out[2].decl_interp.Centroid = centroid;
+
+   out[3].value = 0;
+   out[3].decl_semantic.Name = semantic_name;
+   out[3].decl_semantic.Index = semantic_index;
 }
 
+static void
+emit_decl_temps( struct ureg_program *ureg,
+                 unsigned first, unsigned last,
+                 boolean local,
+                 unsigned arrayid )
+{
+   union tgsi_any_token *out = get_tokens( ureg, DOMAIN_DECL,
+                                           arrayid ? 3 : 2 );
+
+   out[0].value = 0;
+   out[0].decl.Type = TGSI_TOKEN_TYPE_DECLARATION;
+   out[0].decl.NrTokens = 2;
+   out[0].decl.File = TGSI_FILE_TEMPORARY;
+   out[0].decl.UsageMask = TGSI_WRITEMASK_XYZW;
+   out[0].decl.Local = local;
+
+   out[1].value = 0;
+   out[1].decl_range.First = first;
+   out[1].decl_range.Last = last;
+
+   if (arrayid) {
+      out[0].decl.Array = 1;
+      out[2].value = 0;
+      out[2].array.ArrayID = arrayid;
+   }
+}
 
 static void emit_decl_range( struct ureg_program *ureg,
                              unsigned file,
@@ -1263,7 +1345,6 @@ static void emit_decl_range( struct ureg_program *ureg,
    out[0].decl.NrTokens = 2;
    out[0].decl.File = file;
    out[0].decl.UsageMask = TGSI_WRITEMASK_XYZW;
-   out[0].decl.Interpolate = TGSI_INTERPOLATE_CONSTANT;
    out[0].decl.Semantic = 0;
 
    out[1].value = 0;
@@ -1285,7 +1366,6 @@ emit_decl_range2D(struct ureg_program *ureg,
    out[0].decl.NrTokens = 3;
    out[0].decl.File = file;
    out[0].decl.UsageMask = TGSI_WRITEMASK_XYZW;
-   out[0].decl.Interpolate = TGSI_INTERPOLATE_CONSTANT;
    out[0].decl.Dimension = 1;
 
    out[1].value = 0;
@@ -1297,33 +1377,32 @@ emit_decl_range2D(struct ureg_program *ureg,
 }
 
 static void
-emit_decl_resource(struct ureg_program *ureg,
-                   unsigned index,
-                   unsigned target,
-                   unsigned return_type_x,
-                   unsigned return_type_y,
-                   unsigned return_type_z,
-                   unsigned return_type_w )
+emit_decl_sampler_view(struct ureg_program *ureg,
+                       unsigned index,
+                       unsigned target,
+                       unsigned return_type_x,
+                       unsigned return_type_y,
+                       unsigned return_type_z,
+                       unsigned return_type_w )
 {
    union tgsi_any_token *out = get_tokens(ureg, DOMAIN_DECL, 3);
 
    out[0].value = 0;
    out[0].decl.Type = TGSI_TOKEN_TYPE_DECLARATION;
    out[0].decl.NrTokens = 3;
-   out[0].decl.File = TGSI_FILE_RESOURCE;
+   out[0].decl.File = TGSI_FILE_SAMPLER_VIEW;
    out[0].decl.UsageMask = 0xf;
-   out[0].decl.Interpolate = TGSI_INTERPOLATE_CONSTANT;
 
    out[1].value = 0;
    out[1].decl_range.First = index;
    out[1].decl_range.Last = index;
 
    out[2].value = 0;
-   out[2].decl_resource.Resource    = target;
-   out[2].decl_resource.ReturnTypeX = return_type_x;
-   out[2].decl_resource.ReturnTypeY = return_type_y;
-   out[2].decl_resource.ReturnTypeZ = return_type_z;
-   out[2].decl_resource.ReturnTypeW = return_type_w;
+   out[2].decl_sampler_view.Resource    = target;
+   out[2].decl_sampler_view.ReturnTypeX = return_type_x;
+   out[2].decl_sampler_view.ReturnTypeY = return_type_y;
+   out[2].decl_sampler_view.ReturnTypeZ = return_type_z;
+   out[2].decl_sampler_view.ReturnTypeW = return_type_w;
 }
 
 static void
@@ -1387,6 +1466,14 @@ static void emit_decls( struct ureg_program *ureg )
       emit_property(ureg,
                     TGSI_PROPERTY_GS_MAX_OUTPUT_VERTICES,
                     ureg->property_gs_max_vertices);
+   }
+
+   if (ureg->property_gs_invocations != ~0) {
+      assert(ureg->processor == TGSI_PROCESSOR_GEOMETRY);
+
+      emit_property(ureg,
+                    TGSI_PROPERTY_GS_INVOCATIONS,
+                    ureg->property_gs_invocations);
    }
 
    if (ureg->property_fs_coord_origin) {
@@ -1473,14 +1560,14 @@ static void emit_decls( struct ureg_program *ureg )
                        ureg->sampler[i].Index, 1 );
    }
 
-   for (i = 0; i < ureg->nr_resources; i++) {
-      emit_decl_resource(ureg,
-                         ureg->resource[i].index,
-                         ureg->resource[i].target,
-                         ureg->resource[i].return_type_x,
-                         ureg->resource[i].return_type_y,
-                         ureg->resource[i].return_type_z,
-                         ureg->resource[i].return_type_w);
+   for (i = 0; i < ureg->nr_sampler_views; i++) {
+      emit_decl_sampler_view(ureg,
+                             ureg->sampler_view[i].index,
+                             ureg->sampler_view[i].target,
+                             ureg->sampler_view[i].return_type_x,
+                             ureg->sampler_view[i].return_type_y,
+                             ureg->sampler_view[i].return_type_z,
+                             ureg->sampler_view[i].return_type_w);
    }
 
    if (ureg->const_decls.nr_constant_ranges) {
@@ -1509,9 +1596,19 @@ static void emit_decls( struct ureg_program *ureg )
    }
 
    if (ureg->nr_temps) {
-      emit_decl_range( ureg,
-                       TGSI_FILE_TEMPORARY,
-                       0, ureg->nr_temps );
+      unsigned array = 0;
+      for (i = 0; i < ureg->nr_temps;) {
+         boolean local = util_bitmask_get(ureg->local_temps, i);
+         unsigned first = i;
+         i = util_bitmask_get_next_index(ureg->decl_temps, i + 1);
+         if (i == UTIL_BITMASK_INVALID_INDEX)
+            i = ureg->nr_temps;
+
+         if (array < ureg->nr_array_temps && ureg->array_temps[array] == first)
+            emit_decl_temps( ureg, first, i - 1, local, ++array );
+         else
+            emit_decl_temps( ureg, first, i - 1, local, 0 );
+      }
    }
 
    if (ureg->nr_addrs) {
@@ -1662,13 +1759,45 @@ struct ureg_program *ureg_create( unsigned processor )
 {
    struct ureg_program *ureg = CALLOC_STRUCT( ureg_program );
    if (ureg == NULL)
-      return NULL;
+      goto no_ureg;
 
    ureg->processor = processor;
    ureg->property_gs_input_prim = ~0;
    ureg->property_gs_output_prim = ~0;
    ureg->property_gs_max_vertices = ~0;
+   ureg->property_gs_invocations = ~0;
+
+   ureg->free_temps = util_bitmask_create();
+   if (ureg->free_temps == NULL)
+      goto no_free_temps;
+
+   ureg->local_temps = util_bitmask_create();
+   if (ureg->local_temps == NULL)
+      goto no_local_temps;
+
+   ureg->decl_temps = util_bitmask_create();
+   if (ureg->decl_temps == NULL)
+      goto no_decl_temps;
+
    return ureg;
+
+no_decl_temps:
+   util_bitmask_destroy(ureg->local_temps);
+no_local_temps:
+   util_bitmask_destroy(ureg->free_temps);
+no_free_temps:
+   FREE(ureg);
+no_ureg:
+   return NULL;
+}
+
+
+const unsigned
+ureg_get_nr_outputs( const struct ureg_program *ureg )
+{
+   if (!ureg)
+      return 0;
+   return ureg->nr_outputs;
 }
 
 
@@ -1681,6 +1810,10 @@ void ureg_destroy( struct ureg_program *ureg )
           ureg->domain[i].tokens != error_tokens)
          FREE(ureg->domain[i].tokens);
    }
-   
+
+   util_bitmask_destroy(ureg->free_temps);
+   util_bitmask_destroy(ureg->local_temps);
+   util_bitmask_destroy(ureg->decl_temps);
+
    FREE(ureg);
 }

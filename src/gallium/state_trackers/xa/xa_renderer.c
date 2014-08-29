@@ -71,40 +71,30 @@ map_point(float *mat, float x, float y, float *out_x, float *out_y)
     }
 }
 
-static INLINE struct pipe_resource *
-renderer_buffer_create(struct xa_context *r)
-{
-    struct pipe_resource *buf = pipe_user_buffer_create(r->pipe->screen,
-							r->buffer,
-							sizeof(float) *
-							r->buffer_size,
-							PIPE_BIND_VERTEX_BUFFER);
-
-    r->buffer_size = 0;
-
-    return buf;
-}
-
 static INLINE void
 renderer_draw(struct xa_context *r)
 {
-    struct pipe_context *pipe = r->pipe;
-    struct pipe_resource *buf = 0;
     int num_verts = r->buffer_size / (r->attrs_per_vertex * NUM_COMPONENTS);
 
     if (!r->buffer_size)
 	return;
 
-    buf = renderer_buffer_create(r);
-
-    if (buf) {
-	cso_set_vertex_elements(r->cso, r->attrs_per_vertex, r->velems);
-
-	util_draw_vertex_buffer(pipe, r->cso, buf, 0, PIPE_PRIM_QUADS, num_verts,	/* verts */
-				r->attrs_per_vertex);	/* attribs/vert */
-
-	pipe_resource_reference(&buf, NULL);
+    if (!r->scissor_valid) {
+	r->scissor.minx = 0;
+	r->scissor.miny = 0;
+	r->scissor.maxx = r->dst->tex->width0;
+	r->scissor.maxy = r->dst->tex->height0;
     }
+
+    r->pipe->set_scissor_states(r->pipe, 0, 1, &r->scissor);
+
+    cso_set_vertex_elements(r->cso, r->attrs_per_vertex, r->velems);
+    util_draw_user_vertex_buffer(r->cso, r->buffer, PIPE_PRIM_QUADS,
+                                 num_verts,	/* verts */
+                                 r->attrs_per_vertex);	/* attribs/vert */
+    r->buffer_size = 0;
+
+    xa_scissor_reset(r);
 }
 
 static INLINE void
@@ -129,8 +119,10 @@ renderer_init_state(struct xa_context *r)
 
     /* XXX: move to renderer_init_state? */
     memset(&raster, 0, sizeof(struct pipe_rasterizer_state));
-    raster.gl_rasterization_rules = 1;
+    raster.half_pixel_center = 1;
+    raster.bottom_edge_rule = 1;
     raster.depth_clip = 1;
+    raster.scissor = 1;
     cso_set_rasterizer(r->cso, &raster);
 
     /* vertex elements state */
@@ -304,7 +296,7 @@ add_vertex_data2(struct xa_context *r,
 		    src_s0, src_t1, mask_s0, mask_t1);
 }
 
-static struct pipe_resource *
+static void
 setup_vertex_data_yuv(struct xa_context *r,
 		      float srcX,
 		      float srcY,
@@ -337,8 +329,6 @@ setup_vertex_data_yuv(struct xa_context *r,
     add_vertex_1tex(r, dstX + dstW, dstY + dstH, s1, t1);
     /* 4th vertex */
     add_vertex_1tex(r, dstX, dstY + dstH, s0, t1);
-
-    return renderer_buffer_create(r);
 }
 
 /* Set up framebuffer, viewport and vertex shader constant buffer
@@ -347,11 +337,15 @@ setup_vertex_data_yuv(struct xa_context *r,
  */
 void
 renderer_bind_destination(struct xa_context *r,
-			  struct pipe_surface *surface, int width, int height)
+			  struct pipe_surface *surface)
 {
+    int width = surface->width;
+    int height = surface->height;
 
     struct pipe_framebuffer_state fb;
     struct pipe_viewport_state viewport;
+
+    xa_scissor_reset(r);
 
     /* Framebuffer uses actual surface width/height
      */
@@ -402,13 +396,13 @@ renderer_set_constants(struct xa_context *r,
 
     pipe_resource_reference(cbuf, NULL);
     *cbuf = pipe_buffer_create(r->pipe->screen,
-			       PIPE_BIND_CONSTANT_BUFFER, PIPE_USAGE_STATIC,
+			       PIPE_BIND_CONSTANT_BUFFER, PIPE_USAGE_DEFAULT,
 			       param_bytes);
 
     if (*cbuf) {
 	pipe_buffer_write(r->pipe, *cbuf, 0, param_bytes, params);
     }
-    r->pipe->set_constant_buffer(r->pipe, shader_type, 0, *cbuf);
+    pipe_set_constant_buffer(r->pipe, shader_type, 0, *cbuf);
 }
 
 void
@@ -428,6 +422,8 @@ renderer_copy_prepare(struct xa_context *r,
 				       PIPE_BIND_RENDER_TARGET));
     (void)screen;
 
+    renderer_bind_destination(r, dst_surface);
+
     /* set misc state we care about */
     {
 	struct pipe_blend_state blend;
@@ -444,6 +440,7 @@ renderer_copy_prepare(struct xa_context *r,
     /* sampler */
     {
 	struct pipe_sampler_state sampler;
+        const struct pipe_sampler_state *p_sampler = &sampler;
 
 	memset(&sampler, 0, sizeof(sampler));
 	sampler.wrap_s = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
@@ -453,12 +450,9 @@ renderer_copy_prepare(struct xa_context *r,
 	sampler.min_img_filter = PIPE_TEX_FILTER_NEAREST;
 	sampler.mag_img_filter = PIPE_TEX_FILTER_NEAREST;
 	sampler.normalized_coords = 1;
-	cso_single_sampler(r->cso, 0, &sampler);
-	cso_single_sampler_done(r->cso);
+        cso_set_samplers(r->cso, PIPE_SHADER_FRAGMENT, 1, &p_sampler);
+        r->num_bound_samplers = 1;
     }
-
-    renderer_bind_destination(r, dst_surface,
-			      dst_surface->width, dst_surface->height);
 
     /* texture/sampler view */
     {
@@ -468,7 +462,7 @@ renderer_copy_prepare(struct xa_context *r,
 	u_sampler_view_default_template(&templ,
 					src_texture, src_texture->format);
 	src_view = pipe->create_sampler_view(pipe, src_texture, &templ);
-	cso_set_fragment_sampler_views(r->cso, 1, &src_view);
+	cso_set_sampler_views(r->cso, PIPE_SHADER_FRAGMENT, 1, &src_view);
 	pipe_sampler_view_reference(&src_view, NULL);
     }
 
@@ -530,23 +524,17 @@ renderer_draw_yuv(struct xa_context *r,
 		  int dst_x,
 		  int dst_y, int dst_w, int dst_h, struct xa_surface *srf[])
 {
-    struct pipe_context *pipe = r->pipe;
-    struct pipe_resource *buf = 0;
+   const int num_attribs = 2;	/*pos + tex coord */
 
-    buf = setup_vertex_data_yuv(r,
-				src_x, src_y, src_w, src_h, dst_x, dst_y, dst_w,
-				dst_h, srf);
+   setup_vertex_data_yuv(r,
+                         src_x, src_y, src_w, src_h,
+                         dst_x, dst_y, dst_w, dst_h, srf);
 
-    if (buf) {
-	const int num_attribs = 2;	/*pos + tex coord */
-
-	cso_set_vertex_elements(r->cso, num_attribs, r->velems);
-
-	util_draw_vertex_buffer(pipe, r->cso, buf, 0, PIPE_PRIM_QUADS, 4,	/* verts */
-				num_attribs);	/* attribs/vert */
-
-	pipe_resource_reference(&buf, NULL);
-    }
+   cso_set_vertex_elements(r->cso, num_attribs, r->velems);
+   util_draw_user_vertex_buffer(r->cso, r->buffer, PIPE_PRIM_QUADS,
+                                4,	/* verts */
+                                num_attribs);	/* attribs/vert */
+   r->buffer_size = 0;
 }
 
 void

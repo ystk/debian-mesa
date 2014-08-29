@@ -27,6 +27,7 @@ LOCAL_PATH := $(call my-dir)
 
 include $(LOCAL_PATH)/Makefile.sources
 
+GLSL_SRCDIR = .
 # ---------------------------------------
 # Build libmesa_glsl
 # ---------------------------------------
@@ -34,9 +35,8 @@ include $(LOCAL_PATH)/Makefile.sources
 include $(CLEAR_VARS)
 
 LOCAL_SRC_FILES := \
-	$(LIBGLCPP_SOURCES) \
-	$(LIBGLSL_SOURCES) \
-	$(LIBGLSL_CXX_SOURCES)
+	$(LIBGLCPP_FILES) \
+	$(LIBGLSL_FILES)
 
 LOCAL_C_INCLUDES := \
 	external/astl/include \
@@ -50,40 +50,13 @@ include $(MESA_COMMON_MK)
 include $(BUILD_STATIC_LIBRARY)
 
 # ---------------------------------------
-# Build mesa_builtin_compiler for host
-# ---------------------------------------
-
-include $(CLEAR_VARS)
-
-LOCAL_SRC_FILES := \
-	$(LIBGLCPP_SOURCES) \
-	$(LIBGLSL_SOURCES) \
-	$(LIBGLSL_CXX_SOURCES) \
-	$(BUILTIN_COMPILER_CXX_SOURCES) \
-	$(GLSL_COMPILER_CXX_SOURCES)
-
-LOCAL_C_INCLUDES := \
-	$(MESA_TOP)/src/mapi \
-	$(MESA_TOP)/src/mesa
-
-LOCAL_STATIC_LIBRARIES := libmesa_glsl_utils
-
-LOCAL_MODULE := mesa_builtin_compiler
-
-LOCAL_MODULE_CLASS := EXECUTABLES
-LOCAL_IS_HOST_MODULE := true
-include $(LOCAL_PATH)/Android.gen.mk
-include $(MESA_COMMON_MK)
-include $(BUILD_HOST_EXECUTABLE)
-
-# ---------------------------------------
 # Build glsl_compiler
 # ---------------------------------------
 
 include $(CLEAR_VARS)
 
 LOCAL_SRC_FILES := \
-	$(GLSL_COMPILER_CXX_SOURCES)
+	$(GLSL_COMPILER_CXX_FILES)
 
 LOCAL_C_INCLUDES := \
 	$(MESA_TOP)/src/mapi \

@@ -1,14 +1,547 @@
-mesa (8.0.5-4+deb7u2) wheezy-security; urgency=high
+mesa (10.2.5-1) unstable; urgency=medium
 
-  * Memory corruption (OOB read/write) on intel drivers [CVE-2013-1872]
+  [ Andreas Boll ]
+  * New upstream release.
+    - nv50: fix build failure on m68k due to invalid struct alignment
+      assumptions (Closes: #728053).
+    - i915: Fix up intelInitScreen2 for DRI3 (Closes: #754297).
 
- -- Julien Cristau <jcristau@debian.org>  Wed, 05 Jun 2013 16:44:36 +0200
+  [ Matthias Klose ]
+  * Add patch to fix FTBFS on x32. (Closes: #757703)
+    - x32-updates.patch
 
-mesa (8.0.5-4+deb7u1) wheezy-security; urgency=high
+  [ Maarten Lankhorst ]
+  * Enable support for freedreno.
 
+ -- Maarten Lankhorst <maarten.lankhorst@ubuntu.com>  Mon, 11 Aug 2014 13:34:58 +0200
+
+mesa (10.2.4-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Julien Cristau <jcristau@debian.org>  Sun, 20 Jul 2014 10:20:05 +0200
+
+mesa (10.2.3-1) unstable; urgency=low
+
+  [ Maarten Lankhorst ]
+  * New upstream release.
+
+  [ Julien Cristau ]
+  * Add debian/upstream/signing-key.asc, and add pgpsigurlmangle option to
+    debian/watch so uscan can check signatures on release tarballs.
+
+ -- Julien Cristau <jcristau@debian.org>  Wed, 09 Jul 2014 19:39:06 +0200
+
+mesa (10.2.2-1) unstable; urgency=medium
+
+  [ Andreas Boll ]
+  * New upstream release.
+    - glx: Don't crash on swap event for a Window (non-GLXWindow)
+      (Closes: #685328).
+    - 01_targets-xa-limit-the-amount-of-exported-symbols.diff dropped,
+      upstream
+  * Cherry-pick commit b4dcf87 (glxext: Send the Drawable's ID in the
+    GLX_BufferSwapComplete event) from upstream, fixes intel + dri3.
+
+ -- Maarten Lankhorst <maarten.lankhorst@ubuntu.com>  Thu, 03 Jul 2014 09:54:48 +0200
+
+mesa (10.2.1-2) unstable; urgency=medium
+
+  * Upload to unstable.
+
+ -- Maarten Lankhorst <maarten.lankhorst@ubuntu.com>  Mon, 23 Jun 2014 12:00:09 +0200
+
+mesa (10.2.1-1) experimental; urgency=medium
+
+  [ Andreas Boll ]
+  * New upstream release.
+    - 01_glapi-Duplicate-GLES1-prototypes-in-glapi_dispatch.c.diff
+      dropped, upstream
+  * Add 01_targets-xa-limit-the-amount-of-exported-symbols.diff, fixes
+    FTBFS with gcc-4.9.
+  [ Maarten Lankhorst ]
+  * Attempt to fix a FTBFS on hurd.
+
+ -- Maarten Lankhorst <maarten.lankhorst@ubuntu.com>  Mon, 16 Jun 2014 15:41:59 +0200
+
+mesa (10.2.0~rc4-2) experimental; urgency=medium
+
+  [ Andreas Boll ]
+  * Add 01_glapi-Duplicate-GLES1-prototypes-in-glapi_dispatch.c.diff,
+    should fix FTBFS on non-i386 and non-amd64.
+
+  [ Emilio Pozuelo Monfort ]
+  * Upload to experimental.
+
+ -- Emilio Pozuelo Monfort <pochu@debian.org>  Sat, 31 May 2014 00:44:19 +0200
+
+mesa (10.2.0~rc4-1) experimental; urgency=medium
+
+  [ Fabio Pedretti ]
+  * debian/rules: remove unused --with-llvm-shared-libs configure option
+  * debian/control: remove python-libxml2 dependency
+
+  [ Julien Cristau ]
+  * Bump libdrm-dev build-dep to 2.4.54 per configure.ac.
+  * Bump libxcb-dri2 and libxcb-glx build-deps per configure.ac.
+  * Remove Cyril Brulebois from Uploaders.
+  * debian/rules: explicitly disable omx.
+
+  [ Maarten Lankhorst ]
+  * New upstream release candidate.
+
+  [ Andreas Boll ]
+  * New upstream release candidate.
+    - 01_no_undefined.diff dropped, upstream
+  * Don't try to enable xa on !linux.
+
+  [ Emilio Pozuelo Monfort ]
+  * Upload to experimental.
+
+ -- Emilio Pozuelo Monfort <pochu@debian.org>  Sat, 24 May 2014 15:16:23 +0200
+
+mesa (10.2.0~rc1-1) experimental; urgency=medium
+
+  [ Timo Aaltonen ]
+  * New upstream release candidate.
+    - 02_gbm_no_undefined.diff dropped, upstream
+    - 03_gbm_make_devices_static.diff dropped, upstream
+  * control: Bump libdrm-dev build-dependency.
+  * Drop a symbol from libxatracker2.
+  * libosmesa6: Bump the soname to upstream default (8), drop
+    04_osmesa_version.diff. Add a symlink with the old name to point to
+    the new lib.
+
+  [ Julien Cristau ]
+  * Add 01_no_undefined.diff to actually add -Wl,--no-undefined to the linker
+    flags for our shared libraries.
+
+  [ Andreas Boll ]
+  * Relax ocl-icd-libopencl1 dependency to allow the generic virtual
+    libopencl1 as a valid alternative (Closes: #745765).
+  * Add missing separator between dependency items '${misc:Depends}'
+    and 'libglapi-mesa (= ${binary:Version})'.
+
+ -- Julien Cristau <jcristau@debian.org>  Wed, 14 May 2014 22:57:08 +0200
+
+mesa (10.1.4-1) unstable; urgency=medium
+
+  [ Timo Aaltonen ]
+  * New upstream release.
+
+  [ Andreas Boll ]
+  * New upstream release.
+  * Bump llvm-3.4-dev and libclang-3.4-dev to 1:3.4.1-3
+    - Enables geometry shaders on radeonsi
+
+  [ Emilio Pozuelo Monfort ]
+  * Upload to unstable.
+
+ -- Emilio Pozuelo Monfort <pochu@debian.org>  Tue, 27 May 2014 12:05:35 +0200
+
+mesa (10.1.2-1) unstable; urgency=medium
+
+  [ Andreas Boll ]
+  * New upstream release.
+    + i965: Don't enable reset notification support on Gen4-5 (Closes: #746557)
+
+ -- Julien Cristau <jcristau@debian.org>  Tue, 06 May 2014 09:31:26 +0200
+
+mesa (10.1.1-1) unstable; urgency=low
+
+  [ Andreas Boll ]
+  * New upstream release.
+  * Relax ocl-icd-libopencl1 dependency to allow the generic virtual
+    libopencl1 as a valid alternative (Closes: #745765).
+  * Add missing separator between dependency items '${misc:Depends}'
+    and 'libglapi-mesa (= ${binary:Version})'.
+
+ -- Julien Cristau <jcristau@debian.org>  Sun, 27 Apr 2014 19:51:45 +0200
+
+mesa (10.1.0-5) unstable; urgency=low
+
+  [ Maarten Lankhorst ]
+  * Add explicit libudev1 dependency (LP: #1296947)
+    - libudev is being dlopened now, but still a dependency.
+
+  [ Julien Cristau ]
+  * Fix libegl1-mesa-dev installability on hurd, which doesn't have
+    libegl1-mesa-drivers (closes: #742335).  Thanks, Pino Toscano!
+
+ -- Julien Cristau <jcristau@debian.org>  Mon, 31 Mar 2014 15:58:53 +0200
+
+mesa (10.1.0-4) unstable; urgency=medium
+
+  [ Andreas Boll ]
+  * Fix unsatisfiable libwayland-egl1-mesa and libwayland-dev dependency on
+    !linux (Closes: #742306).
+  * Install /etc/drirc on hurd (Closes: #741572).
+
+ -- Julien Cristau <jcristau@debian.org>  Sat, 22 Mar 2014 10:39:12 +0100
+
+mesa (10.1.0-3) unstable; urgency=medium
+
+  [ Andreas Boll ]
+  * Build OpenCL only on architectures where we have LLVM enabled.
+  * Actually enable radeonsi on kfreebsd.
+
+  [ Sven Joachim ]
+  * Drop dependency of libegl1-mesa-drivers on libgl1-mesa-dri again.
+
+  [ Julien Cristau ]
+  * Steal Ubuntu patch to work around build failure on armhf
+    (https://bugs.freedesktop.org/show_bug.cgi?id=72064)
+  * Upload to unstable.
+
+ -- Julien Cristau <jcristau@debian.org>  Wed, 19 Mar 2014 22:48:14 +0100
+
+mesa (10.1.0-2) experimental; urgency=medium
+
+  [ Sjoerd Simons ]
+  * Install libwayland-egl in a separate library package (libwayland-egl1-mesa)
+    and provide a virtual libwayland-egl1 package. (Closes: #739269).
+
+ -- Julien Cristau <jcristau@debian.org>  Mon, 17 Mar 2014 23:11:14 +0100
+
+mesa (10.1.0-1) experimental; urgency=low
+
+  [ Andreas Boll ]
+  * Disable dri3 on !linux
+  * Enable building drivers for libvdpau1 (Closes: #705558).
+  * New upstream release.
+  * Drop 01-hurd.diff, upstream in 10.1.0.
+  * Next attempt to fix FTBFS on hurd
+
+  [ Sven Joachim ]
+  * Drop dependency of libegl1-mesa-drivers on libgl1-mesa-dri.
+
+ -- Julien Cristau <jcristau@debian.org>  Fri, 07 Mar 2014 22:16:32 +0100
+
+mesa (10.1.0~rc2-1) experimental; urgency=medium
+
+  [ Maarten Lankhorst ]
+  * Add missing depends to keep lib(e)gl1-dev usable.
+  * Bump to rc2.
+
+  [ Emilio Pozuelo Monfort ]
+  * Update build dependencies and dependencies minimum versions. Thanks to
+    Fabio Pedretti <fabio.ped@libero.it> for the patch.
+
+  [ Andreas Boll ]
+  * Attempt to fix FTBFS on hurd.
+  * Cherry pick some fixes for GLX fbconfig. (Closes: #739691)
+
+  [ Samuel Thibault ]
+  * Enable egl and gles on hurd (closes: #729260)
+
+  [ Julien Cristau ]
+  * libgbm1.symbols: try to avoid listing private symbols.
+  * Enable radeon/r200/r300/r600/radeonsi on kfreebsd (closes: #732337).
+    Thanks, Robert Millan!
+  * gallium: fix build failure on powerpcspe (closes: #695746).  Thanks, Roland
+    Stigge!
+
+ -- Julien Cristau <jcristau@debian.org>  Sun, 02 Mar 2014 20:22:47 +0100
+
+mesa (10.1.0~rc1-1) experimental; urgency=low
+
+  * New upstream release.
+  * Add new build-depends for dri3.
+  * Refresh libegl1-mesa and gbm symbols.
+
+ -- Maarten Lankhorst <maarten.lankhorst@ubuntu.com>  Wed, 12 Feb 2014 11:50:39 +0100
+
+mesa (10.0.2-1) experimental; urgency=low
+
+  [ Maarten Lankhorst ]
+  * Stop building libgl1-mesa-dri-experimental (Closes: #685104).
+    - It's been empty since 8.0.
+  [ Matthias Klose ]
+  * Move to llvm-3.4.
+
+  [ Julien Cristau ]
+  * Fix FTBFS on kfreebsd.
+  * ... and attempt to fix FTBFS on hurd.
+  * New upstream stable release.
+
+ -- Julien Cristau <jcristau@debian.org>  Sat, 25 Jan 2014 10:44:22 +0100
+
+mesa (10.0.1-1) experimental; urgency=low
+
+  * New upstream release.
+  * Do not attempt to build i915 and i965 on arm.
+  * Enable radeonsi on arm.
+  * Disable llvmpipe on armhf, it regresses.
+
+ -- Maarten Lankhorst <maarten.lankhorst@ubuntu.com>  Wed, 18 Dec 2013 15:18:25 +0100
+
+mesa (10.0.0-1) experimental; urgency=low
+
+  [ Emilio Pozuelo Monfort ]
+  * debian/control:
+    + Let libegl1-mesa-dev depend on libwayland-dev as wayland-egl.pc
+      requires wayland-client.pc.
+
+  [ Maarten Lankhorst ]
+  * New upstream release.
+  * Refresh patches for 10.0-rc1.
+  * Bump libdrm-dev requirement to 2.4.48 for intel.
+  * Add breaks on xserver-xorg-core without support for loading megadriver.
+  * Cherry pick commit to hide some gbm symbols.
+  * Manually install *_dri.so to preserve mega-driver hardlinks.
+
+  [ Timo Aaltonen ]
+  * rules: Enable llvmpipe on armhf, should work now.
+
+ -- Julien Cristau <jcristau@debian.org>  Sun, 08 Dec 2013 15:17:17 +0100
+
+mesa (9.2.2-1) unstable; urgency=low
+
+  * New upstream release.
+
+ -- Maarten Lankhorst <maarten.lankhorst@ubuntu.com>  Tue, 22 Oct 2013 10:59:20 +0200
+
+mesa (9.2.1-1) experimental; urgency=low
+
+  * New upstream release.
+
+ -- Maarten Lankhorst <maarten.lankhorst@ubuntu.com>  Mon, 07 Oct 2013 10:00:39 +0200
+
+mesa (9.2-1) experimental; urgency=low
+
+  [ Jon Severinsson ]
+  * control: Recommend libtxc-dxtn-s2tc0 | libtxc-dxtn0, not just the virtual libtxc-dxtn0.
+  * control: Bump libdrm-dev build-dependency to 2.4.45.
+  * control: Add versioned libglapi-mesa dependency to libosmesa6.
+  * libgl1-mesa(-swx11)-dev.install.in: Install the correct pkgconfig/gl.pc files.
+  * rules: Add --disable-shared-glapi to the swx11-i386-i686 target.
+
+  [ Maarten Lankhorst ]
+  * Bump libdrm-dev to 2.4.46.
+
+  [ Sven Joachim ]
+  * Remove the workaround for sparc introduced in version 7.10-2.
+
+  [ Maarten Lankhorst ]
+  * New upstream release.
+  * Refresh 02_gbm_no_undefined.diff.
+  * Drop 12_fix_glapi_gen.diff, upstreamed.
+
+ -- Maarten Lankhorst <maarten.lankhorst@ubuntu.com>  Wed, 28 Aug 2013 10:28:20 +0200
+
+mesa (9.2~rc1-1) experimental; urgency=low
+
+  * New upstream release.
+  * Refresh patches for 9.2:
+    - 02_gbm_no_undefined.diff.
+    - 04_osmesa_version.diff
+    - 06_kfreebsd-ftbfs.diff
+  * Removed writes to srcdir, fixing parallel builds.
+    - 12_fix_glapi_gen.diff
+  * Require llvm-3.3-dev >= 1:3.3-4 and libelf-dev.
+  * Update symbols files.
+
+ -- Maarten Lankhorst <maarten.lankhorst@ubuntu.com>  Tue, 20 Aug 2013 15:42:31 +0200
+
+mesa (9.1.7-1) unstable; urgency=low
+
+  [ Andreas Beckmann ]
+  * libgl1-mesa-glx: Add Breaks: glx-diversions (<< 0.4) because the old
+    versions were not aware of libGL.so.1.2.0.  (Closes: #720069)
+
+  [ Maarten Lankhorst ]
+  * New upstream release.
+
+ -- Maarten Lankhorst <maarten.lankhorst@ubuntu.com>  Mon, 07 Oct 2013 11:34:34 +0200
+
+mesa (9.1.6-2) unstable; urgency=low
+
+  * Don't run 'make -j' if DEB_BUILD_OPTIONS doesn't set parallel.  Oops.
+
+ -- Julien Cristau <jcristau@debian.org>  Mon, 12 Aug 2013 08:00:21 +0200
+
+mesa (9.1.6-1) unstable; urgency=low
+
+  [ Andreas Boll ]
+  * New upstream release. (Closes: #717410)
+  * Cherry-pick commit 0dbbfa0 (mesa: Fix MESA_PATCH version) from
+    upstream.
+
+  [ Julien Cristau ]
+  * Don't run configure for different builds in parallel.
+
+ -- Julien Cristau <jcristau@debian.org>  Sun, 11 Aug 2013 18:15:58 +0200
+
+mesa (9.1.4-1) unstable; urgency=low
+
+  [ Julien Cristau ]
+  * Don't call wayland_buffer_is_drm from libgbm, it's in libEGL
+    (closes: #712556).
+  * Make sure libgbm doesn't have undefined symbols.
+
+  [ Andreas Boll ]
+  * Use dpkg-buildflags.
+  * Disable silent rules.
+  * Cherry-pick commit 0829b89 (mesa: Fix ieee fp on Alpha) from upstream
+    (Fixes FTBFS on alpha)
+
+  [ Timo Aaltonen ]
+  * New upstream release.
+
+  [ Julien Cristau ]
+  * libegl1-mesa-drivers depends on libgl1-mesa-dri for libllvmradeon
+    (closes: #714828)
+
+ -- Julien Cristau <jcristau@debian.org>  Sat, 06 Jul 2013 11:37:34 +0200
+
+mesa (9.1.3-6) unstable; urgency=low
+
+  * Team upload.
+
+  * debian/libegl1-mesa.symbols:
+    + More kfreebsd build fixes. Mark some symbols as linux-any.
+
+ -- Emilio Pozuelo Monfort <pochu@debian.org>  Fri, 07 Jun 2013 20:27:55 +0200
+
+mesa (9.1.3-5) unstable; urgency=low
+
+  * Team upload.
+
+  [ Andreas Boll ]
+  * debian: Don't install libllvmradeon*.so on kfreebsd-*, fixes FTBFS.
+
+  [ Emilio Pozuelo Monfort ]
+  * Upload to unstable.
+
+ -- Emilio Pozuelo Monfort <pochu@debian.org>  Fri, 07 Jun 2013 14:12:43 +0200
+
+mesa (9.1.3-4) unstable; urgency=low
+
+  * Team upload.
+
+  [ Andreas Boll ]
+  * debian: Fix another kfreebsd-* FTBFS with adding libgl1-mesa-
+    dri.install.kfreebsd.in, where we don't install gallium-pipe/*.so
+
+  [ Emilio Pozuelo Monfort ]
+  * Release to unstable.
+
+ -- Emilio Pozuelo Monfort <pochu@debian.org>  Fri, 07 Jun 2013 00:50:34 +0200
+
+mesa (9.1.3-3) experimental; urgency=low
+
+  [ Andreas Boll ]
+  * debian/not-installed: Remove /etc/drirc, it's shipped since 8.0.5-1.
+    Fixes build on hurd.
+  * debian: Fix build regression on !hurd.
+    Fix it with libgl1-mesa-dri.install.hurd.in, where we don't install drirc.
+  * Cherry-pick commit 7de78ce5, 07f2dee and 9622049 from upstream
+    (Fixes FTBFS on kfreebsd-*)
+    - configure.ac: Remove redundant checks of enable_dri.
+    - configure.ac: Build dricommon for DRI gallium drivers
+    - configure.ac: Build dricommon for gallium swrast
+  * Memory corruption (OOB read/write) in i965 driver [CVE-2013-1872]
+
+  [ Julien Cristau ]
+  * Build i915 and i965 on kfreebsd.
+
+ -- Cyril Brulebois <kibi@debian.org>  Thu, 06 Jun 2013 10:29:15 +0200
+
+mesa (9.1.3-2) experimental; urgency=low
+
+  * Team upload.
+
+  [ Julien Cristau ]
+  * Fix build of swrast only without libdrm, causing build failure on hurd
+    (cherry-picked from upstream).  Thanks, Andreas Boll!
+
+  [ Andreas Boll ]
+  * debian/not-installed: Remove glut headers
+  * debian/patches: Drop 05_kfreebsd-egl-x11.diff, fixed by eglibc (2.17-4)
+  * debian/rules: Use rm -f instead of rm for deleting libdricore*.so, fixes
+    build failure on kfreebsd-*.
+  * glapi: Add some missing static_dispatch=false annotations to
+    es_EXT.xml. Fixes FTBFS on powerpc and ia64 (cherry-picked from
+    upstream).
+
+  [ Emilio Pozuelo Monfort ]
+  * Release to experimental.
+
+ -- Emilio Pozuelo Monfort <pochu@debian.org>  Mon, 03 Jun 2013 15:25:19 +0200
+
+mesa (9.1.3-1) experimental; urgency=low
+
+  * Team upload.
+  * New upstream release.
+    - Set close on exec flag when opening dri devices (Closes: #651370).
+    - Don't emit a .note.ABI-tag section anymore (Closes: #628758).
+
+  [ Timo Aaltonen ]
+  * Refresh patches
+    - disable 05_kfreebsd-egl-x11.diff for now.
+  * control: Added libtool to build-depends.
+  * rules: Drop special handling of config.{guess,sub}, not needed anymore.
+  * rules, libosmesa*: Build only the 32bit OSMesa library.
+  * control: Bump libdrm build-dep to 2.4.39.
+  * control: Bump libwayland-dev build-dep to 0.95.
+  * rules: Update the clean target.
+  * rules: Add --disable-shared-glapi to the swx11 targets.
+  * libosmesa*.install.in: Install files from the correct path.
+  * rules: --with-driver= is deprecated, use --enable-foo.
+  * rules: Purge .la files before dh_install.
+  * Update symbols.
+  * libgl1-mesa-dri.install*.in: Add libdricore.
+  * control: Add new dependencies to libgl1-mesa-dev.
+  * rules, libgl1-mesa-dri.install.linux.in: Add support for radeonsi.
+  * rules: Build llvm shared libs on platforms that support llvm.
+  * control, rules, libglu*: Remove libglu packaging, since it's been split
+    off upstream.
+  * rules: Disable dri for the swx11 targets.
+  * not-installed: Updated.
+  * Update symbols for libgles2-mesa and libxatracker1.
+  * libegl1-mesa-drivers.install.linux: Bump libwayland-egl.so version
+  * control: Add libdrm-dev to mesa-common-dev Depends.
+  * control: Build-depend on llvm-3.2-dev (Closes: #678822).
+  * libgl1-mesa-dri.install.in: Include gallium-pipe/*.so and libllvmradeon*.so.
+  * rules: Add files to clean.
+  * control: Add libxcb-dri2-0-dev to libgl1-mesa-dev depends.
+
+  [ Steve Langasek ]
+  * Install all dri drivers from the DESTDIR tree, instead of copying them
+    from the build tree; this simplifies the install rules since we know
+    already that we're only building drivers that we want to ship, and
+    avoids rpath problems with libtool linking to in-tree convenience
+    libraries.
+  * debian/rules: don't install libdricore*.so, this isn't a public library.
+  * Add Pre-Depends on multiarch-support to libgl1-mesa-dri, since we're
+    shipping a shared library in the package; not an issue in practice since
+    this is all post-wheezy / post-precise, but it's an archive reject error
+    in Debian right now so let's just be complete.
+
+  [ Maarten Lankhorst ]
+  * Bump standards-version to 3.9.3.
+  * control: Bump libwayland-dev build-dep to 1.0.2.
+  * Remove 13-llvm-config-pick-a-version.diff and just pass a flag to configure.
+
+  [ Robert Hooker ]
+  * Drop xutils-dev build dep, makedepend is no longer required
+  * Recommend libtxc-dxtn0 in libgl1-mesa-dri for easier use with multiarch
+    installs (Closes: #668645).
+  * Drop 02_use-ieee-fp-on-s390-and-m68k.patch, upstream in 9.1.2.
+  * Drop 10-hurd-configure-tweaks.diff, upstream in 9.1.2.
+
+  [ Sven Joachim ]
+  * Bump libdrm-dev build-dependency to 2.4.42.
+
+  [ Rico Tzschichholz ]
+  * Update packaging mesa packaging with xorg-edgers
+
+  [ Emilio Pozuelo Monfort ]
   * integer overflows calculating memory needs for replies [CVE-2013-1993]
+  * Bump llvm-3.2-dev build dependency to 1:3.2repack-7~ for a fixed
+    llvm-config-3.2 --libdir, otherwise configure fails.
 
- -- Julien Cristau <jcristau@debian.org>  Wed, 15 May 2013 21:18:58 +0200
+ -- Emilio Pozuelo Monfort <pochu@debian.org>  Tue, 28 May 2013 21:15:55 +0200
 
 mesa (8.0.5-4) unstable; urgency=low
 

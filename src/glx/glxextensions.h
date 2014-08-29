@@ -35,6 +35,8 @@ enum
 {
    ARB_create_context_bit = 0,
    ARB_create_context_profile_bit,
+   ARB_create_context_robustness_bit,
+   ARB_fbconfig_float_bit,
    ARB_get_proc_address_bit,
    ARB_multisample_bit,
    ATI_pixel_format_float_bit,
@@ -42,10 +44,12 @@ enum
    EXT_visual_rating_bit,
    EXT_import_context_bit,
    EXT_framebuffer_sRGB_bit,
+   EXT_fbconfig_packed_float_bit,
    EXT_create_context_es2_profile_bit,
    MESA_copy_sub_buffer_bit,
    MESA_depth_float_bit,
    MESA_multithread_makecurrent_bit,
+   MESA_query_renderer_bit,
    MESA_swap_control_bit,
    MESA_swap_frame_usage_bit,
    NV_float_buffer_bit,
@@ -62,7 +66,13 @@ enum
    SGIX_visual_select_group_bit,
    EXT_texture_from_pixmap_bit,
    INTEL_swap_event_bit,
+   EXT_buffer_age_bit,
 };
+
+/* From the GLX perspective, the ARB and EXT extensions are identical.  Use a
+ * single bit for both.
+ */
+#define ARB_framebuffer_sRGB_bit EXT_framebuffer_sRGB_bit
 
 enum
 {

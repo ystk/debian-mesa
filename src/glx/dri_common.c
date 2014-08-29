@@ -40,6 +40,7 @@
 #include <stdarg.h>
 #include "glxclient.h"
 #include "dri_common.h"
+#include "loader.h"
 
 #ifndef RTLD_NOW
 #define RTLD_NOW 0
@@ -49,30 +50,23 @@
 #endif
 
 _X_HIDDEN void
-InfoMessageF(const char *f, ...)
+dri_message(int level, const char *f, ...)
 {
    va_list args;
-   const char *env;
+   int threshold = _LOADER_WARNING;
+   const char *libgl_debug;
 
-   if ((env = getenv("LIBGL_DEBUG")) && strstr(env, "verbose")) {
-      fprintf(stderr, "libGL: ");
-      va_start(args, f);
-      vfprintf(stderr, f, args);
-      va_end(args);
+   libgl_debug = getenv("LIBGL_DEBUG");
+   if (libgl_debug) {
+      if (strstr(libgl_debug, "quiet"))
+         threshold = _LOADER_FATAL;
+      else if (strstr(libgl_debug, "verbose"))
+         threshold = _LOADER_DEBUG;
    }
-}
 
-/**
- * Print error to stderr, unless LIBGL_DEBUG=="quiet".
- */
-_X_HIDDEN void
-ErrorMessageF(const char *f, ...)
-{
-   va_list args;
-   const char *env;
-
-   if ((env = getenv("LIBGL_DEBUG")) && !strstr(env, "quiet")) {
-      fprintf(stderr, "libGL error: ");
+   /* Note that the _LOADER_* levels are lower numbers for more severe. */
+   if (level <= threshold) {
+      fprintf(stderr, "libGL%s: ", level <= _LOADER_WARNING ? " error" : "");
       va_start(args, f);
       vfprintf(stderr, f, args);
       va_end(args);
@@ -158,6 +152,35 @@ driOpenDriver(const char *driverName)
    return handle;
 }
 
+_X_HIDDEN const __DRIextension **
+driGetDriverExtensions(void *handle, const char *driver_name)
+{
+   const __DRIextension **extensions = NULL;
+   const __DRIextension **(*get_extensions)(void);
+   char *get_extensions_name;
+
+   if (asprintf(&get_extensions_name, "%s_%s",
+                __DRI_DRIVER_GET_EXTENSIONS, driver_name) != -1) {
+      get_extensions = dlsym(handle, get_extensions_name);
+      if (get_extensions) {
+         free(get_extensions_name);
+         return get_extensions();
+      } else {
+         InfoMessageF("driver does not expose %s(): %s\n",
+                      get_extensions_name, dlerror());
+         free(get_extensions_name);
+      }
+   }
+
+   extensions = dlsym(handle, __DRI_DRIVER_EXTENSIONS);
+   if (extensions == NULL) {
+      ErrorMessageF("driver exports no extensions (%s)\n", dlerror());
+      return NULL;
+   }
+
+   return extensions;
+}
+
 static GLboolean
 __driGetMSCRate(__DRIdrawable *draw,
 		int32_t * numerator, int32_t * denominator,
@@ -165,13 +188,14 @@ __driGetMSCRate(__DRIdrawable *draw,
 {
    __GLXDRIdrawable *glxDraw = loaderPrivate;
 
-   return __glxGetMscRate(glxDraw, numerator, denominator);
+   return __glxGetMscRate(glxDraw->psc, numerator, denominator);
 }
 
 _X_HIDDEN const __DRIsystemTimeExtension systemTimeExtension = {
-   {__DRI_SYSTEM_TIME, __DRI_SYSTEM_TIME_VERSION},
-   __glXGetUST,
-   __driGetMSCRate
+   .base = {__DRI_SYSTEM_TIME, 1 },
+
+   .getUST              = __glXGetUST,
+   .getMSCRate          = __driGetMSCRate
 };
 
 #define __ATTRIB(attrib, field) \
@@ -256,8 +280,14 @@ driConfigEqual(const __DRIcoreExtension *core,
          if (value & __DRI_ATTRIB_RGBA_BIT) {
             glxValue |= GLX_RGBA_BIT;
          }
-         else if (value & __DRI_ATTRIB_COLOR_INDEX_BIT) {
+         if (value & __DRI_ATTRIB_COLOR_INDEX_BIT) {
             glxValue |= GLX_COLOR_INDEX_BIT;
+         }
+         if (value & __DRI_ATTRIB_FLOAT_BIT) {
+            glxValue |= GLX_RGBA_FLOAT_BIT_ARB;
+         }
+         if (value & __DRI_ATTRIB_UNSIGNED_FLOAT_BIT) {
+            glxValue |= GLX_RGBA_UNSIGNED_FLOAT_BIT_EXT;
          }
          if (glxValue != config->renderType)
             return GL_FALSE;
@@ -311,7 +341,7 @@ createDriMode(const __DRIcoreExtension * core,
    if (driConfigs[i] == NULL)
       return NULL;
 
-   driConfig = Xmalloc(sizeof *driConfig);
+   driConfig = malloc(sizeof *driConfig);
    if (driConfig == NULL)
       return NULL;
 
@@ -363,6 +393,9 @@ driFetchDrawable(struct glx_context *gc, GLXDrawable glxDrawable)
    if (priv == NULL)
       return NULL;
 
+   if (glxDrawable == None)
+      return NULL;
+
    psc = priv->screens[gc->screen];
    if (priv->drawHash == NULL)
       return NULL;
@@ -374,6 +407,12 @@ driFetchDrawable(struct glx_context *gc, GLXDrawable glxDrawable)
 
    pdraw = psc->driScreen->createDrawable(psc, glxDrawable,
                                           glxDrawable, gc->config);
+
+   if (pdraw == NULL) {
+      ErrorMessageF("failed to create drawable\n");
+      return NULL;
+   }
+
    if (__glxHashInsert(priv->drawHash, glxDrawable, pdraw)) {
       (*pdraw->destroyDrawable) (pdraw);
       return NULL;
@@ -421,16 +460,22 @@ driReleaseDrawables(struct glx_context *gc)
 
 _X_HIDDEN bool
 dri2_convert_glx_attribs(unsigned num_attribs, const uint32_t *attribs,
-			 unsigned *major_ver, unsigned *minor_ver,
-			 uint32_t *flags, unsigned *api, unsigned *error)
+                         unsigned *major_ver, unsigned *minor_ver,
+                         uint32_t *render_type, uint32_t *flags, unsigned *api,
+                         int *reset, unsigned *error)
 {
    unsigned i;
    bool got_profile = false;
    uint32_t profile;
-   int render_type = GLX_RGBA_TYPE;
+
+   *major_ver = 1;
+   *minor_ver = 0;
+   *render_type = GLX_RGBA_TYPE;
+   *reset = __DRI_CTX_RESET_NO_NOTIFICATION;
+   *flags = 0;
+   *api = __DRI_API_OPENGL;
 
    if (num_attribs == 0) {
-      *api = __DRI_API_OPENGL;
       return true;
    }
 
@@ -440,9 +485,6 @@ dri2_convert_glx_attribs(unsigned num_attribs, const uint32_t *attribs,
       *error = __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE;
       return false;
    }
-
-   *major_ver = 1;
-   *minor_ver = 0;
 
    for (i = 0; i < num_attribs; i++) {
       switch (attribs[i * 2]) {
@@ -460,8 +502,21 @@ dri2_convert_glx_attribs(unsigned num_attribs, const uint32_t *attribs,
 	 got_profile = true;
 	 break;
       case GLX_RENDER_TYPE:
-	 render_type = attribs[i * 2 + 1];
+         *render_type = attribs[i * 2 + 1];
 	 break;
+      case GLX_CONTEXT_RESET_NOTIFICATION_STRATEGY_ARB:
+         switch (attribs[i * 2 + 1]) {
+         case GLX_NO_RESET_NOTIFICATION_ARB:
+            *reset = __DRI_CTX_RESET_NO_NOTIFICATION;
+            break;
+         case GLX_LOSE_CONTEXT_ON_RESET_ARB:
+            *reset = __DRI_CTX_RESET_LOSE_CONTEXT;
+            break;
+         default:
+            *error = __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE;
+            return false;
+         }
+         break;
       default:
 	 /* If an unknown attribute is received, fail.
 	  */
@@ -470,7 +525,6 @@ dri2_convert_glx_attribs(unsigned num_attribs, const uint32_t *attribs,
       }
    }
 
-   *api = __DRI_API_OPENGL;
    if (!got_profile) {
       if (*major_ver > 3 || (*major_ver == 3 && *minor_ver >= 2))
 	 *api = __DRI_API_OPENGL_CORE;
@@ -501,7 +555,8 @@ dri2_convert_glx_attribs(unsigned num_attribs, const uint32_t *attribs,
 
    /* Unknown flag value.
     */
-   if (*flags & ~(__DRI_CTX_FLAG_DEBUG | __DRI_CTX_FLAG_FORWARD_COMPATIBLE)) {
+   if (*flags & ~(__DRI_CTX_FLAG_DEBUG | __DRI_CTX_FLAG_FORWARD_COMPATIBLE
+                  | __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS)) {
       *error = __DRI_CTX_ERROR_UNKNOWN_FLAG;
       return false;
    }
@@ -517,7 +572,7 @@ dri2_convert_glx_attribs(unsigned num_attribs, const uint32_t *attribs,
       return false;
    }
 
-   if (*major_ver >= 3 && render_type == GLX_COLOR_INDEX_TYPE) {
+   if (*major_ver >= 3 && *render_type == GLX_COLOR_INDEX_TYPE) {
       *error = __DRI_CTX_ERROR_BAD_FLAG;
       return false;
    }

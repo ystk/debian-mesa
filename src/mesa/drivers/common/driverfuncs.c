@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  7.1
  *
  * Copyright (C) 1999-2007  Brian Paul   All Rights Reserved.
  *
@@ -17,9 +16,10 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 
@@ -28,6 +28,7 @@
 #include "main/accum.h"
 #include "main/arrayobj.h"
 #include "main/context.h"
+#include "main/formatquery.h"
 #include "main/framebuffer.h"
 #include "main/mipmap.h"
 #include "main/queryobj.h"
@@ -39,6 +40,7 @@
 #include "main/texgetimage.h"
 #include "main/teximage.h"
 #include "main/texobj.h"
+#include "main/texstorage.h"
 #include "main/texstore.h"
 #include "main/bufferobj.h"
 #include "main/fbobject.h"
@@ -73,9 +75,7 @@ _mesa_init_driver_functions(struct dd_function_table *driver)
 
    driver->GetString = NULL;  /* REQUIRED! */
    driver->UpdateState = NULL;  /* REQUIRED! */
-   driver->GetBufferSize = NULL;  /* REQUIRED! */
    driver->ResizeBuffers = _mesa_resize_framebuffer;
-   driver->Error = NULL;
 
    driver->Finish = NULL;
    driver->Flush = NULL;
@@ -91,24 +91,15 @@ _mesa_init_driver_functions(struct dd_function_table *driver)
 
    /* Texture functions */
    driver->ChooseTextureFormat = _mesa_choose_tex_format;
-   driver->TexImage1D = _mesa_store_teximage1d;
-   driver->TexImage2D = _mesa_store_teximage2d;
-   driver->TexImage3D = _mesa_store_teximage3d;
-   driver->TexSubImage1D = _mesa_store_texsubimage1d;
-   driver->TexSubImage2D = _mesa_store_texsubimage2d;
-   driver->TexSubImage3D = _mesa_store_texsubimage3d;
+   driver->QuerySamplesForFormat = _mesa_query_samples_for_format;
+   driver->TexImage = _mesa_store_teximage;
+   driver->TexSubImage = _mesa_store_texsubimage;
    driver->GetTexImage = _mesa_meta_GetTexImage;
-   driver->CopyTexSubImage1D = _mesa_meta_CopyTexSubImage1D;
-   driver->CopyTexSubImage2D = _mesa_meta_CopyTexSubImage2D;
-   driver->CopyTexSubImage3D = _mesa_meta_CopyTexSubImage3D;
+   driver->CopyTexSubImage = _mesa_meta_CopyTexSubImage;
    driver->GenerateMipmap = _mesa_meta_GenerateMipmap;
    driver->TestProxyTexImage = _mesa_test_proxy_teximage;
-   driver->CompressedTexImage1D = _mesa_store_compressed_teximage1d;
-   driver->CompressedTexImage2D = _mesa_store_compressed_teximage2d;
-   driver->CompressedTexImage3D = _mesa_store_compressed_teximage3d;
-   driver->CompressedTexSubImage1D = _mesa_store_compressed_texsubimage1d;
-   driver->CompressedTexSubImage2D = _mesa_store_compressed_texsubimage2d;
-   driver->CompressedTexSubImage3D = _mesa_store_compressed_texsubimage3d;
+   driver->CompressedTexImage = _mesa_store_compressed_teximage;
+   driver->CompressedTexSubImage = _mesa_store_compressed_texsubimage;
    driver->GetCompressedTexImage = _mesa_get_compressed_teximage;
    driver->BindTexture = NULL;
    driver->NewTextureObject = _mesa_new_texture_object;
@@ -131,9 +122,6 @@ _mesa_init_driver_functions(struct dd_function_table *driver)
    driver->BlendColor = NULL;
    driver->BlendEquationSeparate = NULL;
    driver->BlendFuncSeparate = NULL;
-   driver->ClearColor = NULL;
-   driver->ClearDepth = NULL;
-   driver->ClearStencil = NULL;
    driver->ClipPlane = NULL;
    driver->ColorMask = NULL;
    driver->ColorMaterial = NULL;
@@ -187,12 +175,13 @@ _mesa_init_driver_functions(struct dd_function_table *driver)
    driver->ValidateFramebuffer = _mesa_validate_framebuffer;
 
    driver->BlitFramebuffer = _swrast_BlitFramebuffer;
+   driver->DiscardFramebuffer = NULL;
 
    _mesa_init_texture_barrier_functions(driver);
 
    /* APPLE_vertex_array_object */
-   driver->NewArrayObject = _mesa_new_array_object;
-   driver->DeleteArrayObject = _mesa_delete_array_object;
+   driver->NewArrayObject = _mesa_new_vao;
+   driver->DeleteArrayObject = _mesa_delete_vao;
    driver->BindArrayObject = NULL;
 
    _mesa_init_shader_object_functions(driver);
@@ -210,7 +199,6 @@ _mesa_init_driver_functions(struct dd_function_table *driver)
    driver->ProgramStringNotify = _tnl_program_string;
    driver->FlushVertices = NULL;
    driver->SaveFlushVertices = NULL;
-   driver->PrepareExecBegin = NULL;
    driver->NotifySaveBegin = NULL;
    driver->LightingSpaceChange = NULL;
 
@@ -221,7 +209,13 @@ _mesa_init_driver_functions(struct dd_function_table *driver)
    driver->EndCallList = NULL;
 
    /* GL_ARB_texture_storage */
-   driver->AllocTextureStorage = _swrast_AllocTextureStorage;
+   driver->AllocTextureStorage = _mesa_alloc_texture_storage;
+
+   /* GL_ARB_texture_view */
+   driver->TextureView = NULL;
+
+   /* GL_ARB_texture_multisample */
+   driver->GetSamplePosition = NULL;
 }
 
 
@@ -280,7 +274,7 @@ _mesa_init_driver_state(struct gl_context *ctx)
    ctx->Driver.Enable(ctx, GL_LIGHTING, ctx->Light.Enabled);
    ctx->Driver.Enable(ctx, GL_LINE_SMOOTH, ctx->Line.SmoothFlag);
    ctx->Driver.Enable(ctx, GL_POLYGON_STIPPLE, ctx->Polygon.StippleFlag);
-   ctx->Driver.Enable(ctx, GL_SCISSOR_TEST, ctx->Scissor.Enabled);
+   ctx->Driver.Enable(ctx, GL_SCISSOR_TEST, ctx->Scissor.EnableFlags);
    ctx->Driver.Enable(ctx, GL_STENCIL_TEST, ctx->Stencil._Enabled);
    ctx->Driver.Enable(ctx, GL_TEXTURE_1D, GL_FALSE);
    ctx->Driver.Enable(ctx, GL_TEXTURE_2D, GL_FALSE);
@@ -308,8 +302,7 @@ _mesa_init_driver_state(struct gl_context *ctx)
    ctx->Driver.LogicOpcode(ctx, ctx->Color.LogicOp);
    ctx->Driver.PointSize(ctx, ctx->Point.Size);
    ctx->Driver.PolygonStipple(ctx, (const GLubyte *) ctx->PolygonStipple);
-   ctx->Driver.Scissor(ctx, ctx->Scissor.X, ctx->Scissor.Y,
-                       ctx->Scissor.Width, ctx->Scissor.Height);
+   ctx->Driver.Scissor(ctx);
    ctx->Driver.ShadeModel(ctx, ctx->Light.ShadeModel);
    ctx->Driver.StencilFuncSeparate(ctx, GL_FRONT,
                                    ctx->Stencil.Function[0],

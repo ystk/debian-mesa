@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2003 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -39,6 +39,7 @@
 #include "swrast_setup/swrast_setup.h"
 #include "main/renderbuffer.h"
 #include "main/framebuffer.h"
+#include "main/fbobject.h"
 
 #define FILE_DEBUG_FLAG DEBUG_STATE
 
@@ -178,8 +179,6 @@ i830_render_start(struct intel_context *intel)
        v2 != i830->state.Ctx[I830_CTXREG_VF2] ||
        mcsb1 != i830->state.Ctx[I830_CTXREG_MCSB1] ||
        index_bitset != i830->last_index_bitset) {
-      int k;
-
       I830_STATECHANGE(i830, I830_UPLOAD_CTX);
 
       /* Must do this *after* statechange, so as not to affect
@@ -198,8 +197,7 @@ i830_render_start(struct intel_context *intel)
       i830->state.Ctx[I830_CTXREG_MCSB1] = mcsb1;
       i830->last_index_bitset = index_bitset;
 
-      k = i830_check_vertex_size(intel, intel->vertex_size);
-      assert(k);
+      assert(i830_check_vertex_size(intel, intel->vertex_size));
    }
 }
 
@@ -368,7 +366,7 @@ i830_emit_invarient_state(struct intel_context *intel)
 
 
 #define emit( intel, state, size )			\
-   intel_batchbuffer_data(intel, state, size, false)
+   intel_batchbuffer_data(intel, state, size)
 
 static GLuint
 get_dirty(struct i830_hw_state *state)
@@ -433,8 +431,8 @@ i830_emit_state(struct intel_context *intel)
     * batchbuffer fills up.
     */
    intel_batchbuffer_require_space(intel,
-				   get_state_size(state) + INTEL_PRIM_EMIT_SIZE,
-				   false);
+				   get_state_size(state) +
+                                   INTEL_PRIM_EMIT_SIZE);
    count = 0;
  again:
    aper_count = 0;
@@ -584,22 +582,22 @@ i830_destroy_context(struct intel_context *intel)
 
 static uint32_t i830_render_target_format_for_mesa_format[MESA_FORMAT_COUNT] =
 {
-   [MESA_FORMAT_ARGB8888] = DV_PF_8888,
-   [MESA_FORMAT_XRGB8888] = DV_PF_8888,
-   [MESA_FORMAT_RGB565] = DV_PF_565,
-   [MESA_FORMAT_ARGB1555] = DV_PF_1555,
-   [MESA_FORMAT_ARGB4444] = DV_PF_4444,
+   [MESA_FORMAT_B8G8R8A8_UNORM] = DV_PF_8888,
+   [MESA_FORMAT_B8G8R8X8_UNORM] = DV_PF_8888,
+   [MESA_FORMAT_B5G6R5_UNORM] = DV_PF_565,
+   [MESA_FORMAT_B5G5R5A1_UNORM] = DV_PF_1555,
+   [MESA_FORMAT_B4G4R4A4_UNORM] = DV_PF_4444,
 };
 
 static bool
 i830_render_target_supported(struct intel_context *intel,
 			     struct gl_renderbuffer *rb)
 {
-   gl_format format = rb->Format;
+   mesa_format format = rb->Format;
 
-   if (format == MESA_FORMAT_S8_Z24 ||
-       format == MESA_FORMAT_X8_Z24 ||
-       format == MESA_FORMAT_Z16) {
+   if (format == MESA_FORMAT_Z24_UNORM_S8_UINT ||
+       format == MESA_FORMAT_Z24_UNORM_X8_UINT ||
+       format == MESA_FORMAT_Z_UNORM16) {
       return true;
    }
 
@@ -769,7 +767,7 @@ i830_update_draw_buffer(struct intel_context *intel)
       /* Get the intel_renderbuffer for the single colorbuffer we're drawing
        * into.
        */
-      if (fb->Name == 0) {
+      if (_mesa_is_winsys_fbo(fb)) {
 	 /* drawing to window system buffer */
 	 if (fb->_ColorDrawBufferIndexes[0] == BUFFER_FRONT_LEFT)
 	    colorRegions[0] = intel_get_rb_region(fb, BUFFER_FRONT_LEFT);
@@ -806,7 +804,7 @@ i830_update_draw_buffer(struct intel_context *intel)
 
    /* Check for stencil fallback. */
    if (irbStencil && irbStencil->mt) {
-      assert(intel_rb_format(irbStencil) == MESA_FORMAT_S8_Z24);
+      assert(intel_rb_format(irbStencil) == MESA_FORMAT_Z24_UNORM_S8_UINT);
       FALLBACK(intel, INTEL_FALLBACK_STENCIL_BUFFER, false);
    } else if (irbStencil && !irbStencil->mt) {
       FALLBACK(intel, INTEL_FALLBACK_STENCIL_BUFFER, true);
@@ -819,7 +817,7 @@ i830_update_draw_buffer(struct intel_context *intel)
     * we still need to set up the shared depth/stencil state so we can use it.
     */
    if (depthRegion == NULL && irbStencil && irbStencil->mt
-       && intel_rb_format(irbStencil) == MESA_FORMAT_S8_Z24) {
+       && intel_rb_format(irbStencil) == MESA_FORMAT_Z24_UNORM_S8_UINT) {
       depthRegion = irbStencil->mt->region;
    }
 
@@ -834,15 +832,10 @@ i830_update_draw_buffer(struct intel_context *intel)
                                fb->_NumColorDrawBuffers);
    intel->NewGLState |= _NEW_BUFFERS;
 
-   /* update viewport since it depends on window size */
-   intelCalcViewport(ctx);
-
    /* Set state we know depends on drawable parameters:
     */
-   ctx->Driver.Scissor(ctx, ctx->Scissor.X, ctx->Scissor.Y,
-		       ctx->Scissor.Width, ctx->Scissor.Height);
-
-   ctx->Driver.DepthRange(ctx, ctx->Viewport.Near, ctx->Viewport.Far);
+   intelCalcViewport(ctx);
+   ctx->Driver.Scissor(ctx);
 
    /* Update culling direction which changes depending on the
     * orientation of the buffer:
@@ -880,12 +873,6 @@ i830_invalidate_state(struct intel_context *intel, GLuint new_state)
       i830_update_provoking_vertex(&intel->ctx);
 }
 
-static bool
-i830_is_hiz_depth_format(struct intel_context *intel, gl_format format)
-{
-   return false;
-}
-
 void
 i830InitVtbl(struct i830_context *i830)
 {
@@ -903,5 +890,4 @@ i830InitVtbl(struct i830_context *i830)
    i830->intel.vtbl.finish_batch = intel_finish_vb;
    i830->intel.vtbl.invalidate_state = i830_invalidate_state;
    i830->intel.vtbl.render_target_supported = i830_render_target_supported;
-   i830->intel.vtbl.is_hiz_depth_format = i830_is_hiz_depth_format;
 }

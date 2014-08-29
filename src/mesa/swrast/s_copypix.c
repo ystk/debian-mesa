@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  7.1
  *
  * Copyright (C) 1999-2007  Brian Paul   All Rights Reserved.
  *
@@ -17,9 +16,10 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 
@@ -136,10 +136,10 @@ copy_rgba_pixels(struct gl_context *ctx, GLint srcx, GLint srcy,
    INIT_SPAN(span, GL_BITMAP);
    _swrast_span_default_attribs(ctx, &span);
    span.arrayMask = SPAN_RGBA;
-   span.arrayAttribs = FRAG_BIT_COL0; /* we'll fill in COL0 attrib values */
+   span.arrayAttribs = VARYING_BIT_COL0; /* we'll fill in COL0 attrib values */
 
    if (overlapping) {
-      tmpImage = (GLfloat *) malloc(width * height * sizeof(GLfloat) * 4);
+      tmpImage = malloc(width * height * sizeof(GLfloat) * 4);
       if (!tmpImage) {
          _mesa_error( ctx, GL_OUT_OF_MEMORY, "glCopyPixels" );
          return;
@@ -158,10 +158,10 @@ copy_rgba_pixels(struct gl_context *ctx, GLint srcx, GLint srcy,
       p = NULL;
    }
 
-   ASSERT(width < MAX_WIDTH);
+   ASSERT(width < SWRAST_MAX_WIDTH);
 
    for (row = 0; row < height; row++, sy += stepy, dy += stepy) {
-      GLvoid *rgba = span.array->attribs[FRAG_ATTRIB_COL0];
+      GLvoid *rgba = span.array->attribs[VARYING_SLOT_COL0];
 
       /* Get row/span of source pixels */
       if (overlapping) {
@@ -246,7 +246,7 @@ copy_depth_pixels( struct gl_context *ctx, GLint srcx, GLint srcy,
 {
    struct gl_framebuffer *fb = ctx->ReadBuffer;
    struct gl_renderbuffer *readRb = fb->Attachment[BUFFER_DEPTH].Renderbuffer;
-   GLfloat *p, *tmpImage;
+   GLfloat *p, *tmpImage, *depth;
    GLint sy, dy, stepy;
    GLint j;
    const GLboolean zoom = ctx->Pixel.ZoomX != 1.0F || ctx->Pixel.ZoomY != 1.0F;
@@ -286,7 +286,7 @@ copy_depth_pixels( struct gl_context *ctx, GLint srcx, GLint srcy,
 
    if (overlapping) {
       GLint ssy = sy;
-      tmpImage = (GLfloat *) malloc(width * height * sizeof(GLfloat));
+      tmpImage = malloc(width * height * sizeof(GLfloat));
       if (!tmpImage) {
          _mesa_error( ctx, GL_OUT_OF_MEMORY, "glCopyPixels" );
          return;
@@ -303,8 +303,13 @@ copy_depth_pixels( struct gl_context *ctx, GLint srcx, GLint srcy,
       p = NULL;
    }
 
+   depth = malloc(width * sizeof(GLfloat));
+   if (!depth) {
+      _mesa_error(ctx, GL_OUT_OF_MEMORY, "glCopyPixels()");
+      goto end;
+   }
+
    for (j = 0; j < height; j++, sy += stepy, dy += stepy) {
-      GLfloat depth[MAX_WIDTH];
       /* get depth values */
       if (overlapping) {
          memcpy(depth, p, width * sizeof(GLfloat));
@@ -327,6 +332,9 @@ copy_depth_pixels( struct gl_context *ctx, GLint srcx, GLint srcy,
          _swrast_write_rgba_span(ctx, &span);
    }
 
+   free(depth);
+
+end:
    if (overlapping)
       free(tmpImage);
 }
@@ -342,7 +350,7 @@ copy_stencil_pixels( struct gl_context *ctx, GLint srcx, GLint srcy,
    struct gl_renderbuffer *rb = fb->Attachment[BUFFER_STENCIL].Renderbuffer;
    GLint sy, dy, stepy;
    GLint j;
-   GLubyte *p, *tmpImage;
+   GLubyte *p, *tmpImage, *stencil;
    const GLboolean zoom = ctx->Pixel.ZoomX != 1.0F || ctx->Pixel.ZoomY != 1.0F;
    GLint overlapping;
 
@@ -375,7 +383,7 @@ copy_stencil_pixels( struct gl_context *ctx, GLint srcx, GLint srcy,
 
    if (overlapping) {
       GLint ssy = sy;
-      tmpImage = (GLubyte *) malloc(width * height * sizeof(GLubyte));
+      tmpImage = malloc(width * height * sizeof(GLubyte));
       if (!tmpImage) {
          _mesa_error( ctx, GL_OUT_OF_MEMORY, "glCopyPixels" );
          return;
@@ -392,9 +400,13 @@ copy_stencil_pixels( struct gl_context *ctx, GLint srcx, GLint srcy,
       p = NULL;
    }
 
-   for (j = 0; j < height; j++, sy += stepy, dy += stepy) {
-      GLubyte stencil[MAX_WIDTH];
+   stencil = malloc(width * sizeof(GLubyte));
+   if (!stencil) {
+      _mesa_error(ctx, GL_OUT_OF_MEMORY, "glCopyPixels()");
+      goto end;
+   }
 
+   for (j = 0; j < height; j++, sy += stepy, dy += stepy) {
       /* Get stencil values */
       if (overlapping) {
          memcpy(stencil, p, width * sizeof(GLubyte));
@@ -416,6 +428,9 @@ copy_stencil_pixels( struct gl_context *ctx, GLint srcx, GLint srcy,
       }
    }
 
+   free(stencil);
+
+end:
    if (overlapping)
       free(tmpImage);
 }

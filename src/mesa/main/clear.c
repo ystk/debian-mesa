@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  7.1
  *
  * Copyright (C) 1999-2007  Brian Paul   All Rights Reserved.
  *
@@ -17,9 +16,10 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 
@@ -41,20 +41,13 @@
 
 
 
-#if _HAVE_FULL_GL
 void GLAPIENTRY
 _mesa_ClearIndex( GLfloat c )
 {
    GET_CURRENT_CONTEXT(ctx);
-   ASSERT_OUTSIDE_BEGIN_END(ctx);
 
-   if (ctx->Color.ClearIndex == (GLuint) c)
-      return;
-
-   FLUSH_VERTICES(ctx, _NEW_COLOR);
    ctx->Color.ClearIndex = (GLuint) c;
 }
-#endif
 
 
 /**
@@ -74,28 +67,12 @@ _mesa_ClearIndex( GLfloat c )
 void GLAPIENTRY
 _mesa_ClearColor( GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha )
 {
-   GLfloat tmp[4];
    GET_CURRENT_CONTEXT(ctx);
-   ASSERT_OUTSIDE_BEGIN_END(ctx);
 
-   tmp[0] = red;
-   tmp[1] = green;
-   tmp[2] = blue;
-   tmp[3] = alpha;
-
-   if (TEST_EQ_4V(tmp, ctx->Color.ClearColor.f))
-      return; /* no change */
-
-   FLUSH_VERTICES(ctx, _NEW_COLOR);
-   COPY_4V(ctx->Color.ClearColor.f, tmp);
-
-   if (ctx->Driver.ClearColor) {
-      /* it's OK to call glClearColor in CI mode but it should be a NOP */
-      /* we pass the clamped color, since all drivers that need this don't
-       * support GL_ARB_color_buffer_float
-       */
-      (*ctx->Driver.ClearColor)(ctx, ctx->Color.ClearColor);
-   }
+   ctx->Color.ClearColor.f[0] = red;
+   ctx->Color.ClearColor.f[1] = green;
+   ctx->Color.ClearColor.f[2] = blue;
+   ctx->Color.ClearColor.f[3] = alpha;
 }
 
 
@@ -105,25 +82,12 @@ _mesa_ClearColor( GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha )
 void GLAPIENTRY
 _mesa_ClearColorIiEXT(GLint r, GLint g, GLint b, GLint a)
 {
-   GLint tmp[4];
    GET_CURRENT_CONTEXT(ctx);
-   ASSERT_OUTSIDE_BEGIN_END(ctx);
 
-   tmp[0] = r;
-   tmp[1] = g;
-   tmp[2] = b;
-   tmp[3] = a;
-
-   if (TEST_EQ_4V(tmp, ctx->Color.ClearColor.i))
-      return; /* no change */
-
-   FLUSH_VERTICES(ctx, _NEW_COLOR);
-   COPY_4V(ctx->Color.ClearColor.i, tmp);
-
-   /* these should be NOP calls for drivers supporting EXT_texture_integer */
-   if (ctx->Driver.ClearColor) {
-      ctx->Driver.ClearColor(ctx, ctx->Color.ClearColor);
-   }
+   ctx->Color.ClearColor.i[0] = r;
+   ctx->Color.ClearColor.i[1] = g;
+   ctx->Color.ClearColor.i[2] = b;
+   ctx->Color.ClearColor.i[3] = a;
 }
 
 
@@ -133,25 +97,37 @@ _mesa_ClearColorIiEXT(GLint r, GLint g, GLint b, GLint a)
 void GLAPIENTRY
 _mesa_ClearColorIuiEXT(GLuint r, GLuint g, GLuint b, GLuint a)
 {
-   GLuint tmp[4];
    GET_CURRENT_CONTEXT(ctx);
-   ASSERT_OUTSIDE_BEGIN_END(ctx);
 
-   tmp[0] = r;
-   tmp[1] = g;
-   tmp[2] = b;
-   tmp[3] = a;
+   ctx->Color.ClearColor.ui[0] = r;
+   ctx->Color.ClearColor.ui[1] = g;
+   ctx->Color.ClearColor.ui[2] = b;
+   ctx->Color.ClearColor.ui[3] = a;
+}
 
-   if (TEST_EQ_4V(tmp, ctx->Color.ClearColor.ui))
-      return; /* no change */
 
-   FLUSH_VERTICES(ctx, _NEW_COLOR);
-   COPY_4V(ctx->Color.ClearColor.ui, tmp);
+/**
+ * Returns true if color writes are enabled for the given color attachment.
+ *
+ * Beyond checking ColorMask, this uses _mesa_format_has_color_component to
+ * ignore components that don't actually exist in the format (such as X in
+ * XRGB).
+ */
+static bool
+color_buffer_writes_enabled(const struct gl_context *ctx, unsigned idx)
+{
+   struct gl_renderbuffer *rb = ctx->DrawBuffer->_ColorDrawBuffers[idx];
+   GLuint c;
+   GLubyte colorMask = 0;
 
-   /* these should be NOP calls for drivers supporting EXT_texture_integer */
-   if (ctx->Driver.ClearColor) {
-      ctx->Driver.ClearColor(ctx, ctx->Color.ClearColor);
+   if (rb) {
+      for (c = 0; c < 4; c++) {
+         if (_mesa_format_has_color_component(rb->Format, c))
+            colorMask |= ctx->Color.ColorMask[idx][c];
+      }
    }
+
+   return colorMask != 0;
 }
 
 
@@ -169,7 +145,7 @@ void GLAPIENTRY
 _mesa_Clear( GLbitfield mask )
 {
    GET_CURRENT_CONTEXT(ctx);
-   ASSERT_OUTSIDE_BEGIN_END_AND_FLUSH(ctx);
+   FLUSH_VERTICES(ctx, 0);
 
    FLUSH_CURRENT(ctx, 0);
 
@@ -185,6 +161,15 @@ _mesa_Clear( GLbitfield mask )
       return;
    }
 
+   /* Accumulation buffers were removed in core contexts, and they never
+    * existed in OpenGL ES.
+    */
+   if ((mask & GL_ACCUM_BUFFER_BIT) != 0
+       && (ctx->API == API_OPENGL_CORE || _mesa_is_gles(ctx))) {
+      _mesa_error( ctx, GL_INVALID_VALUE, "glClear(GL_ACCUM_BUFFER_BIT)");
+      return;
+   }
+
    if (ctx->NewState) {
       _mesa_update_state( ctx );	/* update _Xmin, etc */
    }
@@ -194,11 +179,6 @@ _mesa_Clear( GLbitfield mask )
                   "glClear(incomplete framebuffer)");
       return;
    }
-
-   if (ctx->DrawBuffer->Width == 0 || ctx->DrawBuffer->Height == 0 ||
-       ctx->DrawBuffer->_Xmin >= ctx->DrawBuffer->_Xmax ||
-       ctx->DrawBuffer->_Ymin >= ctx->DrawBuffer->_Ymax)
-      return;
 
    if (ctx->RasterDiscard)
       return;
@@ -219,7 +199,11 @@ _mesa_Clear( GLbitfield mask )
       if (mask & GL_COLOR_BUFFER_BIT) {
          GLuint i;
          for (i = 0; i < ctx->DrawBuffer->_NumColorDrawBuffers; i++) {
-            bufferMask |= (1 << ctx->DrawBuffer->_ColorDrawBufferIndexes[i]);
+            GLint buf = ctx->DrawBuffer->_ColorDrawBufferIndexes[i];
+
+            if (buf >= 0 && color_buffer_writes_enabled(ctx, i)) {
+               bufferMask |= 1 << buf;
+            }
          }
       }
 
@@ -259,7 +243,25 @@ make_color_buffer_mask(struct gl_context *ctx, GLint drawbuffer)
    const struct gl_renderbuffer_attachment *att = ctx->DrawBuffer->Attachment;
    GLbitfield mask = 0x0;
 
-   switch (drawbuffer) {
+   /* From the GL 4.0 specification:
+    *	If buffer is COLOR, a particular draw buffer DRAW_BUFFERi is
+    *	specified by passing i as the parameter drawbuffer, and value
+    *	points to a four-element vector specifying the R, G, B, and A
+    *	color to clear that draw buffer to. If the draw buffer is one
+    *	of FRONT, BACK, LEFT, RIGHT, or FRONT_AND_BACK, identifying
+    *	multiple buffers, each selected buffer is cleared to the same
+    *	value.
+    *
+    * Note that "drawbuffer" and "draw buffer" have different meaning.
+    * "drawbuffer" specifies DRAW_BUFFERi, while "draw buffer" is what's
+    * assigned to DRAW_BUFFERi. It could be COLOR_ATTACHMENT0, FRONT, BACK,
+    * etc.
+    */
+   if (drawbuffer < 0 || drawbuffer >= (GLint)ctx->Const.MaxDrawBuffers) {
+      return INVALID_MASK;
+   }
+
+   switch (ctx->DrawBuffer->ColorDrawBuffer[drawbuffer]) {
    case GL_FRONT:
       if (att[BUFFER_FRONT_LEFT].Renderbuffer)
          mask |= BUFFER_BIT_FRONT_LEFT;
@@ -295,11 +297,12 @@ make_color_buffer_mask(struct gl_context *ctx, GLint drawbuffer)
          mask |= BUFFER_BIT_BACK_RIGHT;
       break;
    default:
-      if (drawbuffer < 0 || drawbuffer >= (GLint)ctx->Const.MaxDrawBuffers) {
-         mask = INVALID_MASK;
-      }
-      else if (att[BUFFER_COLOR0 + drawbuffer].Renderbuffer) {
-         mask |= (BUFFER_BIT_COLOR0 << drawbuffer);
+      {
+         GLint buf = ctx->DrawBuffer->_ColorDrawBufferIndexes[drawbuffer];
+
+         if (buf >= 0 && att[buf].Renderbuffer) {
+            mask |= 1 << buf;
+         }
       }
    }
 
@@ -316,7 +319,7 @@ void GLAPIENTRY
 _mesa_ClearBufferiv(GLenum buffer, GLint drawbuffer, const GLint *value)
 {
    GET_CURRENT_CONTEXT(ctx);
-   ASSERT_OUTSIDE_BEGIN_END_AND_FLUSH(ctx);
+   FLUSH_VERTICES(ctx, 0);
 
    FLUSH_CURRENT(ctx, 0);
 
@@ -346,12 +349,8 @@ _mesa_ClearBufferiv(GLenum buffer, GLint drawbuffer, const GLint *value)
           */
          const GLuint clearSave = ctx->Stencil.Clear;
          ctx->Stencil.Clear = *value;
-         if (ctx->Driver.ClearStencil)
-            ctx->Driver.ClearStencil(ctx, *value);
          ctx->Driver.Clear(ctx, BUFFER_BIT_STENCIL);
          ctx->Stencil.Clear = clearSave;
-         if (ctx->Driver.ClearStencil)
-            ctx->Driver.ClearStencil(ctx, clearSave);
       }
       break;
    case GL_COLOR:
@@ -369,14 +368,10 @@ _mesa_ClearBufferiv(GLenum buffer, GLint drawbuffer, const GLint *value)
             clearSave = ctx->Color.ClearColor;
             /* set color */
             COPY_4V(ctx->Color.ClearColor.i, value);
-            if (ctx->Driver.ClearColor)
-               ctx->Driver.ClearColor(ctx, ctx->Color.ClearColor);
             /* clear buffer(s) */
             ctx->Driver.Clear(ctx, mask);
             /* restore color */
             ctx->Color.ClearColor = clearSave;
-            if (ctx->Driver.ClearColor)
-               ctx->Driver.ClearColor(ctx, clearSave);
          }
       }
       break;
@@ -415,8 +410,8 @@ void GLAPIENTRY
 _mesa_ClearBufferuiv(GLenum buffer, GLint drawbuffer, const GLuint *value)
 {
    GET_CURRENT_CONTEXT(ctx);
-   ASSERT_OUTSIDE_BEGIN_END_AND_FLUSH(ctx);
 
+   FLUSH_VERTICES(ctx, 0);
    FLUSH_CURRENT(ctx, 0);
 
    if (ctx->NewState) {
@@ -439,14 +434,10 @@ _mesa_ClearBufferuiv(GLenum buffer, GLint drawbuffer, const GLuint *value)
             clearSave = ctx->Color.ClearColor;
             /* set color */
             COPY_4V(ctx->Color.ClearColor.ui, value);
-            if (ctx->Driver.ClearColor)
-               ctx->Driver.ClearColor(ctx, ctx->Color.ClearColor);
             /* clear buffer(s) */
             ctx->Driver.Clear(ctx, mask);
             /* restore color */
             ctx->Color.ClearColor = clearSave;
-            if (ctx->Driver.ClearColor)
-               ctx->Driver.ClearColor(ctx, clearSave);
          }
       }
       break;
@@ -491,8 +482,8 @@ void GLAPIENTRY
 _mesa_ClearBufferfv(GLenum buffer, GLint drawbuffer, const GLfloat *value)
 {
    GET_CURRENT_CONTEXT(ctx);
-   ASSERT_OUTSIDE_BEGIN_END_AND_FLUSH(ctx);
 
+   FLUSH_VERTICES(ctx, 0);
    FLUSH_CURRENT(ctx, 0);
 
    if (ctx->NewState) {
@@ -521,12 +512,8 @@ _mesa_ClearBufferfv(GLenum buffer, GLint drawbuffer, const GLfloat *value)
           */
          const GLclampd clearSave = ctx->Depth.Clear;
          ctx->Depth.Clear = *value;
-         if (ctx->Driver.ClearDepth)
-            ctx->Driver.ClearDepth(ctx, *value);
          ctx->Driver.Clear(ctx, BUFFER_BIT_DEPTH);
          ctx->Depth.Clear = clearSave;
-         if (ctx->Driver.ClearDepth)
-            ctx->Driver.ClearDepth(ctx, clearSave);
       }
       /* clear depth buffer to value */
       break;
@@ -544,15 +531,11 @@ _mesa_ClearBufferfv(GLenum buffer, GLint drawbuffer, const GLfloat *value)
             /* save color */
             clearSave = ctx->Color.ClearColor;
             /* set color */
-            COPY_4V_CAST(ctx->Color.ClearColor.f, value, GLclampf);
-            if (ctx->Driver.ClearColor)
-               ctx->Driver.ClearColor(ctx, ctx->Color.ClearColor);
+            COPY_4V(ctx->Color.ClearColor.f, value);
             /* clear buffer(s) */
             ctx->Driver.Clear(ctx, mask);
             /* restore color */
             ctx->Color.ClearColor = clearSave;
-            if (ctx->Driver.ClearColor)
-               ctx->Driver.ClearColor(ctx, clearSave);
          }
       }
       break;
@@ -594,8 +577,7 @@ _mesa_ClearBufferfi(GLenum buffer, GLint drawbuffer,
    GET_CURRENT_CONTEXT(ctx);
    GLbitfield mask = 0;
 
-   ASSERT_OUTSIDE_BEGIN_END_AND_FLUSH(ctx);
-
+   FLUSH_VERTICES(ctx, 0);
    FLUSH_CURRENT(ctx, 0);
 
    if (buffer != GL_DEPTH_STENCIL) {
@@ -637,10 +619,6 @@ _mesa_ClearBufferfi(GLenum buffer, GLint drawbuffer,
       /* set new clear values */
       ctx->Depth.Clear = depth;
       ctx->Stencil.Clear = stencil;
-      if (ctx->Driver.ClearDepth)
-         ctx->Driver.ClearDepth(ctx, depth);
-      if (ctx->Driver.ClearStencil)
-         ctx->Driver.ClearStencil(ctx, stencil);
 
       /* clear buffers */
       ctx->Driver.Clear(ctx, mask);
@@ -648,9 +626,5 @@ _mesa_ClearBufferfi(GLenum buffer, GLint drawbuffer,
       /* restore */
       ctx->Depth.Clear = clearDepthSave;
       ctx->Stencil.Clear = clearStencilSave;
-      if (ctx->Driver.ClearDepth)
-         ctx->Driver.ClearDepth(ctx, clearDepthSave);
-      if (ctx->Driver.ClearStencil)
-         ctx->Driver.ClearStencil(ctx, clearStencilSave);
    }
 }

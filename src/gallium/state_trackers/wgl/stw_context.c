@@ -1,6 +1,6 @@
 /**************************************************************************
  *
- * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2008 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -38,6 +38,7 @@
 #include "util/u_memory.h"
 #include "util/u_atomic.h"
 #include "state_tracker/st_api.h"
+#include "hud/hud_context.h"
 
 #include "stw_icd.h"
 #include "stw_device.h"
@@ -48,7 +49,7 @@
 #include "stw_tls.h"
 
 
-static INLINE struct stw_context *
+struct stw_context *
 stw_current_context(void)
 {
    struct st_context_iface *st;
@@ -126,7 +127,8 @@ DrvCreateLayerContext(
    HDC hdc,
    INT iLayerPlane )
 {
-   return stw_create_context_attribs(hdc, iLayerPlane, 0, 1, 0, 0, WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB);
+   return stw_create_context_attribs(hdc, iLayerPlane, 0, 1, 0, 0,
+                                     WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB);
 }
 
 DHGLRC
@@ -138,6 +140,7 @@ stw_create_context_attribs(
    int contextFlags, int profileMask)
 {
    int iPixelFormat;
+   struct stw_framebuffer *fb;
    const struct stw_pixelformat_info *pfi;
    struct st_context_attribs attribs;
    struct stw_context *ctx = NULL;
@@ -154,7 +157,20 @@ stw_create_context_attribs(
    if(!iPixelFormat)
       return 0;
 
-   pfi = stw_pixelformat_get_info( iPixelFormat - 1 );
+   /*
+    * GDI only knows about displayable pixel formats, so determine the pixel
+    * format from the framebuffer.
+    *
+    * TODO: Remove the GetPixelFormat() above, and stop relying on GDI.
+    */
+   fb = stw_framebuffer_from_hdc( hdc );
+   if (fb) {
+      assert(iPixelFormat == fb->iDisplayablePixelFormat);
+      iPixelFormat = fb->iPixelFormat;
+      stw_framebuffer_release(fb);
+   }
+
+   pfi = stw_pixelformat_get_info( iPixelFormat );
 
    if (hShareContext != 0) {
       pipe_mutex_lock( stw_dev->ctx_mutex );
@@ -202,6 +218,10 @@ stw_create_context_attribs(
 
    ctx->st->st_manager_private = (void *) ctx;
 
+   if (ctx->st->cso_context) {
+      ctx->hud = hud_create(ctx->st->pipe, ctx->st->cso_context);
+   }
+
    pipe_mutex_lock( stw_dev->ctx_mutex );
    ctx->dhglrc = handle_table_add(stw_dev->ctx_table, ctx);
    pipe_mutex_unlock( stw_dev->ctx_mutex );
@@ -211,6 +231,9 @@ stw_create_context_attribs(
    return ctx->dhglrc;
 
 no_hglrc:
+   if (ctx->hud) {
+      hud_destroy(ctx->hud);
+   }
    ctx->st->destroy(ctx->st);
 no_st_ctx:
    FREE(ctx);
@@ -239,6 +262,10 @@ DrvDeleteContext(
       /* Unbind current if deleting current context. */
       if (curctx == ctx)
          stw_dev->stapi->make_current(stw_dev->stapi, NULL, NULL, NULL);
+
+      if (ctx->hud) {
+         hud_destroy(ctx->hud);
+      }
 
       ctx->st->destroy(ctx->st);
       FREE(ctx);
@@ -360,7 +387,8 @@ stw_make_current(
       /* Bind the new framebuffer */
       ctx->hdc = hdc;
 
-      ret = stw_dev->stapi->make_current(stw_dev->stapi, ctx->st, fb->stfb, fb->stfb);
+      ret = stw_dev->stapi->make_current(stw_dev->stapi, ctx->st,
+                                         fb->stfb, fb->stfb);
       stw_framebuffer_reference(&ctx->current_framebuffer, fb);
    } else {
       ret = stw_dev->stapi->make_current(stw_dev->stapi, NULL, NULL, NULL);

@@ -2,6 +2,8 @@
 # SConscript for glapi
 
 
+from sys import executable as python_cmd
+
 Import('*')
 
 env = env.Clone()
@@ -24,6 +26,7 @@ if env['platform'] == 'windows':
 env.Append(CPPPATH = [
     '#/src/mapi',
     '#/src/mesa',
+    Dir('..'), # src/mapi build path
 ])
 
 glapi_sources = [
@@ -31,23 +34,25 @@ glapi_sources = [
     'glapi_entrypoint.c',
     'glapi_getproc.c',
     'glapi_nop.c',
-    'glthread.c',
     'glapi.c',
 ]
 
 mapi_sources = [
     'u_current.c',
     'u_execmem.c',
-    'u_thread.c',
 ]
 for s in mapi_sources:
-    o = env.SharedObject(s[:-2], '../mapi/' + s)
+    o = env.SharedObject(s[:-2], '../' + s)
     glapi_sources.append(o)
 
 #
 # Assembly sources
 #
-if env['gcc'] and env['platform'] != 'windows':
+if (env['gcc'] or env['clang']) and \
+   env['platform'] not in ('cygwin', 'darwin', 'windows'):
+    GLAPI = '#src/mapi/glapi/'
+    sources = [GLAPI + 'gen/gl_and_es_API.xml'] + env.Glob(GLAPI + 'gen/*.xml')
+
     if env['machine'] == 'x86':
         env.Append(CPPDEFINES = [
             'USE_X86_ASM',
@@ -55,6 +60,12 @@ if env['gcc'] and env['platform'] != 'windows':
         glapi_sources += [
             'glapi_x86.S',
         ]
+        env.CodeGenerate(
+            target = 'glapi_x86.S',
+            script = GLAPI + 'gen/gl_x86_asm.py',
+            source = sources,
+            command = python_cmd + ' $SCRIPT -f $SOURCE > $TARGET'
+            )
     elif env['machine'] == 'x86_64':
         env.Append(CPPDEFINES = [
             'USE_X86_64_ASM',
@@ -62,6 +73,12 @@ if env['gcc'] and env['platform'] != 'windows':
         glapi_sources += [
             'glapi_x86-64.S'
         ]
+        env.CodeGenerate(
+            target = 'glapi_x86-64.S',
+            script = GLAPI + 'gen/gl_x86-64_asm.py',
+            source = sources,
+            command = python_cmd + ' $SCRIPT -f $SOURCE > $TARGET'
+            )
     elif env['machine'] == 'sparc':
         env.Append(CPPDEFINES = [
             'USE_SPARC_ASM',
@@ -69,13 +86,14 @@ if env['gcc'] and env['platform'] != 'windows':
         glapi_sources += [
             'glapi_sparc.S'
         ]
+        env.CodeGenerate(
+            target = 'glapi_sparc.S',
+            script = GLAPI + 'gen/gl_SPARC_asm.py',
+            source = sources,
+            command = python_cmd + ' $SCRIPT -f $SOURCE > $TARGET'
+            )
     else:
         pass
-
-if env['toolchain'] == 'crossmingw':
-    # compile these files without -gstabs option
-    glapi_sources = env.compile_without_gstabs(glapi_sources, "glapi_dispatch.c")
-    glapi_sources = env.compile_without_gstabs(glapi_sources, "glapi_getproc.c")
 
 glapi = env.ConvenienceLibrary(
     target = 'glapi',

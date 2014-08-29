@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2006 Tungsten Graphics, Inc., Bismarck, ND. USA.
+ * Copyright 2006 VMware, Inc., Bismarck, ND. USA.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -82,6 +82,7 @@ static INLINE void list_del(struct list_head *item)
 {
     item->prev->next = item->next;
     item->next->prev = item->prev;
+    item->prev = item->next = NULL;
 }
 
 static INLINE void list_delinit(struct list_head *item)

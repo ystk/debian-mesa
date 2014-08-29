@@ -25,9 +25,6 @@
 
 LOCAL_PATH := $(call my-dir)
 
-# get MAPI_GLAPI_SOURCES
-include $(LOCAL_PATH)/mapi/sources.mak
-
 mapi_abi_headers :=
 
 # ---------------------------------------
@@ -38,7 +35,13 @@ include $(CLEAR_VARS)
 
 abi_header := shared-glapi/glapi_mapi_tmp.h
 
-LOCAL_SRC_FILES := $(addprefix mapi/, $(MAPI_GLAPI_SOURCES))
+LOCAL_SRC_FILES := \
+	entry.c \
+	mapi_glapi.c \
+	stub.c \
+	table.c \
+	u_current.c \
+	u_execmem.c
 
 LOCAL_CFLAGS := \
 	-DMAPI_MODE_GLAPI \
@@ -65,9 +68,9 @@ include $(BUILD_SHARED_LIBRARY)
 mapi_abi_deps := \
 	$(wildcard $(LOCAL_PATH)/glapi/gen/*.py) \
 	$(wildcard $(LOCAL_PATH)/glapi/gen/*.xml) \
-	$(LOCAL_PATH)/mapi/mapi_abi.py
+	$(LOCAL_PATH)/mapi_abi.py
 
-$(mapi_abi_headers): PRIVATE_SCRIPT := $(MESA_PYTHON2) $(LOCAL_PATH)/mapi/mapi_abi.py
+$(mapi_abi_headers): PRIVATE_SCRIPT := $(MESA_PYTHON2) $(LOCAL_PATH)/mapi_abi.py
 $(mapi_abi_headers): PRIVATE_APIXML := $(LOCAL_PATH)/glapi/gen/gl_and_es_API.xml
 $(mapi_abi_headers): $(mapi_abi_deps)
 	@mkdir -p $(dir $@)

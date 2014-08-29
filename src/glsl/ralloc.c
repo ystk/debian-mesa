@@ -41,14 +41,6 @@ _CRTIMP int _vscprintf(const char *format, va_list argptr);
 
 #include "ralloc.h"
 
-#ifdef __GNUC__
-#define likely(x)       __builtin_expect(!!(x),1)
-#define unlikely(x)     __builtin_expect(!!(x),0)
-#else
-#define likely(x)       !!(x)
-#define unlikely(x)     !!(x)
-#endif
-
 #ifndef va_copy
 #ifdef __va_copy
 #define va_copy(dest, src) __va_copy((dest), (src))
@@ -61,8 +53,10 @@ _CRTIMP int _vscprintf(const char *format, va_list argptr);
 
 struct ralloc_header
 {
+#ifdef DEBUG
    /* A canary value used to determine whether a pointer is ralloc'd. */
    unsigned canary;
+#endif
 
    struct ralloc_header *parent;
 
@@ -86,7 +80,9 @@ get_header(const void *ptr)
 {
    ralloc_header *info = (ralloc_header *) (((char *) ptr) -
 					    sizeof(ralloc_header));
+#ifdef DEBUG
    assert(info->canary == CANARY);
+#endif
    return info;
 }
 
@@ -115,13 +111,19 @@ void *
 ralloc_size(const void *ctx, size_t size)
 {
    void *block = calloc(1, size + sizeof(ralloc_header));
+   ralloc_header *info;
+   ralloc_header *parent;
 
-   ralloc_header *info = (ralloc_header *) block;
-   ralloc_header *parent = ctx != NULL ? get_header(ctx) : NULL;
+   if (unlikely(block == NULL))
+      return NULL;
+   info = (ralloc_header *) block;
+   parent = ctx != NULL ? get_header(ctx) : NULL;
 
    add_child(parent, info);
 
+#ifdef DEBUG
    info->canary = CANARY;
+#endif
 
    return PTR_FROM_HEADER(info);
 }
@@ -448,11 +450,11 @@ ralloc_vasprintf_append(char **str, const char *fmt, va_list args)
    size_t existing_length;
    assert(str != NULL);
    existing_length = *str ? strlen(*str) : 0;
-   return ralloc_vasprintf_rewrite_tail(str, existing_length, fmt, args);
+   return ralloc_vasprintf_rewrite_tail(str, &existing_length, fmt, args);
 }
 
 bool
-ralloc_asprintf_rewrite_tail(char **str, size_t start, const char *fmt, ...)
+ralloc_asprintf_rewrite_tail(char **str, size_t *start, const char *fmt, ...)
 {
    bool success;
    va_list args;
@@ -463,7 +465,7 @@ ralloc_asprintf_rewrite_tail(char **str, size_t start, const char *fmt, ...)
 }
 
 bool
-ralloc_vasprintf_rewrite_tail(char **str, size_t start, const char *fmt,
+ralloc_vasprintf_rewrite_tail(char **str, size_t *start, const char *fmt,
 			      va_list args)
 {
    size_t new_length;
@@ -479,11 +481,12 @@ ralloc_vasprintf_rewrite_tail(char **str, size_t start, const char *fmt,
 
    new_length = printf_length(fmt, args);
 
-   ptr = resize(*str, start + new_length + 1);
+   ptr = resize(*str, *start + new_length + 1);
    if (unlikely(ptr == NULL))
       return false;
 
-   vsnprintf(ptr + start, new_length + 1, fmt, args);
+   vsnprintf(ptr + *start, new_length + 1, fmt, args);
    *str = ptr;
+   *start += new_length;
    return true;
 }

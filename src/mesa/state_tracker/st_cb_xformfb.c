@@ -36,7 +36,6 @@
 
 #include "main/bufferobj.h"
 #include "main/context.h"
-#include "main/mfeatures.h"
 #include "main/transformfeedback.h"
 
 #include "st_cb_bufferobjects.h"
@@ -47,8 +46,6 @@
 #include "util/u_draw.h"
 #include "util/u_inlines.h"
 #include "cso_cache/cso_context.h"
-
-#if FEATURE_EXT_transform_feedback
 
 struct st_transform_feedback_object {
    struct gl_transform_feedback_object base;
@@ -77,8 +74,8 @@ st_new_transform_feedback(struct gl_context *ctx, GLuint name)
    if (!obj)
       return NULL;
 
-   obj->base.Name = name;
-   obj->base.RefCount = 1;
+   _mesa_init_transform_feedback_object(&obj->base, name);
+
    return &obj->base;
 }
 
@@ -116,6 +113,7 @@ st_begin_transform_feedback(struct gl_context *ctx, GLenum mode,
    struct st_transform_feedback_object *sobj =
          st_transform_feedback_object(obj);
    unsigned i, max_num_targets;
+   unsigned offsets[PIPE_MAX_SO_BUFFERS] = {0};
 
    max_num_targets = MIN2(Elements(sobj->base.Buffers),
                           Elements(sobj->targets));
@@ -148,8 +146,8 @@ st_begin_transform_feedback(struct gl_context *ctx, GLenum mode,
    }
 
    /* Start writing at the beginning of each target. */
-   cso_set_stream_outputs(st->cso_context, sobj->num_targets, sobj->targets,
-                          0);
+   cso_set_stream_outputs(st->cso_context, sobj->num_targets,
+                          sobj->targets, offsets);
 }
 
 
@@ -158,7 +156,7 @@ st_pause_transform_feedback(struct gl_context *ctx,
                            struct gl_transform_feedback_object *obj)
 {
    struct st_context *st = st_context(ctx);
-   cso_set_stream_outputs(st->cso_context, 0, NULL, 0);
+   cso_set_stream_outputs(st->cso_context, 0, NULL, NULL);
 }
 
 
@@ -168,10 +166,15 @@ st_resume_transform_feedback(struct gl_context *ctx,
 {
    struct st_context *st = st_context(ctx);
    struct st_transform_feedback_object *sobj =
-         st_transform_feedback_object(obj);
+      st_transform_feedback_object(obj);
+   unsigned offsets[PIPE_MAX_SO_BUFFERS];
+   unsigned i;
 
-   cso_set_stream_outputs(st->cso_context, sobj->num_targets, sobj->targets,
-                          ~0);
+   for (i = 0; i < PIPE_MAX_SO_BUFFERS; i++)
+      offsets[i] = (unsigned)-1;
+
+   cso_set_stream_outputs(st->cso_context, sobj->num_targets,
+                          sobj->targets, offsets);
 }
 
 
@@ -201,7 +204,7 @@ st_end_transform_feedback(struct gl_context *ctx,
    struct st_transform_feedback_object *sobj =
          st_transform_feedback_object(obj);
 
-   cso_set_stream_outputs(st->cso_context, 0, NULL, 0);
+   cso_set_stream_outputs(st->cso_context, 0, NULL, NULL);
 
    pipe_so_target_reference(&sobj->draw_count,
                             st_transform_feedback_get_draw_target(obj));
@@ -229,5 +232,3 @@ st_init_xformfb_functions(struct dd_function_table *functions)
    functions->PauseTransformFeedback = st_pause_transform_feedback;
    functions->ResumeTransformFeedback = st_resume_transform_feedback;
 }
-
-#endif /* FEATURE_EXT_transform_feedback */

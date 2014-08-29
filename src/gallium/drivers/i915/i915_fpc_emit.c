@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2003 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -29,38 +29,6 @@
 #include "i915_context.h"
 #include "i915_fpc.h"
 #include "util/u_math.h"
-
-
-#define A0_DEST( reg ) (((reg)&UREG_TYPE_NR_MASK)>>UREG_A0_DEST_SHIFT_LEFT)
-#define D0_DEST( reg ) (((reg)&UREG_TYPE_NR_MASK)>>UREG_A0_DEST_SHIFT_LEFT)
-#define T0_DEST( reg ) (((reg)&UREG_TYPE_NR_MASK)>>UREG_A0_DEST_SHIFT_LEFT)
-#define A0_SRC0( reg ) (((reg)&UREG_MASK)>>UREG_A0_SRC0_SHIFT_LEFT)
-#define A1_SRC0( reg ) (((reg)&UREG_MASK)<<UREG_A1_SRC0_SHIFT_RIGHT)
-#define A1_SRC1( reg ) (((reg)&UREG_MASK)>>UREG_A1_SRC1_SHIFT_LEFT)
-#define A2_SRC1( reg ) (((reg)&UREG_MASK)<<UREG_A2_SRC1_SHIFT_RIGHT)
-#define A2_SRC2( reg ) (((reg)&UREG_MASK)>>UREG_A2_SRC2_SHIFT_LEFT)
-
-/* These are special, and don't have swizzle/negate bits.
- */
-#define T0_SAMPLER( reg )     (GET_UREG_NR(reg)<<T0_SAMPLER_NR_SHIFT)
-#define T1_ADDRESS_REG( reg ) ((GET_UREG_NR(reg)<<T1_ADDRESS_REG_NR_SHIFT) | \
-			       (GET_UREG_TYPE(reg)<<T1_ADDRESS_REG_TYPE_SHIFT))
-
-
-/* Macros for translating UREG's into the various register fields used
- * by the I915 programmable unit.
- */
-#define UREG_A0_DEST_SHIFT_LEFT  (UREG_TYPE_SHIFT - A0_DEST_TYPE_SHIFT)
-#define UREG_A0_SRC0_SHIFT_LEFT  (UREG_TYPE_SHIFT - A0_SRC0_TYPE_SHIFT)
-#define UREG_A1_SRC0_SHIFT_RIGHT (A1_SRC0_CHANNEL_W_SHIFT - UREG_CHANNEL_W_SHIFT)
-#define UREG_A1_SRC1_SHIFT_LEFT  (UREG_TYPE_SHIFT - A1_SRC1_TYPE_SHIFT)
-#define UREG_A2_SRC1_SHIFT_RIGHT (A2_SRC1_CHANNEL_W_SHIFT - UREG_CHANNEL_W_SHIFT)
-#define UREG_A2_SRC2_SHIFT_LEFT  (UREG_TYPE_SHIFT - A2_SRC2_TYPE_SHIFT)
-
-#define UREG_MASK         0xffffff00
-#define UREG_TYPE_NR_MASK ((REG_TYPE_MASK << UREG_TYPE_SHIFT) | \
-  			   (REG_NR_MASK << UREG_NR_SHIFT))
-
 
 uint
 i915_get_temp(struct i915_fp_compile *p)
@@ -232,20 +200,19 @@ uint i915_emit_texld( struct i915_fp_compile *p,
     * a swizzle for no reason below. */
    switch(num_coord) {
       case 0:
-         /* Ignore x */
          ignore |= (0xf << UREG_CHANNEL_X_SHIFT);
+         /* fall-through */
       case 1:
-         /* Ignore y */
          ignore |= (0xf << UREG_CHANNEL_Y_SHIFT);
+         /* fall-through */
       case 2:
-         /* Ignore z */
          ignore |= (0xf << UREG_CHANNEL_Z_SHIFT);
+         /* fall-through */
       case 3:
-         /* Ignore w */
          ignore |= (0xf << UREG_CHANNEL_W_SHIFT);
    }
 
-   if ( (coord &~ignore ) != (k & ~ignore) ) {
+   if ( (coord & ~ignore ) != (k & ~ignore) ) {
       /* texcoord is swizzled or negated.  Need to allocate a new temporary
        * register (a utemp / unpreserved temp) won't do.
        */

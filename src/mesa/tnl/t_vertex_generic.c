@@ -1,6 +1,6 @@
 
 /*
- * Copyright 2003 Tungsten Graphics, inc.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -17,13 +17,13 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.  IN NO EVENT SHALL
- * TUNGSTEN GRAPHICS AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
+ * VMWARE AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
  * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
  * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
  *
  * Authors:
- *    Keith Whitwell <keithw@tungstengraphics.com>
+ *    Keith Whitwell <keithw@vmware.com>
  */
 
 #include "main/glheader.h"
@@ -1049,10 +1049,7 @@ void _tnl_generic_interp( struct gl_context *ctx,
       a[j].extract( &a[j], fin, vin + a[j].vertoffset );
       a[j].extract( &a[j], fout, vout + a[j].vertoffset );
 
-      INTERP_F( t, fdst[3], fout[3], fin[3] );
-      INTERP_F( t, fdst[2], fout[2], fin[2] );
-      INTERP_F( t, fdst[1], fout[1], fin[1] );
-      INTERP_F( t, fdst[0], fout[0], fin[0] );
+      INTERP_4F(t, fdst, fout, fin);
 
       a[j].insert[4-1]( &a[j], vdst + a[j].vertoffset, fdst );
    }

@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -61,19 +61,15 @@ sp_exec_fragment_shader(const struct sp_fragment_shader_variant *var)
 
 static void
 exec_prepare( const struct sp_fragment_shader_variant *var,
-	      struct tgsi_exec_machine *machine,
-	      struct tgsi_sampler **samplers )
+              struct tgsi_exec_machine *machine,
+              struct tgsi_sampler *sampler )
 {
    /*
     * Bind tokens/shader to the interpreter's machine state.
-    * Avoid redundant binding.
     */
-   if (machine->Tokens != var->tokens) {
-      tgsi_exec_machine_bind_shader( machine,
-                                     var->tokens,
-                                     PIPE_MAX_SAMPLERS,
-                                     samplers );
-   }
+   tgsi_exec_machine_bind_shader(machine,
+                                 var->tokens,
+                                 sampler);
 }
 
 
@@ -180,8 +176,13 @@ exec_run( const struct sp_fragment_shader_variant *var,
 
 
 static void 
-exec_delete( struct sp_fragment_shader_variant *var )
+exec_delete(struct sp_fragment_shader_variant *var,
+            struct tgsi_exec_machine *machine)
 {
+   if (machine->Tokens == var->tokens) {
+      tgsi_exec_machine_bind_shader(machine, NULL, NULL);
+   }
+
    FREE( (void *) var->tokens );
    FREE(var);
 }

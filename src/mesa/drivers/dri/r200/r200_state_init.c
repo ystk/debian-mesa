@@ -28,7 +28,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 /*
  * Authors:
- *   Keith Whitwell <keith@tungstengraphics.com>
+ *   Keith Whitwell <keithw@vmware.com>
  */
 
 #include "main/glheader.h"
@@ -251,8 +251,8 @@ static int check_##NM( struct gl_context *ctx, struct radeon_state_atom *atom ) 
 CHECK( always, GL_TRUE, 0 )
 CHECK( always_add4, GL_TRUE, 4 )
 CHECK( never, GL_FALSE, 0 )
-CHECK( tex_any, ctx->Texture._EnabledUnits, 0 )
-CHECK( tf, (ctx->Texture._EnabledUnits && !ctx->ATIFragmentShader._Enabled), 0 );
+CHECK( tex_any, ctx->Texture._MaxEnabledTexImageUnit != -1, 0 )
+CHECK( tf, (ctx->Texture._MaxEnabledTexImageUnit != -1 && !ctx->ATIFragmentShader._Enabled), 0 );
 CHECK( pix_zero, !ctx->ATIFragmentShader._Enabled, 0 )
    CHECK( texenv, (rmesa->state.envneeded & (1 << (atom->idx)) && !ctx->ATIFragmentShader._Enabled), 0 )
 CHECK( afs_pass1, (ctx->ATIFragmentShader._Enabled && (ctx->ATIFragmentShader.Current->NumPasses > 1)), 0 )
@@ -266,7 +266,7 @@ TCL_CHECK( tcl_add4, GL_TRUE, 4 )
 TCL_CHECK( tcl_tex_add4, rmesa->state.texture.unit[atom->idx].unitneeded, 4 )
 TCL_CHECK( tcl_lighting_add4, ctx->Light.Enabled, 4 )
 TCL_CHECK( tcl_lighting_add6, ctx->Light.Enabled, 6 )
-TCL_CHECK( tcl_light_add8, ctx->Light.Enabled && ctx->Light.Light[atom->idx].Enabled, 8 )
+TCL_CHECK( tcl_light_add6, ctx->Light.Enabled && ctx->Light.Light[atom->idx].Enabled, 6 )
 TCL_OR_VP_CHECK( tcl_ucp_add4, (ctx->Transform.ClipPlanesEnabled & (1 << (atom->idx))), 4 )
 TCL_OR_VP_CHECK( tcl_or_vp, GL_TRUE, 0 )
 TCL_OR_VP_CHECK( tcl_or_vp_add2, GL_TRUE, 2 )
@@ -293,7 +293,7 @@ VP_CHECK( tcl_vpp_size_add4, ctx->VertexProgram.Current->Base.NumNativeParameter
     _start = h.veclinear.addr_lo | (h.veclinear.addr_hi << 8);		\
     _sz = h.veclinear.count * 4;					\
     if (_sz) {								\
-    BEGIN_BATCH_NO_AUTOSTATE(dwords); \
+    BEGIN_BATCH(dwords); \
     OUT_BATCH(CP_PACKET0(RADEON_SE_TCL_STATE_FLUSH, 0));		\
     OUT_BATCH(0);							\
     OUT_BATCH(CP_PACKET0(R200_SE_TCL_VECTOR_INDX_REG, 0));		\
@@ -346,7 +346,7 @@ static void mtl_emit(struct gl_context *ctx, struct radeon_state_atom *atom)
    BATCH_LOCALS(&r200->radeon);
    uint32_t dwords = atom->check(ctx, atom);
 
-   BEGIN_BATCH_NO_AUTOSTATE(dwords);
+   BEGIN_BATCH(dwords);
    OUT_VEC(atom->cmd[MTL_CMD_0], (atom->cmd+1));
    OUT_SCL2(atom->cmd[MTL_CMD_1], (atom->cmd + 18));
    END_BATCH();
@@ -358,9 +358,9 @@ static void lit_emit(struct gl_context *ctx, struct radeon_state_atom *atom)
    BATCH_LOCALS(&r200->radeon);
    uint32_t dwords = atom->check(ctx, atom);
 
-   BEGIN_BATCH_NO_AUTOSTATE(dwords);
+   BEGIN_BATCH(dwords);
    OUT_VEC(atom->cmd[LIT_CMD_0], atom->cmd+1);
-   OUT_VEC(atom->cmd[LIT_CMD_1], atom->cmd+LIT_CMD_1+1);
+   OUT_SCL(atom->cmd[LIT_CMD_1], atom->cmd+LIT_CMD_1+1);
    END_BATCH();
 }
 
@@ -370,7 +370,7 @@ static void ptp_emit(struct gl_context *ctx, struct radeon_state_atom *atom)
    BATCH_LOCALS(&r200->radeon);
    uint32_t dwords = atom->check(ctx, atom);
 
-   BEGIN_BATCH_NO_AUTOSTATE(dwords);
+   BEGIN_BATCH(dwords);
    OUT_VEC(atom->cmd[PTP_CMD_0], atom->cmd+1);
    OUT_VEC(atom->cmd[PTP_CMD_1], atom->cmd+PTP_CMD_1+1);
    END_BATCH();
@@ -391,7 +391,7 @@ static void scl_emit(struct gl_context *ctx, struct radeon_state_atom *atom)
    BATCH_LOCALS(&r200->radeon);
    uint32_t dwords = atom->check(ctx, atom);
 
-   BEGIN_BATCH_NO_AUTOSTATE(dwords);
+   BEGIN_BATCH(dwords);
    OUT_SCL(atom->cmd[0], atom->cmd+1);
    END_BATCH();
 }
@@ -403,7 +403,7 @@ static void vec_emit(struct gl_context *ctx, struct radeon_state_atom *atom)
    BATCH_LOCALS(&r200->radeon);
    uint32_t dwords = atom->check(ctx, atom);
 
-   BEGIN_BATCH_NO_AUTOSTATE(dwords);
+   BEGIN_BATCH(dwords);
    OUT_VEC(atom->cmd[0], atom->cmd+1);
    END_BATCH();
 }
@@ -452,13 +452,13 @@ static void ctx_emit_cs(struct gl_context *ctx, struct radeon_state_atom *atom)
    if (rrb->cpp == 4)
 	atom->cmd[CTX_RB3D_CNTL] |= RADEON_COLOR_FORMAT_ARGB8888;
    else switch (rrb->base.Base.Format) {
-   case MESA_FORMAT_RGB565:
+   case MESA_FORMAT_B5G6R5_UNORM:
 	atom->cmd[CTX_RB3D_CNTL] |= RADEON_COLOR_FORMAT_RGB565;
 	break;
-   case MESA_FORMAT_ARGB4444:
+   case MESA_FORMAT_B4G4R4A4_UNORM:
 	atom->cmd[CTX_RB3D_CNTL] |= RADEON_COLOR_FORMAT_ARGB4444;
 	break;
-   case MESA_FORMAT_ARGB1555:
+   case MESA_FORMAT_B5G5R5A1_UNORM:
 	atom->cmd[CTX_RB3D_CNTL] |= RADEON_COLOR_FORMAT_ARGB1555;
 	break;
    default:
@@ -484,7 +484,7 @@ static void ctx_emit_cs(struct gl_context *ctx, struct radeon_state_atom *atom)
    }
 
    /* output the first 7 bytes of context */
-   BEGIN_BATCH_NO_AUTOSTATE(dwords);
+   BEGIN_BATCH(dwords);
 
    /* In the CS case we need to split this up */
    OUT_BATCH(CP_PACKET0(packet[0].start, 3));
@@ -569,7 +569,7 @@ static void tex_emit_mm(struct gl_context *ctx, struct radeon_state_atom *atom)
 
    if (!r200->state.texture.unit[i].unitneeded && !(dwords <= atom->cmd_size))
         dwords -= 4;
-   BEGIN_BATCH_NO_AUTOSTATE(dwords);
+   BEGIN_BATCH(dwords);
 
    OUT_BATCH(CP_PACKET0(R200_PP_TXFILTER_0 + (32 * i), 7));
    OUT_BATCH_TABLE((atom->cmd + 1), 8);
@@ -599,7 +599,7 @@ static void cube_emit_cs(struct gl_context *ctx, struct radeon_state_atom *atom)
    if (!(t && !t->image_override))
      dwords = 2;
 
-   BEGIN_BATCH_NO_AUTOSTATE(dwords);
+   BEGIN_BATCH(dwords);
    OUT_BATCH_TABLE(atom->cmd, 2);
 
    if (t && !t->image_override) {
@@ -617,22 +617,8 @@ static void cube_emit_cs(struct gl_context *ctx, struct radeon_state_atom *atom)
  */
 void r200InitState( r200ContextPtr rmesa )
 {
-   struct gl_context *ctx = rmesa->radeon.glCtx;
+   struct gl_context *ctx = &rmesa->radeon.glCtx;
    GLuint i;
-
-   rmesa->radeon.state.color.clear = 0x00000000;
-
-   switch ( ctx->Visual.depthBits ) {
-   case 16:
-      rmesa->radeon.state.depth.clear = 0x0000ffff;
-      rmesa->radeon.state.stencil.clear = 0x00000000;
-      break;
-   case 24:
-   default:
-      rmesa->radeon.state.depth.clear = 0x00ffffff;
-      rmesa->radeon.state.stencil.clear = 0xffff0000;
-      break;
-   }
 
    rmesa->radeon.Fallback = 0;
 
@@ -641,8 +627,8 @@ void r200InitState( r200ContextPtr rmesa )
 #define ALLOC_STATE( ATOM, CHK, SZ, NM, IDX )				\
    do {								\
       rmesa->hw.ATOM.cmd_size = SZ;				\
-      rmesa->hw.ATOM.cmd = (GLuint *)CALLOC(SZ * sizeof(int));	\
-      rmesa->hw.ATOM.lastcmd = (GLuint *)CALLOC(SZ * sizeof(int));	\
+      rmesa->hw.ATOM.cmd = (GLuint *) calloc(SZ, sizeof(int));          \
+      rmesa->hw.ATOM.lastcmd = (GLuint *) calloc(SZ, sizeof(int));	\
       rmesa->hw.ATOM.name = NM;					\
       rmesa->hw.ATOM.idx = IDX;					\
       if (check_##CHK != check_never) {				\
@@ -740,14 +726,14 @@ void r200InitState( r200ContextPtr rmesa )
    ALLOC_STATE( ucp[3], tcl_ucp_add4, UCP_STATE_SIZE, "UCP/userclip-3", 3 );
    ALLOC_STATE( ucp[4], tcl_ucp_add4, UCP_STATE_SIZE, "UCP/userclip-4", 4 );
    ALLOC_STATE( ucp[5], tcl_ucp_add4, UCP_STATE_SIZE, "UCP/userclip-5", 5 );
-   ALLOC_STATE( lit[0], tcl_light_add8, LIT_STATE_SIZE, "LIT/light-0", 0 );
-   ALLOC_STATE( lit[1], tcl_light_add8, LIT_STATE_SIZE, "LIT/light-1", 1 );
-   ALLOC_STATE( lit[2], tcl_light_add8, LIT_STATE_SIZE, "LIT/light-2", 2 );
-   ALLOC_STATE( lit[3], tcl_light_add8, LIT_STATE_SIZE, "LIT/light-3", 3 );
-   ALLOC_STATE( lit[4], tcl_light_add8, LIT_STATE_SIZE, "LIT/light-4", 4 );
-   ALLOC_STATE( lit[5], tcl_light_add8, LIT_STATE_SIZE, "LIT/light-5", 5 );
-   ALLOC_STATE( lit[6], tcl_light_add8, LIT_STATE_SIZE, "LIT/light-6", 6 );
-   ALLOC_STATE( lit[7], tcl_light_add8, LIT_STATE_SIZE, "LIT/light-7", 7 );
+   ALLOC_STATE( lit[0], tcl_light_add6, LIT_STATE_SIZE, "LIT/light-0", 0 );
+   ALLOC_STATE( lit[1], tcl_light_add6, LIT_STATE_SIZE, "LIT/light-1", 1 );
+   ALLOC_STATE( lit[2], tcl_light_add6, LIT_STATE_SIZE, "LIT/light-2", 2 );
+   ALLOC_STATE( lit[3], tcl_light_add6, LIT_STATE_SIZE, "LIT/light-3", 3 );
+   ALLOC_STATE( lit[4], tcl_light_add6, LIT_STATE_SIZE, "LIT/light-4", 4 );
+   ALLOC_STATE( lit[5], tcl_light_add6, LIT_STATE_SIZE, "LIT/light-5", 5 );
+   ALLOC_STATE( lit[6], tcl_light_add6, LIT_STATE_SIZE, "LIT/light-6", 6 );
+   ALLOC_STATE( lit[7], tcl_light_add6, LIT_STATE_SIZE, "LIT/light-7", 7 );
    ALLOC_STATE( sci, rrb, SCI_STATE_SIZE, "SCI/scissor", 0 );
    ALLOC_STATE( pix[0], pix_zero, PIX_STATE_SIZE, "PIX/pixstage-0", 0 );
    ALLOC_STATE( pix[1], texenv, PIX_STATE_SIZE, "PIX/pixstage-1", 1 );
@@ -776,7 +762,6 @@ void r200InitState( r200ContextPtr rmesa )
    rmesa->hw.cst.cmd[CST_CMD_0] = cmdpkt(rmesa, R200_EMIT_PP_CNTL_X);
    rmesa->hw.cst.cmd[CST_CMD_1] = cmdpkt(rmesa, R200_EMIT_RB3D_DEPTHXY_OFFSET);
    rmesa->hw.cst.cmd[CST_CMD_2] = cmdpkt(rmesa, R200_EMIT_RE_AUX_SCISSOR_CNTL);
-   rmesa->hw.cst.cmd[CST_CMD_3] = cmdpkt(rmesa, R200_EMIT_RE_SCISSOR_TL_0);
    rmesa->hw.cst.cmd[CST_CMD_4] = cmdpkt(rmesa, R200_EMIT_SE_VAP_CNTL_STATUS);
    rmesa->hw.cst.cmd[CST_CMD_5] = cmdpkt(rmesa, R200_EMIT_RE_POINTSIZE);
    rmesa->hw.cst.cmd[CST_CMD_6] = cmdpkt(rmesa, R200_EMIT_TCL_INPUT_VTX_VECTOR_ADDR_0);
@@ -829,7 +814,6 @@ void r200InitState( r200ContextPtr rmesa )
    rmesa->hw.prf.cmd[PRF_CMD_0] = cmdpkt(rmesa, R200_EMIT_PP_TRI_PERF_CNTL);
    rmesa->hw.spr.cmd[SPR_CMD_0] = cmdpkt(rmesa, R200_EMIT_TCL_POINT_SPRITE_CNTL);
 
-   rmesa->hw.sci.cmd[SCI_CMD_0] = CP_PACKET0(R200_RE_AUX_SCISSOR_CNTL, 0);
    rmesa->hw.sci.cmd[SCI_CMD_1] = CP_PACKET0(R200_RE_TOP_LEFT, 0);
    rmesa->hw.sci.cmd[SCI_CMD_2] = CP_PACKET0(R200_RE_WIDTH_HEIGHT, 0);
 
@@ -1040,8 +1024,6 @@ void r200InitState( r200ContextPtr rmesa )
    rmesa->hw.cst.cmd[CST_PP_CNTL_X] = 0;
    rmesa->hw.cst.cmd[CST_RB3D_DEPTHXY_OFFSET] = 0;
    rmesa->hw.cst.cmd[CST_RE_AUX_SCISSOR_CNTL] = 0x0;
-   rmesa->hw.cst.cmd[CST_RE_SCISSOR_TL_0] = 0;
-   rmesa->hw.cst.cmd[CST_RE_SCISSOR_BR_0] = 0;
    rmesa->hw.cst.cmd[CST_SE_VAP_CNTL_STATUS] =
 #ifdef MESA_BIG_ENDIAN
 						R200_VC_32BIT_SWAP;

@@ -37,11 +37,13 @@
  * main() function to copy the final values to the actual shader outputs.
  */
 
+namespace {
+
 class output_read_remover : public ir_hierarchical_visitor {
 protected:
    /**
     * A hash table mapping from the original ir_variable shader outputs
-    * (ir_var_out mode) to the new temporaries to be used instead.
+    * (ir_var_shader_out mode) to the new temporaries to be used instead.
     */
    hash_table *replacements;
 
@@ -50,15 +52,34 @@ public:
    output_read_remover();
    ~output_read_remover();
    virtual ir_visitor_status visit(class ir_dereference_variable *);
+   virtual ir_visitor_status visit(class ir_emit_vertex *);
    virtual ir_visitor_status visit_leave(class ir_return *);
    virtual ir_visitor_status visit_leave(class ir_function_signature *);
 };
+
+} /* anonymous namespace */
+
+/**
+ * Hash function for the output variables - computes the hash of the name.
+ * NOTE: We're using the name string to ensure that the hash doesn't depend
+ * on any random factors, otherwise the output_read_remover could produce
+ * the random order of the assignments.
+ *
+ * NOTE: If you want to reuse this function please take into account that
+ * generally the names of the variables are non-unique.
+ */
+static unsigned
+hash_table_var_hash(const void *key)
+{
+   const ir_variable * var = static_cast<const ir_variable *>(key);
+   return hash_table_string_hash(var->name);
+}
 
 output_read_remover::output_read_remover()
 {
    mem_ctx = ralloc_context(NULL);
    replacements =
-      hash_table_ctor(0, hash_table_pointer_hash, hash_table_pointer_compare);
+      hash_table_ctor(0, hash_table_var_hash, hash_table_pointer_compare);
 }
 
 output_read_remover::~output_read_remover()
@@ -70,7 +91,7 @@ output_read_remover::~output_read_remover()
 ir_visitor_status
 output_read_remover::visit(ir_dereference_variable *ir)
 {
-   if (ir->var->mode != ir_var_out)
+   if (ir->var->data.mode != ir_var_shader_out)
       return visit_continue;
 
    ir_variable *temp = (ir_variable *) hash_table_find(replacements, ir->var);
@@ -81,6 +102,7 @@ output_read_remover::visit(ir_dereference_variable *ir)
       temp = new(var_ctx) ir_variable(ir->var->type, ir->var->name,
                                       ir_var_temporary);
       hash_table_insert(replacements, temp, ir->var);
+      ir->var->insert_after(temp);
    }
 
    /* Update the dereference to use the temporary */
@@ -100,7 +122,9 @@ copy(void *ctx, ir_variable *output, ir_variable *temp)
    return new(ctx) ir_assignment(lhs, rhs);
 }
 
-/** Insert a copy-back assignment before a "return" statement */
+/** Insert a copy-back assignment before a "return" statement or a call to
+ * EmitVertex().
+ */
 static void
 emit_return_copy(const void *key, void *data, void *closure)
 {
@@ -120,6 +144,14 @@ ir_visitor_status
 output_read_remover::visit_leave(ir_return *ir)
 {
    hash_table_call_foreach(replacements, emit_return_copy, ir);
+   return visit_continue;
+}
+
+ir_visitor_status
+output_read_remover::visit(ir_emit_vertex *ir)
+{
+   hash_table_call_foreach(replacements, emit_return_copy, ir);
+   hash_table_clear(replacements);
    return visit_continue;
 }
 

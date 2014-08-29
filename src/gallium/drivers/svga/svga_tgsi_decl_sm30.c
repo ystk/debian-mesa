@@ -72,6 +72,13 @@ translate_vs_ps_semantic(struct svga_shader_emitter *emit,
       *idx = semantic.Index;
       *usage = SVGA3D_DECLUSAGE_NORMAL;
       break;
+   case TGSI_SEMANTIC_CLIPDIST:
+   case TGSI_SEMANTIC_CLIPVERTEX:
+      /* XXX at this time we don't support clip distance or clip vertices */
+      debug_warn_once("unsupported clip distance/vertex attribute\n");
+      *usage = SVGA3D_DECLUSAGE_TEXCOORD;
+      *idx = 0;
+      return TRUE;
    default:
       assert(0);
       *usage = SVGA3D_DECLUSAGE_TEXCOORD;
@@ -312,6 +319,7 @@ ps30_input(struct svga_shader_emitter *emit,
 /**
  * Process a PS output declaration.
  * Note that we don't actually emit a SVGA3DOpDcl for PS outputs.
+ * \idx  register index, such as OUT[2] (not semantic index)
  */
 static boolean
 ps30_output(struct svga_shader_emitter *emit,
@@ -320,14 +328,35 @@ ps30_output(struct svga_shader_emitter *emit,
 {
    switch (semantic.Name) {
    case TGSI_SEMANTIC_COLOR:
-      if (emit->unit == PIPE_SHADER_FRAGMENT &&
-          emit->key.fkey.white_fragments) {
-
-         emit->output_map[idx] = dst_register( SVGA3DREG_TEMP,
-                                               emit->nr_hw_temp++ );
-         emit->temp_col[idx] = emit->output_map[idx];
-         emit->true_col[idx] = dst_register( SVGA3DREG_COLOROUT, 
-                                              semantic.Index );
+      if (emit->unit == PIPE_SHADER_FRAGMENT) {
+         if (emit->key.fkey.white_fragments) {
+            /* Used for XOR logicop mode */
+            emit->output_map[idx] = dst_register( SVGA3DREG_TEMP,
+                                                  emit->nr_hw_temp++ );
+            emit->temp_color_output[idx] = emit->output_map[idx];
+            emit->true_color_output[idx] = dst_register(SVGA3DREG_COLOROUT, 
+                                                        semantic.Index);
+         }
+         else if (emit->key.fkey.write_color0_to_n_cbufs) {
+            /* We'll write color output [0] to all render targets.
+             * Prepare all the output registers here, but only when the
+             * semantic.Index == 0 so we don't do this more than once.
+             */
+            if (semantic.Index == 0) {
+               unsigned i;
+               for (i = 0; i < emit->key.fkey.write_color0_to_n_cbufs; i++) {
+                  emit->output_map[idx+i] = dst_register(SVGA3DREG_TEMP,
+                                                     emit->nr_hw_temp++);
+                  emit->temp_color_output[i] = emit->output_map[idx+i];
+                  emit->true_color_output[i] = dst_register(SVGA3DREG_COLOROUT,
+                                                            i);
+               }
+            }
+         }
+         else {
+            emit->output_map[idx] =
+               dst_register(SVGA3DREG_COLOROUT, semantic.Index);
+         }
       }
       else {
          emit->output_map[idx] = dst_register( SVGA3DREG_COLOROUT, 
@@ -369,35 +398,19 @@ vs30_input(struct svga_shader_emitter *emit,
    dcl.values[0] = 0;
    dcl.values[1] = 0;
 
-   if (emit->key.vkey.zero_stride_vertex_elements & (1 << idx)) {
-      unsigned i;
-      unsigned offset = 0;
-      unsigned start_idx = emit->info.file_max[TGSI_FILE_CONSTANT] + 1;
-      /* adjust for prescale constants */
-      start_idx += emit->key.vkey.need_prescale ? 2 : 0;
-      /* compute the offset from the start of zero stride constants */
-      for (i = 0; i < PIPE_MAX_ATTRIBS && i < idx; ++i) {
-         if (emit->key.vkey.zero_stride_vertex_elements & (1<<i))
-            ++offset;
-      }
-      emit->input_map[idx] = src_register( SVGA3DREG_CONST,
-                                           start_idx + offset );
-   } else {
-      emit->input_map[idx] = src_register( SVGA3DREG_INPUT, idx );
-      dcl.dst = dst_register( SVGA3DREG_INPUT, idx );
+   emit->input_map[idx] = src_register( SVGA3DREG_INPUT, idx );
+   dcl.dst = dst_register( SVGA3DREG_INPUT, idx );
 
-      assert(dcl.dst.reserved0);
+   assert(dcl.dst.reserved0);
 
-      svga_generate_vdecl_semantics( idx, &usage, &index );
+   svga_generate_vdecl_semantics( idx, &usage, &index );
 
-      dcl.usage = usage;
-      dcl.index = index;
-      dcl.values[0] |= 1<<31;
+   dcl.usage = usage;
+   dcl.index = index;
+   dcl.values[0] |= 1<<31;
 
-      return (emit_instruction(emit, opcode) &&
-              svga_shader_emit_dwords( emit, dcl.values, Elements(dcl.values)));
-   }
-   return TRUE;
+   return (emit_instruction(emit, opcode) &&
+           svga_shader_emit_dwords( emit, dcl.values, Elements(dcl.values)));
 }
 
 
@@ -497,6 +510,26 @@ vs30_output(struct svga_shader_emitter *emit,
 
    return (emit_instruction(emit, opcode) &&
            svga_shader_emit_dwords( emit, dcl.values, Elements(dcl.values)));
+}
+
+
+/** Translate PIPE_TEXTURE_x to SVGA3DSAMP_x */
+static ubyte
+svga_tgsi_sampler_type(const struct svga_shader_emitter *emit, int idx)
+{
+   switch (emit->key.fkey.tex[idx].texture_target) {
+   case PIPE_TEXTURE_1D:
+      return SVGA3DSAMP_2D;
+   case PIPE_TEXTURE_2D:
+   case PIPE_TEXTURE_RECT:
+      return SVGA3DSAMP_2D;
+   case PIPE_TEXTURE_3D:
+      return SVGA3DSAMP_VOLUME;
+   case PIPE_TEXTURE_CUBE:
+      return SVGA3DSAMP_CUBE;
+   }
+
+   return SVGA3DSAMP_UNKNOWN;
 }
 
 

@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  6.5
  *
  * Copyright (C) 1999-2006  Brian Paul   All Rights Reserved.
  *
@@ -17,16 +16,17 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  *
  */
 
 /**
  * \file swrast/swrast.h
  * \brief Public interface to the software rasterization functions.
- * \author Keith Whitwell <keith@tungstengraphics.com>
+ * \author Keith Whitwell <keithw@vmware.com>
  */
 
 #ifndef SWRAST_H
@@ -34,6 +34,34 @@
 
 #include "main/mtypes.h"
 #include "swrast/s_chan.h"
+
+
+/**
+ * If non-zero use GLdouble for walking triangle edges, for better accuracy.
+ */
+#define TRIANGLE_WALK_DOUBLE 0
+
+
+/**
+ * Bits per depth buffer value (max is 32).
+ */
+#ifndef DEFAULT_SOFTWARE_DEPTH_BITS
+#define DEFAULT_SOFTWARE_DEPTH_BITS 16
+#endif
+/** Depth buffer data type */
+#if DEFAULT_SOFTWARE_DEPTH_BITS <= 16
+#define DEFAULT_SOFTWARE_DEPTH_TYPE GLushort
+#else
+#define DEFAULT_SOFTWARE_DEPTH_TYPE GLuint
+#endif
+
+
+/**
+ * Max image/surface/texture size.
+ */
+#define SWRAST_MAX_WIDTH 16384
+#define SWRAST_MAX_HEIGHT 16384
+
 
 /**
  * \struct SWvertex
@@ -46,7 +74,7 @@
  * improve its usefulness as a fallback mechanism for hardware
  * drivers.
  *
- * wpos = attr[FRAG_ATTRIB_WPOS] and MUST BE THE FIRST values in the
+ * wpos = attr[VARYING_SLOT_POS] and MUST BE THE FIRST values in the
  * vertex because of the tnl clipping code.
 
  * wpos[0] and [1] are the screen-coords of SWvertex.
@@ -70,13 +98,13 @@
  *     primitives unaccelerated), hook in swrast_setup instead.
  */
 typedef struct {
-   GLfloat attrib[FRAG_ATTRIB_MAX][4];
+   GLfloat attrib[VARYING_SLOT_MAX][4];
    GLchan color[4];   /** integer color */
    GLfloat pointSize;
 } SWvertex;
 
 
-#define FRAG_ATTRIB_CI FRAG_ATTRIB_COL0
+#define VARYING_SLOT_CI VARYING_SLOT_COL0
 
 
 struct swrast_device_driver;
@@ -187,13 +215,10 @@ _swrast_delete_texture_image(struct gl_context *ctx,
 
 extern GLboolean
 _swrast_alloc_texture_image_buffer(struct gl_context *ctx,
-                                   struct gl_texture_image *texImage,
-                                   gl_format format, GLsizei width,
-                                   GLsizei height, GLsizei depth);
+                                   struct gl_texture_image *texImage);
 
-extern void
-_swrast_init_texture_image(struct gl_texture_image *texImage, GLsizei width,
-                           GLsizei height, GLsizei depth);
+extern GLboolean
+_swrast_init_texture_image(struct gl_texture_image *texImage);
 
 extern void
 _swrast_free_texture_image_buffer(struct gl_context *ctx,
@@ -244,15 +269,7 @@ _swrast_render_texture(struct gl_context *ctx,
 
 extern void
 _swrast_finish_render_texture(struct gl_context *ctx,
-                              struct gl_renderbuffer_attachment *att);
-
-
-
-extern GLboolean
-_swrast_AllocTextureStorage(struct gl_context *ctx,
-                            struct gl_texture_object *texObj,
-                            GLsizei levels, GLsizei width,
-                            GLsizei height, GLsizei depth);
+                              struct gl_renderbuffer *rb);
 
 
 /**

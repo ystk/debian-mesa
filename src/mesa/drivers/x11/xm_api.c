@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  7.1
  *
  * Copyright (C) 1999-2007  Brian Paul   All Rights Reserved.
  *
@@ -17,9 +16,10 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 /**
@@ -64,6 +64,7 @@
 
 #include "glxheader.h"
 #include "xmesaP.h"
+#include "main/api_exec.h"
 #include "main/context.h"
 #include "main/extensions.h"
 #include "main/framebuffer.h"
@@ -71,7 +72,8 @@
 #include "main/macros.h"
 #include "main/renderbuffer.h"
 #include "main/teximage.h"
-#include "glapi/glthread.h"
+#include "main/version.h"
+#include "main/vtxfmt.h"
 #include "swrast/swrast.h"
 #include "swrast/s_renderbuffer.h"
 #include "swrast_setup/swrast_setup.h"
@@ -85,7 +87,7 @@
 /**
  * Global X driver lock
  */
-_glthread_Mutex _xmesa_lock;
+mtx_t _xmesa_lock;
 
 
 
@@ -171,7 +173,7 @@ bits_per_pixel( XMesaVisual xmv )
    /* Create a temporary XImage */
    img = XCreateImage( dpy, visinfo->visual, visinfo->depth,
 		       ZPixmap, 0,           /*format, offset*/
-		       (char*) MALLOC(8),    /*data*/
+		       malloc(8),    /*data*/
 		       1, 1,                 /*width, height*/
 		       32,                   /*bitmap_pad*/
 		       0                     /*bytes_per_line*/
@@ -245,10 +247,10 @@ xmesa_get_window_size(XMesaDisplay *dpy, XMesaBuffer b,
 {
    Status stat;
 
-   _glthread_LOCK_MUTEX(_xmesa_lock);
+   mtx_lock(&_xmesa_lock);
    XSync(b->xm_visual->display, 0); /* added for Chromium */
    stat = get_drawable_size(dpy, b->frontxrb->pixmap, width, height);
-   _glthread_UNLOCK_MUTEX(_xmesa_lock);
+   mtx_unlock(&_xmesa_lock);
 
    if (!stat) {
       /* probably querying a window that's recently been destroyed */
@@ -781,7 +783,7 @@ XMesaVisual XMesaCreateVisual( XMesaDisplay *display,
     * the struct but we may need some of the information contained in it
     * at a later time.
     */
-   v->visinfo = (XVisualInfo *) MALLOC(sizeof(*visinfo));
+   v->visinfo = (XVisualInfo *) malloc(sizeof(*visinfo));
    if(!v->visinfo) {
       free(v);
       return NULL;
@@ -844,15 +846,18 @@ XMesaVisual XMesaCreateVisual( XMesaDisplay *display,
       alpha_bits = v->mesa_visual.alphaBits;
    }
 
-   _mesa_initialize_visual( &v->mesa_visual,
-                            db_flag, stereo_flag,
-                            red_bits, green_bits,
-                            blue_bits, alpha_bits,
-                            depth_size,
-                            stencil_size,
-                            accum_red_size, accum_green_size,
-                            accum_blue_size, accum_alpha_size,
-                            0 );
+   if (!_mesa_initialize_visual(&v->mesa_visual,
+                                db_flag, stereo_flag,
+                                red_bits, green_bits,
+                                blue_bits, alpha_bits,
+                                depth_size,
+                                stencil_size,
+                                accum_red_size, accum_green_size,
+                                accum_blue_size, accum_alpha_size,
+                                0)) {
+      free(v);
+      return NULL;
+   }
 
    /* XXX minor hack */
    v->mesa_visual.level = level;
@@ -886,7 +891,7 @@ XMesaContext XMesaCreateContext( XMesaVisual v, XMesaContext share_list )
    TNLcontext *tnl;
 
    if (firstTime) {
-      _glthread_INIT_MUTEX(_xmesa_lock);
+      mtx_init(&_xmesa_lock, mtx_plain);
       firstTime = GL_FALSE;
    }
 
@@ -900,9 +905,9 @@ XMesaContext XMesaCreateContext( XMesaVisual v, XMesaContext share_list )
    /* initialize with default driver functions, then plug in XMesa funcs */
    _mesa_init_driver_functions(&functions);
    xmesa_init_driver_functions(v, &functions);
-   if (!_mesa_initialize_context(mesaCtx, API_OPENGL, &v->mesa_visual,
+   if (!_mesa_initialize_context(mesaCtx, API_OPENGL_COMPAT, &v->mesa_visual,
                       share_list ? &(share_list->mesa) : (struct gl_context *) NULL,
-                      &functions, (void *) c)) {
+                      &functions)) {
       free(c);
       return NULL;
    }
@@ -916,24 +921,14 @@ XMesaContext XMesaCreateContext( XMesaVisual v, XMesaContext share_list )
    }
 
    _mesa_enable_sw_extensions(mesaCtx);
-   _mesa_enable_1_3_extensions(mesaCtx);
-   _mesa_enable_1_4_extensions(mesaCtx);
-   _mesa_enable_1_5_extensions(mesaCtx);
-   _mesa_enable_2_0_extensions(mesaCtx);
-   _mesa_enable_2_1_extensions(mesaCtx);
-#if ENABLE_EXT_texure_compression_s3tc
-    if (mesaCtx->Mesa_DXTn) {
-       _mesa_enable_extension(mesaCtx, "GL_EXT_texture_compression_s3tc");
-       _mesa_enable_extension(mesaCtx, "GL_S3_s3tc");
-    }
-    _mesa_enable_extension(mesaCtx, "GL_3DFX_texture_compression_FXT1");
-#endif
+
 #if ENABLE_EXT_timer_query
-    _mesa_enable_extension(mesaCtx, "GL_EXT_timer_query");
+    mesaCtx->Extensions.EXT_timer_query = GL_TRUE;
 #endif
 
 
    /* finish up xmesa context initializations */
+   c->direct = GL_TRUE;
    c->swapbytes = CHECK_BYTE_ORDER(v) ? GL_FALSE : GL_TRUE;
    c->xm_visual = v;
    c->xm_buffer = NULL;   /* set later by XMesaMakeCurrent */
@@ -959,6 +954,12 @@ XMesaContext XMesaCreateContext( XMesaVisual v, XMesaContext share_list )
    _swsetup_Wakeup(mesaCtx);
 
    _mesa_meta_init(mesaCtx);
+
+   _mesa_compute_version(mesaCtx);
+
+    /* Exec table initialization requires the version to be computed */
+   _mesa_initialize_dispatch_tables(mesaCtx);
+   _mesa_initialize_vbo_vtxfmt(mesaCtx);
 
    return c;
 }
@@ -1183,7 +1184,6 @@ xmesa_check_and_update_buffer_size(XMesaContext xmctx, XMesaBuffer drawBuffer)
       struct gl_context *ctx = xmctx ? &xmctx->mesa : NULL;
       _mesa_resize_framebuffer(ctx, &(drawBuffer->mesa_buffer), width, height);
    }
-   drawBuffer->mesa_buffer.Initialized = GL_TRUE; /* XXX TEMPORARY? */
 }
 
 
@@ -1336,28 +1336,28 @@ void XMesaSwapBuffers( XMesaBuffer b )
 	 /* Copy Ximage (back buf) from client memory to server window */
 #if defined(USE_XSHM) 
 	 if (b->shm) {
-            /*_glthread_LOCK_MUTEX(_xmesa_lock);*/
+            /*mtx_lock(&_xmesa_lock);*/
 	    XShmPutImage( b->xm_visual->display, b->frontxrb->drawable,
 			  b->swapgc,
 			  b->backxrb->ximage, 0, 0,
 			  0, 0, b->mesa_buffer.Width, b->mesa_buffer.Height,
                           False );
-            /*_glthread_UNLOCK_MUTEX(_xmesa_lock);*/
+            /*mtx_unlock(&_xmesa_lock);*/
 	 }
 	 else
 #endif
          {
-            /*_glthread_LOCK_MUTEX(_xmesa_lock);*/
+            /*mtx_lock(&_xmesa_lock);*/
             XMesaPutImage( b->xm_visual->display, b->frontxrb->drawable,
 			   b->swapgc,
 			   b->backxrb->ximage, 0, 0,
 			   0, 0, b->mesa_buffer.Width, b->mesa_buffer.Height );
-            /*_glthread_UNLOCK_MUTEX(_xmesa_lock);*/
+            /*mtx_unlock(&_xmesa_lock);*/
          }
       }
       else if (b->backxrb->pixmap) {
 	 /* Copy pixmap (back buf) to window (front buf) on server */
-         /*_glthread_LOCK_MUTEX(_xmesa_lock);*/
+         /*mtx_lock(&_xmesa_lock);*/
 	 XMesaCopyArea( b->xm_visual->display,
 			b->backxrb->pixmap,   /* source drawable */
 			b->frontxrb->drawable,  /* dest. drawable */
@@ -1365,7 +1365,7 @@ void XMesaSwapBuffers( XMesaBuffer b )
 			0, 0, b->mesa_buffer.Width, b->mesa_buffer.Height,
 			0, 0                 /* dest region */
 		      );
-         /*_glthread_UNLOCK_MUTEX(_xmesa_lock);*/
+         /*mtx_unlock(&_xmesa_lock);*/
       }
    }
    XSync( b->xm_visual->display, False );

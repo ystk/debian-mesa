@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * Copyright 2009 VMware, Inc.  All Rights Reserved.
  * Copyright © 2010-2011 Intel Corporation
@@ -20,7 +20,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -31,8 +31,9 @@ extern "C" {
 #include "glheader.h"
 #include "imports.h"
 #include "mtypes.h"
-#include "main/uniforms.h"
+#include "main/context.h"
 #include "main/macros.h"
+#include "main/samplerobj.h"
 #include "program/program.h"
 #include "program/prog_parameter.h"
 #include "program/prog_cache.h"
@@ -41,15 +42,18 @@ extern "C" {
 #include "program/prog_statevars.h"
 #include "program/programopt.h"
 #include "texenvprogram.h"
+#include "texobj.h"
 }
 #include "main/uniforms.h"
 #include "../glsl/glsl_types.h"
 #include "../glsl/ir.h"
+#include "../glsl/ir_builder.h"
 #include "../glsl/glsl_symbol_table.h"
 #include "../glsl/glsl_parser_extras.h"
 #include "../glsl/ir_optimization.h"
-#include "../glsl/ir_print_visitor.h"
 #include "../program/ir_to_mesa.h"
+
+using namespace ir_builder;
 
 /*
  * Note on texture units:
@@ -287,20 +291,7 @@ need_saturate( GLuint mode )
    }
 }
 
-
-
-/**
- * Translate TEXTURE_x_BIT to TEXTURE_x_INDEX.
- */
-static GLuint translate_tex_src_bit( GLbitfield bit )
-{
-   ASSERT(bit);
-   return _mesa_ffs(bit) - 1;
-}
-
-
 #define VERT_BIT_TEX_ANY    (0xff << VERT_ATTRIB_TEX0)
-#define VERT_RESULT_TEX_ANY (0xff << VERT_RESULT_TEX0)
 
 /**
  * Identify all possible varying inputs.  The fragment program will
@@ -315,9 +306,9 @@ static GLbitfield get_fp_input_mask( struct gl_context *ctx )
 {
    /* _NEW_PROGRAM */
    const GLboolean vertexShader =
-      (ctx->Shader.CurrentVertexProgram &&
-       ctx->Shader.CurrentVertexProgram->LinkStatus &&
-       ctx->Shader.CurrentVertexProgram->_LinkedShaders[MESA_SHADER_VERTEX]);
+      (ctx->_Shader->CurrentProgram[MESA_SHADER_VERTEX] &&
+       ctx->_Shader->CurrentProgram[MESA_SHADER_VERTEX]->LinkStatus &&
+       ctx->_Shader->CurrentProgram[MESA_SHADER_VERTEX]->_LinkedShaders[MESA_SHADER_VERTEX]);
    const GLboolean vertexProgram = ctx->VertexProgram._Enabled;
    GLbitfield fp_inputs = 0x0;
 
@@ -330,11 +321,11 @@ static GLbitfield get_fp_input_mask( struct gl_context *ctx )
    }
    else if (ctx->RenderMode == GL_FEEDBACK) {
       /* _NEW_RENDERMODE */
-      fp_inputs = (FRAG_BIT_COL0 | FRAG_BIT_TEX0);
+      fp_inputs = (VARYING_BIT_COL0 | VARYING_BIT_TEX0);
    }
    else if (!(vertexProgram || vertexShader)) {
       /* Fixed function vertex logic */
-      /* _NEW_ARRAY */
+      /* _NEW_VARYING_VP_INPUTS */
       GLbitfield64 varying_inputs = ctx->varying_vp_inputs;
 
       /* These get generated in the setup routine regardless of the
@@ -342,33 +333,33 @@ static GLbitfield get_fp_input_mask( struct gl_context *ctx )
        */
       /* _NEW_POINT */
       if (ctx->Point.PointSprite)
-         varying_inputs |= FRAG_BITS_TEX_ANY;
+         varying_inputs |= VARYING_BITS_TEX_ANY;
 
       /* First look at what values may be computed by the generated
        * vertex program:
        */
       /* _NEW_LIGHT */
       if (ctx->Light.Enabled) {
-         fp_inputs |= FRAG_BIT_COL0;
+         fp_inputs |= VARYING_BIT_COL0;
 
          if (texenv_doing_secondary_color(ctx))
-            fp_inputs |= FRAG_BIT_COL1;
+            fp_inputs |= VARYING_BIT_COL1;
       }
 
       /* _NEW_TEXTURE */
       fp_inputs |= (ctx->Texture._TexGenEnabled |
-                    ctx->Texture._TexMatEnabled) << FRAG_ATTRIB_TEX0;
+                    ctx->Texture._TexMatEnabled) << VARYING_SLOT_TEX0;
 
       /* Then look at what might be varying as a result of enabled
        * arrays, etc:
        */
       if (varying_inputs & VERT_BIT_COLOR0)
-         fp_inputs |= FRAG_BIT_COL0;
+         fp_inputs |= VARYING_BIT_COL0;
       if (varying_inputs & VERT_BIT_COLOR1)
-         fp_inputs |= FRAG_BIT_COL1;
+         fp_inputs |= VARYING_BIT_COL1;
 
       fp_inputs |= (((varying_inputs & VERT_BIT_TEX_ANY) >> VERT_ATTRIB_TEX0) 
-                    << FRAG_ATTRIB_TEX0);
+                    << VARYING_SLOT_TEX0);
 
    }
    else {
@@ -381,7 +372,7 @@ static GLbitfield get_fp_input_mask( struct gl_context *ctx )
        * validation (see additional comments in state.c).
        */
       if (vertexShader)
-         vprog = ctx->Shader.CurrentVertexProgram->_LinkedShaders[MESA_SHADER_VERTEX]->Program;
+         vprog = ctx->_Shader->CurrentProgram[MESA_SHADER_VERTEX]->_LinkedShaders[MESA_SHADER_VERTEX]->Program;
       else
          vprog = &ctx->VertexProgram.Current->Base;
 
@@ -392,15 +383,15 @@ static GLbitfield get_fp_input_mask( struct gl_context *ctx )
        */
       /* _NEW_POINT */
       if (ctx->Point.PointSprite)
-         vp_outputs |= FRAG_BITS_TEX_ANY;
+         vp_outputs |= VARYING_BITS_TEX_ANY;
 
-      if (vp_outputs & (1 << VERT_RESULT_COL0))
-         fp_inputs |= FRAG_BIT_COL0;
-      if (vp_outputs & (1 << VERT_RESULT_COL1))
-         fp_inputs |= FRAG_BIT_COL1;
+      if (vp_outputs & (1 << VARYING_SLOT_COL0))
+         fp_inputs |= VARYING_BIT_COL0;
+      if (vp_outputs & (1 << VARYING_SLOT_COL1))
+         fp_inputs |= VARYING_BIT_COL1;
 
-      fp_inputs |= (((vp_outputs & VERT_RESULT_TEX_ANY) >> VERT_RESULT_TEX0) 
-                    << FRAG_ATTRIB_TEX0);
+      fp_inputs |= (((vp_outputs & VARYING_BITS_TEX_ANY) >> VARYING_SLOT_TEX0) 
+                    << VARYING_SLOT_TEX0);
    }
    
    return fp_inputs;
@@ -414,7 +405,7 @@ static GLbitfield get_fp_input_mask( struct gl_context *ctx )
 static GLuint make_state_key( struct gl_context *ctx,  struct state_key *key )
 {
    GLuint i, j;
-   GLbitfield inputs_referenced = FRAG_BIT_COL0;
+   GLbitfield inputs_referenced = VARYING_BIT_COL0;
    const GLbitfield inputs_available = get_fp_input_mask( ctx );
    GLuint keySize;
 
@@ -425,23 +416,25 @@ static GLuint make_state_key( struct gl_context *ctx,  struct state_key *key )
       const struct gl_texture_unit *texUnit = &ctx->Texture.Unit[i];
       const struct gl_texture_object *texObj = texUnit->_Current;
       const struct gl_tex_env_combine_state *comb = texUnit->_CurrentCombine;
+      const struct gl_sampler_object *samp;
       GLenum format;
 
-      if (!texUnit->_ReallyEnabled || !texUnit->Enabled)
+      if (!texUnit->_Current || !texUnit->Enabled)
          continue;
 
+      samp = _mesa_get_samplerobj(ctx, i);
       format = texObj->Image[0][texObj->BaseLevel]->_BaseFormat;
 
       key->unit[i].enabled = 1;
       key->enabled_units |= (1<<i);
       key->nr_enabled_units = i + 1;
-      inputs_referenced |= FRAG_BIT_TEX(i);
+      inputs_referenced |= VARYING_BIT_TEX(i);
 
-      key->unit[i].source_index =
-         translate_tex_src_bit(texUnit->_ReallyEnabled);
+      key->unit[i].source_index = _mesa_tex_target_to_index(ctx,
+                                                            texObj->Target);
 
       key->unit[i].shadow =
-         ((texObj->Sampler.CompareMode == GL_COMPARE_R_TO_TEXTURE) &&
+         ((samp->CompareMode == GL_COMPARE_R_TO_TEXTURE) &&
           ((format == GL_DEPTH_COMPONENT) || 
            (format == GL_DEPTH_STENCIL_EXT)));
 
@@ -477,14 +470,14 @@ static GLuint make_state_key( struct gl_context *ctx,  struct state_key *key )
    /* _NEW_LIGHT | _NEW_FOG */
    if (texenv_doing_secondary_color(ctx)) {
       key->separate_specular = 1;
-      inputs_referenced |= FRAG_BIT_COL1;
+      inputs_referenced |= VARYING_BIT_COL1;
    }
 
    /* _NEW_FOG */
    if (ctx->Fog.Enabled) {
       key->fog_enabled = 1;
       key->fog_mode = translate_fog_mode(ctx->Fog.Mode);
-      inputs_referenced |= FRAG_BIT_FOGC; /* maybe */
+      inputs_referenced |= VARYING_BIT_FOGC; /* maybe */
    }
 
    /* _NEW_BUFFERS */
@@ -508,19 +501,12 @@ static GLuint make_state_key( struct gl_context *ctx,  struct state_key *key )
 
 /** State used to build the fragment program:
  */
-struct texenv_fragment_program {
+class texenv_fragment_program : public ir_factory {
+public:
    struct gl_shader_program *shader_program;
    struct gl_shader *shader;
-   struct gl_fragment_program *program;
-   exec_list *instructions;
    exec_list *top_instructions;
-   void *mem_ctx;
    struct state_key *state;
-
-   GLbitfield alu_temps;	/**< Track texture indirections, see spec. */
-   GLbitfield temps_output;	/**< Track texture indirections, see spec. */
-   GLbitfield temp_in_use;	/**< Tracks temporary regs which are in use. */
-   GLboolean error;
 
    ir_variable *src_texture[MAX_TEXTURE_COORD_UNITS];
    /* Reg containing each texture unit's sampled texture color,
@@ -537,27 +523,26 @@ struct texenv_fragment_program {
    ir_rvalue *src_previous;	/**< Reg containing color from previous
 				 * stage.  May need to be decl'd.
 				 */
-
-   GLuint last_tex_stage;	/**< Number of last enabled texture unit */
 };
 
 static ir_rvalue *
-get_current_attrib(struct texenv_fragment_program *p, GLuint attrib)
+get_current_attrib(texenv_fragment_program *p, GLuint attrib)
 {
    ir_variable *current;
    ir_rvalue *val;
 
    current = p->shader->symbols->get_variable("gl_CurrentAttribFragMESA");
-   current->max_array_access = MAX2(current->max_array_access, attrib);
+   assert(current);
+   current->data.max_array_access = MAX2(current->data.max_array_access, attrib);
    val = new(p->mem_ctx) ir_dereference_variable(current);
    ir_rvalue *index = new(p->mem_ctx) ir_constant(attrib);
    return new(p->mem_ctx) ir_dereference_array(val, index);
 }
 
 static ir_rvalue *
-get_gl_Color(struct texenv_fragment_program *p)
+get_gl_Color(texenv_fragment_program *p)
 {
-   if (p->state->inputs_available & FRAG_BIT_COL0) {
+   if (p->state->inputs_available & VARYING_BIT_COL0) {
       ir_variable *var = p->shader->symbols->get_variable("gl_Color");
       assert(var);
       return new(p->mem_ctx) ir_dereference_variable(var);
@@ -567,7 +552,7 @@ get_gl_Color(struct texenv_fragment_program *p)
 }
 
 static ir_rvalue *
-get_source(struct texenv_fragment_program *p,
+get_source(texenv_fragment_program *p,
 	   GLuint src, GLuint unit)
 {
    ir_variable *var;
@@ -592,7 +577,7 @@ get_source(struct texenv_fragment_program *p,
       var = p->shader->symbols->get_variable("gl_TextureEnvColor");
       assert(var);
       deref = new(p->mem_ctx) ir_dereference_variable(var);
-      var->max_array_access = MAX2(var->max_array_access, unit);
+      var->data.max_array_access = MAX2(var->data.max_array_access, unit);
       return new(p->mem_ctx) ir_dereference_array(deref,
 						  new(p->mem_ctx) ir_constant(unit));
 
@@ -618,7 +603,7 @@ get_source(struct texenv_fragment_program *p,
 }
 
 static ir_rvalue *
-emit_combine_source(struct texenv_fragment_program *p,
+emit_combine_source(texenv_fragment_program *p,
 		    GLuint unit,
 		    GLuint source,
 		    GLuint operand)
@@ -629,21 +614,15 @@ emit_combine_source(struct texenv_fragment_program *p,
 
    switch (operand) {
    case OPR_ONE_MINUS_SRC_COLOR: 
-      return new(p->mem_ctx) ir_expression(ir_binop_sub,
-					   new(p->mem_ctx) ir_constant(1.0f),
-					   src);
+      return sub(new(p->mem_ctx) ir_constant(1.0f), src);
 
    case OPR_SRC_ALPHA:
-      return src->type->is_scalar()
-	 ? src : (ir_rvalue *) new(p->mem_ctx) ir_swizzle(src, 3, 3, 3, 3, 1);
+      return src->type->is_scalar() ? src : swizzle_w(src);
 
    case OPR_ONE_MINUS_SRC_ALPHA: {
-      ir_rvalue *const scalar = (src->type->is_scalar())
-	 ? src : (ir_rvalue *) new(p->mem_ctx) ir_swizzle(src, 3, 3, 3, 3, 1);
+      ir_rvalue *const scalar = src->type->is_scalar() ? src : swizzle_w(src);
 
-      return new(p->mem_ctx) ir_expression(ir_binop_sub,
-					   new(p->mem_ctx) ir_constant(1.0f),
-					   scalar);
+      return sub(new(p->mem_ctx) ir_constant(1.0f), scalar);
    }
 
    case OPR_ZERO:
@@ -699,16 +678,16 @@ static GLboolean args_match( const struct state_key *key, GLuint unit )
 }
 
 static ir_rvalue *
-smear(struct texenv_fragment_program *p, ir_rvalue *val)
+smear(texenv_fragment_program *p, ir_rvalue *val)
 {
    if (!val->type->is_scalar())
       return val;
 
-   return new(p->mem_ctx) ir_swizzle(val, 0, 0, 0, 0, 4);
+   return swizzle_xxxx(val);
 }
 
 static ir_rvalue *
-emit_combine(struct texenv_fragment_program *p,
+emit_combine(texenv_fragment_program *p,
 	     GLuint unit,
 	     GLuint nr,
 	     GLuint mode,
@@ -728,73 +707,52 @@ emit_combine(struct texenv_fragment_program *p,
       return src[0];
 
    case MODE_MODULATE: 
-      return new(p->mem_ctx) ir_expression(ir_binop_mul, src[0], src[1]);
+      return mul(src[0], src[1]);
 
    case MODE_ADD: 
-      return new(p->mem_ctx) ir_expression(ir_binop_add, src[0], src[1]);
+      return add(src[0], src[1]);
 
    case MODE_ADD_SIGNED:
-      tmp0 = new(p->mem_ctx) ir_expression(ir_binop_add, src[0], src[1]);
-      return new(p->mem_ctx) ir_expression(ir_binop_add, tmp0,
-					   new(p->mem_ctx) ir_constant(-0.5f));
+      return add(add(src[0], src[1]), new(p->mem_ctx) ir_constant(-0.5f));
 
    case MODE_INTERPOLATE: 
       /* Arg0 * (Arg2) + Arg1 * (1-Arg2) */
-      tmp0 = new(p->mem_ctx) ir_expression(ir_binop_mul, src[0], src[2]);
-
-      tmp1 = new(p->mem_ctx) ir_expression(ir_binop_sub,
-					   new(p->mem_ctx) ir_constant(1.0f),
-					   src[2]->clone(p->mem_ctx, NULL));
-      tmp1 = new(p->mem_ctx) ir_expression(ir_binop_mul, src[1], tmp1);
-
-      return new(p->mem_ctx) ir_expression(ir_binop_add, tmp0, tmp1);
+      tmp0 = mul(src[0], src[2]);
+      tmp1 = mul(src[1], sub(new(p->mem_ctx) ir_constant(1.0f),
+			     src[2]->clone(p->mem_ctx, NULL)));
+      return add(tmp0, tmp1);
 
    case MODE_SUBTRACT: 
-      return new(p->mem_ctx) ir_expression(ir_binop_sub, src[0], src[1]);
+      return sub(src[0], src[1]);
 
    case MODE_DOT3_RGBA:
    case MODE_DOT3_RGBA_EXT: 
    case MODE_DOT3_RGB_EXT:
    case MODE_DOT3_RGB: {
-      tmp0 = new(p->mem_ctx) ir_expression(ir_binop_mul, src[0],
-					   new(p->mem_ctx) ir_constant(2.0f));
-      tmp0 = new(p->mem_ctx) ir_expression(ir_binop_add, tmp0,
-					   new(p->mem_ctx) ir_constant(-1.0f));
-      tmp0 = new(p->mem_ctx) ir_swizzle(smear(p, tmp0), 0, 1, 2, 3, 3);
+      tmp0 = mul(src[0], new(p->mem_ctx) ir_constant(2.0f));
+      tmp0 = add(tmp0, new(p->mem_ctx) ir_constant(-1.0f));
 
-      tmp1 = new(p->mem_ctx) ir_expression(ir_binop_mul, src[1],
-					   new(p->mem_ctx) ir_constant(2.0f));
-      tmp1 = new(p->mem_ctx) ir_expression(ir_binop_add, tmp1,
-					   new(p->mem_ctx) ir_constant(-1.0f));
-      tmp1 = new(p->mem_ctx) ir_swizzle(smear(p, tmp1), 0, 1, 2, 3, 3);
+      tmp1 = mul(src[1], new(p->mem_ctx) ir_constant(2.0f));
+      tmp1 = add(tmp1, new(p->mem_ctx) ir_constant(-1.0f));
 
-      return new(p->mem_ctx) ir_expression(ir_binop_dot, tmp0, tmp1);
+      return dot(swizzle_xyz(smear(p, tmp0)), swizzle_xyz(smear(p, tmp1)));
    }
    case MODE_MODULATE_ADD_ATI:
-      tmp0 = new(p->mem_ctx) ir_expression(ir_binop_mul, src[0], src[2]);
-      return new(p->mem_ctx) ir_expression(ir_binop_add, tmp0, src[1]);
+      return add(mul(src[0], src[2]), src[1]);
 
    case MODE_MODULATE_SIGNED_ADD_ATI:
-      tmp0 = new(p->mem_ctx) ir_expression(ir_binop_mul, src[0], src[2]);
-      tmp0 = new(p->mem_ctx) ir_expression(ir_binop_add, tmp0, src[1]);
-      return new(p->mem_ctx) ir_expression(ir_binop_add, tmp0,
-					   new(p->mem_ctx) ir_constant(-0.5f));
+      return add(add(mul(src[0], src[2]), src[1]),
+		 new(p->mem_ctx) ir_constant(-0.5f));
 
    case MODE_MODULATE_SUBTRACT_ATI:
-      tmp0 = new(p->mem_ctx) ir_expression(ir_binop_mul, src[0], src[2]);
-      return new(p->mem_ctx) ir_expression(ir_binop_sub, tmp0, src[1]);
+      return sub(mul(src[0], src[2]), src[1]);
 
    case MODE_ADD_PRODUCTS:
-      tmp0 = new(p->mem_ctx) ir_expression(ir_binop_mul, src[0], src[1]);
-      tmp1 = new(p->mem_ctx) ir_expression(ir_binop_mul, src[2], src[3]);
-      return new(p->mem_ctx) ir_expression(ir_binop_add, tmp0, tmp1);
+      return add(mul(src[0], src[1]), mul(src[2], src[3]));
 
    case MODE_ADD_PRODUCTS_SIGNED:
-      tmp0 = new(p->mem_ctx) ir_expression(ir_binop_mul, src[0], src[1]);
-      tmp1 = new(p->mem_ctx) ir_expression(ir_binop_mul, src[2], src[3]);
-      tmp0 = new(p->mem_ctx) ir_expression(ir_binop_add, tmp0, tmp1);
-      return new(p->mem_ctx) ir_expression(ir_binop_add, tmp0,
-					   new(p->mem_ctx) ir_constant(-0.5f));
+      return add(add(mul(src[0], src[1]), mul(src[2], src[3])),
+		 new(p->mem_ctx) ir_constant(-0.5f));
 
    case MODE_BUMP_ENVMAP_ATI:
       /* special - not handled here */
@@ -806,20 +764,11 @@ emit_combine(struct texenv_fragment_program *p,
    }
 }
 
-static ir_rvalue *
-saturate(struct texenv_fragment_program *p, ir_rvalue *val)
-{
-   val = new(p->mem_ctx) ir_expression(ir_binop_min, val,
-				       new(p->mem_ctx) ir_constant(1.0f));
-   return new(p->mem_ctx) ir_expression(ir_binop_max, val,
-					new(p->mem_ctx) ir_constant(0.0f));
-}
-
 /**
  * Generate instructions for one texture unit's env/combiner mode.
  */
 static ir_rvalue *
-emit_texenv(struct texenv_fragment_program *p, GLuint unit)
+emit_texenv(texenv_fragment_program *p, GLuint unit)
 {
    const struct state_key *key = p->state;
    GLboolean rgb_saturate, alpha_saturate;
@@ -865,13 +814,8 @@ emit_texenv(struct texenv_fragment_program *p, GLuint unit)
    else
       alpha_saturate = GL_FALSE;
 
-   ir_variable *temp_var = new(p->mem_ctx) ir_variable(glsl_type::vec4_type,
-						       "texenv_combine",
-						       ir_var_temporary);
-   p->instructions->push_tail(temp_var);
-
+   ir_variable *temp_var = p->make_temp(glsl_type::vec4_type, "texenv_combine");
    ir_dereference *deref;
-   ir_assignment *assign;
    ir_rvalue *val;
 
    /* Emit the RGB and A combine ops
@@ -884,11 +828,9 @@ emit_texenv(struct texenv_fragment_program *p, GLuint unit)
 			 key->unit[unit].OptRGB);
       val = smear(p, val);
       if (rgb_saturate)
-	 val = saturate(p, val);
+	 val = saturate(val);
 
-      deref = new(p->mem_ctx) ir_dereference_variable(temp_var);
-      assign = new(p->mem_ctx) ir_assignment(deref, val);
-      p->instructions->push_tail(assign);
+      p->emit(assign(temp_var, val));
    }
    else if (key->unit[unit].ModeRGB == MODE_DOT3_RGBA_EXT ||
 	    key->unit[unit].ModeRGB == MODE_DOT3_RGBA) {
@@ -898,10 +840,8 @@ emit_texenv(struct texenv_fragment_program *p, GLuint unit)
 				    key->unit[unit].OptRGB);
       val = smear(p, val);
       if (rgb_saturate)
-	 val = saturate(p, val);
-      deref = new(p->mem_ctx) ir_dereference_variable(temp_var);
-      assign = new(p->mem_ctx) ir_assignment(deref, val);
-      p->instructions->push_tail(assign);
+	 val = saturate(val);
+      p->emit(assign(temp_var, val));
    }
    else {
       /* Need to do something to stop from re-emitting identical
@@ -911,25 +851,19 @@ emit_texenv(struct texenv_fragment_program *p, GLuint unit)
 			 key->unit[unit].NumArgsRGB,
 			 key->unit[unit].ModeRGB,
 			 key->unit[unit].OptRGB);
-      val = smear(p, val);
-      val = new(p->mem_ctx) ir_swizzle(val, 0, 1, 2, 3, 3);
+      val = swizzle_xyz(smear(p, val));
       if (rgb_saturate)
-	 val = saturate(p, val);
-      deref = new(p->mem_ctx) ir_dereference_variable(temp_var);
-      assign = new(p->mem_ctx) ir_assignment(deref, val, NULL, WRITEMASK_XYZ);
-      p->instructions->push_tail(assign);
+	 val = saturate(val);
+      p->emit(assign(temp_var, val, WRITEMASK_XYZ));
 
       val = emit_combine(p, unit,
 			 key->unit[unit].NumArgsA,
 			 key->unit[unit].ModeA,
 			 key->unit[unit].OptA);
-      val = smear(p, val);
-      val = new(p->mem_ctx) ir_swizzle(val, 3, 3, 3, 3, 1);
+      val = swizzle_w(smear(p, val));
       if (alpha_saturate)
-	 val = saturate(p, val);
-      deref = new(p->mem_ctx) ir_dereference_variable(temp_var);
-      assign = new(p->mem_ctx) ir_assignment(deref, val, NULL, WRITEMASK_W);
-      p->instructions->push_tail(assign);
+	 val = saturate(val);
+      p->emit(assign(temp_var, val, WRITEMASK_W));
    }
 
    deref = new(p->mem_ctx) ir_dereference_variable(temp_var);
@@ -944,17 +878,16 @@ emit_texenv(struct texenv_fragment_program *p, GLuint unit)
       }
       else {
 	 float const_data[4] = {
-	    1 << rgb_shift,
-	    1 << rgb_shift,
-	    1 << rgb_shift,
-	    1 << alpha_shift
+	    float(1 << rgb_shift),
+	    float(1 << rgb_shift),
+	    float(1 << rgb_shift),
+	    float(1 << alpha_shift)
 	 };
 	 shift = new(p->mem_ctx) ir_constant(glsl_type::vec4_type,
 					     (ir_constant_data *)const_data);
       }
 
-      return saturate(p, new(p->mem_ctx) ir_expression(ir_binop_mul,
-						       deref, shift));
+      return saturate(mul(deref, shift));
    }
    else
       return deref;
@@ -964,10 +897,9 @@ emit_texenv(struct texenv_fragment_program *p, GLuint unit)
 /**
  * Generate instruction for getting a texture source term.
  */
-static void load_texture( struct texenv_fragment_program *p, GLuint unit )
+static void load_texture( texenv_fragment_program *p, GLuint unit )
 {
    ir_dereference *deref;
-   ir_assignment *assign;
 
    if (p->src_texture[unit])
       return;
@@ -975,7 +907,7 @@ static void load_texture( struct texenv_fragment_program *p, GLuint unit )
    const GLuint texTarget = p->state->unit[unit].source_index;
    ir_rvalue *texcoord;
 
-   if (!(p->state->inputs_available & (FRAG_BIT_TEX0 << unit))) {
+   if (!(p->state->inputs_available & (VARYING_BIT_TEX0 << unit))) {
       texcoord = get_current_attrib(p, VERT_ATTRIB_TEX0 + unit);
    } else if (p->texcoord_tex[unit]) {
       texcoord = new(p->mem_ctx) ir_dereference_variable(p->texcoord_tex[unit]);
@@ -985,19 +917,15 @@ static void load_texture( struct texenv_fragment_program *p, GLuint unit )
       texcoord = new(p->mem_ctx) ir_dereference_variable(tc_array);
       ir_rvalue *index = new(p->mem_ctx) ir_constant(unit);
       texcoord = new(p->mem_ctx) ir_dereference_array(texcoord, index);
-      tc_array->max_array_access = MAX2(tc_array->max_array_access, unit);
+      tc_array->data.max_array_access = MAX2(tc_array->data.max_array_access, unit);
    }
 
    if (!p->state->unit[unit].enabled) {
-      p->src_texture[unit] = new(p->mem_ctx) ir_variable(glsl_type::vec4_type,
-							 "dummy_tex",
-							 ir_var_temporary);
-      p->instructions->push_tail(p->src_texture[unit]);
+      p->src_texture[unit] = p->make_temp(glsl_type::vec4_type,
+					  "dummy_tex");
+      p->emit(p->src_texture[unit]);
 
-      deref = new(p->mem_ctx) ir_dereference_variable(p->src_texture[unit]);
-      assign = new(p->mem_ctx) ir_assignment(deref,
-					     new(p->mem_ctx) ir_constant(0.0f));
-      p->instructions->push_tail(assign);
+      p->emit(assign(p->src_texture[unit], new(p->mem_ctx) ir_constant(0.0f)));
       return ;
    }
 
@@ -1059,10 +987,8 @@ static void load_texture( struct texenv_fragment_program *p, GLuint unit )
       break;
    }
 
-   p->src_texture[unit] = new(p->mem_ctx) ir_variable(glsl_type::vec4_type,
-						      "tex",
-						      ir_var_temporary);
-   p->instructions->push_tail(p->src_texture[unit]);
+   p->src_texture[unit] = p->make_temp(glsl_type::vec4_type,
+				       "tex");
 
    ir_texture *tex = new(p->mem_ctx) ir_texture(ir_tex);
 
@@ -1072,6 +998,15 @@ static void load_texture( struct texenv_fragment_program *p, GLuint unit )
 						      sampler_name,
 						      ir_var_uniform);
    p->top_instructions->push_head(sampler);
+
+   /* Set the texture unit for this sampler.  The linker will pick this value
+    * up and do-the-right-thing.
+    *
+    * NOTE: The cast to int is important.  Without it, the constant will have
+    * type uint, and things later on may get confused.
+    */
+   sampler->constant_value = new(p->mem_ctx) ir_constant(int(unit));
+
    deref = new(p->mem_ctx) ir_dereference_variable(sampler);
    tex->set_sampler(deref, glsl_type::vec4_type);
 
@@ -1086,15 +1021,13 @@ static void load_texture( struct texenv_fragment_program *p, GLuint unit )
    }
 
    texcoord = texcoord->clone(p->mem_ctx, NULL);
-   tex->projector = new(p->mem_ctx) ir_swizzle(texcoord, 3, 0, 0, 0, 1);
+   tex->projector = swizzle_w(texcoord);
 
-   deref = new(p->mem_ctx) ir_dereference_variable(p->src_texture[unit]);
-   assign = new(p->mem_ctx) ir_assignment(deref, tex);
-   p->instructions->push_tail(assign);
+   p->emit(assign(p->src_texture[unit], tex));
 }
 
 static void
-load_texenv_source(struct texenv_fragment_program *p,
+load_texenv_source(texenv_fragment_program *p,
 		   GLuint src, GLuint unit)
 {
    switch (src) {
@@ -1124,7 +1057,7 @@ load_texenv_source(struct texenv_fragment_program *p,
  * Generate instructions for loading all texture source terms.
  */
 static GLboolean
-load_texunit_sources( struct texenv_fragment_program *p, GLuint unit )
+load_texunit_sources( texenv_fragment_program *p, GLuint unit )
 {
    const struct state_key *key = p->state;
    GLuint i;
@@ -1144,26 +1077,25 @@ load_texunit_sources( struct texenv_fragment_program *p, GLuint unit )
  * Generate instructions for loading bump map textures.
  */
 static void
-load_texunit_bumpmap( struct texenv_fragment_program *p, GLuint unit )
+load_texunit_bumpmap( texenv_fragment_program *p, GLuint unit )
 {
    const struct state_key *key = p->state;
    GLuint bumpedUnitNr = key->unit[unit].OptRGB[1].Source - SRC_TEXTURE0;
    ir_rvalue *bump;
    ir_rvalue *texcoord;
-   ir_variable *rot_mat_0_var, *rot_mat_1_var;
-   ir_dereference_variable *rot_mat_0, *rot_mat_1;
+   ir_variable *rot_mat_0, *rot_mat_1;
 
-   rot_mat_0_var = p->shader->symbols->get_variable("gl_BumpRotMatrix0MESA");
-   rot_mat_1_var = p->shader->symbols->get_variable("gl_BumpRotMatrix1MESA");
-   rot_mat_0 = new(p->mem_ctx) ir_dereference_variable(rot_mat_0_var);
-   rot_mat_1 = new(p->mem_ctx) ir_dereference_variable(rot_mat_1_var);
+   rot_mat_0 = p->shader->symbols->get_variable("gl_BumpRotMatrix0MESA");
+   assert(rot_mat_0);
+   rot_mat_1 = p->shader->symbols->get_variable("gl_BumpRotMatrix1MESA");
+   assert(rot_mat_1);
 
    ir_variable *tc_array = p->shader->symbols->get_variable("gl_TexCoord");
    assert(tc_array);
    texcoord = new(p->mem_ctx) ir_dereference_variable(tc_array);
    ir_rvalue *index = new(p->mem_ctx) ir_constant(bumpedUnitNr);
    texcoord = new(p->mem_ctx) ir_dereference_array(texcoord, index);
-   tc_array->max_array_access = MAX2(tc_array->max_array_access, unit);
+   tc_array->data.max_array_access = MAX2(tc_array->data.max_array_access, unit);
 
    load_texenv_source( p, unit + SRC_TEXTURE0, unit );
 
@@ -1171,44 +1103,22 @@ load_texunit_bumpmap( struct texenv_fragment_program *p, GLuint unit )
     * dest = Arg1 + (Arg0.xx * rotMat0) + (Arg0.yy * rotMat1)
     * note only 2 coords are affected the rest are left unchanged (mul by 0)
     */
-   ir_dereference *deref;
-   ir_assignment *assign;
    ir_rvalue *bump_x, *bump_y;
 
    texcoord = smear(p, texcoord);
 
    /* bump_texcoord = texcoord */
-   ir_variable *bumped = new(p->mem_ctx) ir_variable(texcoord->type,
-						     "bump_texcoord",
-						     ir_var_temporary);
-   p->instructions->push_tail(bumped);
-
-   deref = new(p->mem_ctx) ir_dereference_variable(bumped);
-   assign = new(p->mem_ctx) ir_assignment(deref, texcoord);
-   p->instructions->push_tail(assign);
+   ir_variable *bumped = p->make_temp(texcoord->type, "bump_texcoord");
+   p->emit(bumped);
+   p->emit(assign(bumped, texcoord));
 
    /* bump_texcoord.xy += arg0.x * rotmat0 + arg0.y * rotmat1 */
    bump = get_source(p, key->unit[unit].OptRGB[0].Source, unit);
-   bump_x = new(p->mem_ctx) ir_swizzle(bump, 0, 0, 0, 0, 1);
-   bump = bump->clone(p->mem_ctx, NULL);
-   bump_y = new(p->mem_ctx) ir_swizzle(bump, 1, 0, 0, 0, 1);
+   bump_x = mul(swizzle_x(bump), rot_mat_0);
+   bump_y = mul(swizzle_y(bump->clone(p->mem_ctx, NULL)), rot_mat_1);
 
-   bump_x = new(p->mem_ctx) ir_expression(ir_binop_mul, bump_x, rot_mat_0);
-   bump_y = new(p->mem_ctx) ir_expression(ir_binop_mul, bump_y, rot_mat_1);
-
-   ir_expression *expr;
-   expr = new(p->mem_ctx) ir_expression(ir_binop_add, bump_x, bump_y);
-
-   deref = new(p->mem_ctx) ir_dereference_variable(bumped);
-   expr = new(p->mem_ctx) ir_expression(ir_binop_add,
-					new(p->mem_ctx) ir_swizzle(deref,
-								   0, 1, 1, 1,
-								   2),
-					expr);
-
-   deref = new(p->mem_ctx) ir_dereference_variable(bumped);
-   assign = new(p->mem_ctx) ir_assignment(deref, expr, NULL, WRITEMASK_XY);
-   p->instructions->push_tail(assign);
+   p->emit(assign(bumped, add(swizzle_xy(bumped), add(bump_x, bump_y)),
+		  WRITEMASK_XY));
 
    p->texcoord_tex[bumpedUnitNr] = bumped;
 }
@@ -1221,38 +1131,32 @@ load_texunit_bumpmap( struct texenv_fragment_program *p, GLuint unit )
  * GL_FOG_COORDINATE_EXT is set to GL_FRAGMENT_DEPTH_EXT.
  */
 static ir_rvalue *
-emit_fog_instructions(struct texenv_fragment_program *p,
+emit_fog_instructions(texenv_fragment_program *p,
 		      ir_rvalue *fragcolor)
 {
    struct state_key *key = p->state;
    ir_rvalue *f, *temp;
    ir_variable *params, *oparams;
    ir_variable *fogcoord;
-   ir_assignment *assign;
 
    /* Temporary storage for the whole fog result.  Fog calculations
     * only affect rgb so we're hanging on to the .a value of fragcolor
     * this way.
     */
-   ir_variable *fog_result = new(p->mem_ctx) ir_variable(glsl_type::vec4_type,
-							 "fog_result",
-							 ir_var_auto);
-   p->instructions->push_tail(fog_result);
-   temp = new(p->mem_ctx) ir_dereference_variable(fog_result);
-   assign = new(p->mem_ctx) ir_assignment(temp, fragcolor);
-   p->instructions->push_tail(assign);
+   ir_variable *fog_result = p->make_temp(glsl_type::vec4_type, "fog_result");
+   p->emit(assign(fog_result, fragcolor));
 
-   temp = new(p->mem_ctx) ir_dereference_variable(fog_result);
-   fragcolor = new(p->mem_ctx) ir_swizzle(temp, 0, 1, 2, 3, 3);
+   fragcolor = swizzle_xyz(fog_result);
 
    oparams = p->shader->symbols->get_variable("gl_FogParamsOptimizedMESA");
+   assert(oparams);
    fogcoord = p->shader->symbols->get_variable("gl_FogFragCoord");
+   assert(fogcoord);
    params = p->shader->symbols->get_variable("gl_Fog");
+   assert(params);
    f = new(p->mem_ctx) ir_dereference_variable(fogcoord);
 
-   ir_variable *f_var = new(p->mem_ctx) ir_variable(glsl_type::float_type,
-						    "fog_factor", ir_var_auto);
-   p->instructions->push_tail(f_var);
+   ir_variable *f_var = p->make_temp(glsl_type::float_type, "fog_factor");
 
    switch (key->fog_mode) {
    case FOG_LINEAR:
@@ -1261,13 +1165,7 @@ emit_fog_instructions(struct texenv_fragment_program *p,
        * gl_MesaFogParamsOptimized gives us (-1 / (end - start)) and
        * (end / (end - start)) so we can generate a single MAD.
        */
-      temp = new(p->mem_ctx) ir_dereference_variable(oparams);
-      temp = new(p->mem_ctx) ir_swizzle(temp, 0, 0, 0, 0, 1);
-      f = new(p->mem_ctx) ir_expression(ir_binop_mul, f, temp);
-
-      temp = new(p->mem_ctx) ir_dereference_variable(oparams);
-      temp = new(p->mem_ctx) ir_swizzle(temp, 1, 0, 0, 0, 1);
-      f = new(p->mem_ctx) ir_expression(ir_binop_add, f, temp);
+      f = add(mul(f, swizzle_x(oparams)), swizzle_y(oparams));
       break;
    case FOG_EXP:
       /* f = e^(-(density * fogcoord))
@@ -1276,9 +1174,7 @@ emit_fog_instructions(struct texenv_fragment_program *p,
        * use EXP2 which is generally the native instruction without
        * having to do any further math on the fog density uniform.
        */
-      temp = new(p->mem_ctx) ir_dereference_variable(oparams);
-      temp = new(p->mem_ctx) ir_swizzle(temp, 2, 0, 0, 0, 1);
-      f = new(p->mem_ctx) ir_expression(ir_binop_mul, f, temp);
+      f = mul(f, swizzle_z(oparams));
       f = new(p->mem_ctx) ir_expression(ir_unop_neg, f);
       f = new(p->mem_ctx) ir_expression(ir_unop_exp2, f);
       break;
@@ -1289,56 +1185,29 @@ emit_fog_instructions(struct texenv_fragment_program *p,
        * can do this like FOG_EXP but with a squaring after the
        * multiply by density.
        */
-      ir_variable *temp_var = new(p->mem_ctx) ir_variable(glsl_type::float_type,
-							  "fog_temp",
-							  ir_var_auto);
-      p->instructions->push_tail(temp_var);
+      ir_variable *temp_var = p->make_temp(glsl_type::float_type, "fog_temp");
+      p->emit(assign(temp_var, mul(f, swizzle_w(oparams))));
 
-      temp = new(p->mem_ctx) ir_dereference_variable(oparams);
-      temp = new(p->mem_ctx) ir_swizzle(temp, 3, 0, 0, 0, 1);
-      f = new(p->mem_ctx) ir_expression(ir_binop_mul,
-					f, temp);
-
-      temp = new(p->mem_ctx) ir_dereference_variable(temp_var);
-      ir_assignment *assign = new(p->mem_ctx) ir_assignment(temp, f);
-      p->instructions->push_tail(assign);
-
-      f = new(p->mem_ctx) ir_dereference_variable(temp_var);
-      temp = new(p->mem_ctx) ir_dereference_variable(temp_var);
-      f = new(p->mem_ctx) ir_expression(ir_binop_mul, f, temp);
+      f = mul(temp_var, temp_var);
       f = new(p->mem_ctx) ir_expression(ir_unop_neg, f);
       f = new(p->mem_ctx) ir_expression(ir_unop_exp2, f);
       break;
    }
 
-   f = saturate(p, f);
+   p->emit(assign(f_var, saturate(f)));
 
-   temp = new(p->mem_ctx) ir_dereference_variable(f_var);
-   assign = new(p->mem_ctx) ir_assignment(temp, f);
-   p->instructions->push_tail(assign);
-
-   f = new(p->mem_ctx) ir_dereference_variable(f_var);
-   f = new(p->mem_ctx) ir_expression(ir_binop_sub,
-				     new(p->mem_ctx) ir_constant(1.0f),
-				     f);
+   f = sub(new(p->mem_ctx) ir_constant(1.0f), f_var);
    temp = new(p->mem_ctx) ir_dereference_variable(params);
    temp = new(p->mem_ctx) ir_dereference_record(temp, "color");
-   temp = new(p->mem_ctx) ir_swizzle(temp, 0, 1, 2, 3, 3);
-   temp = new(p->mem_ctx) ir_expression(ir_binop_mul, temp, f);
+   temp = mul(swizzle_xyz(temp), f);
 
-   f = new(p->mem_ctx) ir_dereference_variable(f_var);
-   f = new(p->mem_ctx) ir_expression(ir_binop_mul, fragcolor, f);
-   f = new(p->mem_ctx) ir_expression(ir_binop_add, temp, f);
-
-   ir_dereference *deref = new(p->mem_ctx) ir_dereference_variable(fog_result);
-   assign = new(p->mem_ctx) ir_assignment(deref, f, NULL, WRITEMASK_XYZ);
-   p->instructions->push_tail(assign);
+   p->emit(assign(fog_result, add(temp, mul(fragcolor, f_var)), WRITEMASK_XYZ));
 
    return new(p->mem_ctx) ir_dereference_variable(fog_result);
 }
 
 static void
-emit_instructions(struct texenv_fragment_program *p)
+emit_instructions(texenv_fragment_program *p)
 {
    struct state_key *key = p->state;
    GLuint unit;
@@ -1359,7 +1228,6 @@ emit_instructions(struct texenv_fragment_program *p)
       for (unit = 0; unit < key->nr_enabled_units; unit++)
 	 if (key->unit[unit].enabled) {
 	    load_texunit_sources(p, unit);
-	    p->last_tex_stage = unit;
 	 }
 
       /* Second pass - emit combine instructions to build final color:
@@ -1372,40 +1240,24 @@ emit_instructions(struct texenv_fragment_program *p)
    }
 
    ir_rvalue *cf = get_source(p, SRC_PREVIOUS, 0);
-   ir_dereference_variable *deref;
-   ir_assignment *assign;
 
    if (key->separate_specular) {
-      ir_rvalue *tmp0;
-      ir_variable *spec_result = new(p->mem_ctx) ir_variable(glsl_type::vec4_type,
-							    "specular_add",
-							    ir_var_temporary);
-
-      p->instructions->push_tail(spec_result);
-
-      deref = new(p->mem_ctx) ir_dereference_variable(spec_result);
-      assign = new(p->mem_ctx) ir_assignment(deref, cf);
-      p->instructions->push_tail(assign);
-
-      deref = new(p->mem_ctx) ir_dereference_variable(spec_result);
-      tmp0 = new(p->mem_ctx) ir_swizzle(deref, 0, 1, 2, 3, 3);
+      ir_variable *spec_result = p->make_temp(glsl_type::vec4_type,
+					      "specular_add");
+      p->emit(assign(spec_result, cf));
 
       ir_rvalue *secondary;
-      if (p->state->inputs_available & FRAG_BIT_COL1) {
+      if (p->state->inputs_available & VARYING_BIT_COL1) {
 	 ir_variable *var =
 	    p->shader->symbols->get_variable("gl_SecondaryColor");
 	 assert(var);
-	 secondary = new(p->mem_ctx) ir_dereference_variable(var);
+	 secondary = swizzle_xyz(var);
       } else {
-	 secondary = get_current_attrib(p, VERT_ATTRIB_COLOR1);
+	 secondary = swizzle_xyz(get_current_attrib(p, VERT_ATTRIB_COLOR1));
       }
-      secondary = new(p->mem_ctx) ir_swizzle(secondary, 0, 1, 2, 3, 3);
 
-      tmp0 = new(p->mem_ctx) ir_expression(ir_binop_add, tmp0, secondary);
-
-      deref = new(p->mem_ctx) ir_dereference_variable(spec_result);
-      assign = new(p->mem_ctx) ir_assignment(deref, tmp0, NULL, WRITEMASK_XYZ);
-      p->instructions->push_tail(assign);
+      p->emit(assign(spec_result, add(swizzle_xyz(spec_result), secondary),
+		     WRITEMASK_XYZ));
 
       cf = new(p->mem_ctx) ir_dereference_variable(spec_result);
    }
@@ -1416,9 +1268,7 @@ emit_instructions(struct texenv_fragment_program *p)
 
    ir_variable *frag_color = p->shader->symbols->get_variable("gl_FragColor");
    assert(frag_color);
-   deref = new(p->mem_ctx) ir_dereference_variable(frag_color);
-   assign = new(p->mem_ctx) ir_assignment(deref, cf);
-   p->instructions->push_tail(assign);
+   p->emit(assign(frag_color, cf));
 }
 
 /**
@@ -1428,15 +1278,14 @@ emit_instructions(struct texenv_fragment_program *p)
 static struct gl_shader_program *
 create_new_program(struct gl_context *ctx, struct state_key *key)
 {
-   struct texenv_fragment_program p;
+   texenv_fragment_program p;
    unsigned int unit;
    _mesa_glsl_parse_state *state;
 
-   memset(&p, 0, sizeof(p));
    p.mem_ctx = ralloc_context(NULL);
    p.shader = ctx->Driver.NewShader(ctx, 0, GL_FRAGMENT_SHADER);
    p.shader->ir = new(p.shader) exec_list;
-   state = new(p.shader) _mesa_glsl_parse_state(ctx, GL_FRAGMENT_SHADER,
+   state = new(p.shader) _mesa_glsl_parse_state(ctx, MESA_SHADER_FRAGMENT,
 						p.shader);
    p.shader->symbols = state->symbols;
    p.top_instructions = p.shader->ir;
@@ -1450,10 +1299,11 @@ create_new_program(struct gl_context *ctx, struct state_key *key)
     * fixed function program in a GLES2 context at all, but that's a
     * big mess to clean up.
     */
-   p.shader_program->InternalSeparateShader = GL_TRUE;
+   p.shader_program->SeparateShader = GL_TRUE;
 
    state->language_version = 130;
-   if (ctx->Extensions.OES_EGL_image_external)
+   state->es_shader = false;
+   if (_mesa_is_gles(ctx) && ctx->Extensions.OES_EGL_image_external)
       state->OES_EGL_image_external_enable = true;
    _mesa_glsl_initialize_types(state);
    _mesa_glsl_initialize_variables(p.instructions, state);
@@ -1465,10 +1315,8 @@ create_new_program(struct gl_context *ctx, struct state_key *key)
 
    p.src_previous = NULL;
 
-   p.last_tex_stage = 0;
-
    ir_function *main_f = new(p.mem_ctx) ir_function("main");
-   p.instructions->push_tail(main_f);
+   p.emit(main_f);
    state->symbols->add_function(main_f);
 
    ir_function_signature *main_sig =
@@ -1482,66 +1330,23 @@ create_new_program(struct gl_context *ctx, struct state_key *key)
 
    validate_ir_tree(p.shader->ir);
 
-   while (do_common_optimization(p.shader->ir, false, false, 32))
+   const struct gl_shader_compiler_options *options =
+      &ctx->ShaderCompilerOptions[MESA_SHADER_FRAGMENT];
+
+   while (do_common_optimization(p.shader->ir, false, false, options,
+                                 ctx->Const.NativeIntegers))
       ;
    reparent_ir(p.shader->ir, p.shader->ir);
 
    p.shader->CompileStatus = true;
    p.shader->Version = state->language_version;
-   p.shader->num_builtins_to_link = state->num_builtins_to_link;
+   p.shader->uses_builtin_functions = state->uses_builtin_functions;
    p.shader_program->Shaders =
       (gl_shader **)malloc(sizeof(*p.shader_program->Shaders));
    p.shader_program->Shaders[0] = p.shader;
    p.shader_program->NumShaders = 1;
 
    _mesa_glsl_link_shader(ctx, p.shader_program);
-
-   /* Set the sampler uniforms, and relink to get them into the linked
-    * program.
-    */
-   struct gl_shader *const fs =
-      p.shader_program->_LinkedShaders[MESA_SHADER_FRAGMENT];
-   struct gl_program *const fp = fs->Program;
-
-   _mesa_generate_parameters_list_for_uniforms(p.shader_program, fs,
-					       fp->Parameters);
-
-   _mesa_associate_uniform_storage(ctx, p.shader_program, fp->Parameters);
-
-   for (unsigned int i = 0; i < MAX_TEXTURE_UNITS; i++) {
-      /* Enough space for 'sampler_999\0'.
-       */
-      char name[12];
-
-      snprintf(name, sizeof(name), "sampler_%d", i);
-
-      int loc = _mesa_get_uniform_location(ctx, p.shader_program, name);
-      if (loc != -1) {
-	 unsigned base;
-	 unsigned idx;
-
-	 /* Avoid using _mesa_uniform() because it flags state
-	  * updates, so if we're generating this shader_program in a
-	  * state update, we end up recursing.  Instead, just set the
-	  * value, which is picked up at re-link.
-	  */
-	 _mesa_uniform_split_location_offset(loc, &base, &idx);
-	 assert(idx == 0);
-
-	 struct gl_uniform_storage *const storage =
-	    &p.shader_program->UniformStorage[base];
-
-	 /* Update the storage, the SamplerUnits in the shader program, and
-	  * the SamplerUnits in the assembly shader.
-	  */
-	 storage->storage[idx].i = i;
-	 fp->SamplerUnits[storage->sampler] = i;
-	 p.shader_program->SamplerUnits[storage->sampler] = i;
-	 _mesa_propagate_uniforms_to_driver_storage(storage, 0, 1);
-      }
-   }
-   _mesa_update_shader_textures_used(p.shader_program, fp);
-   (void) ctx->Driver.ProgramStringNotify(ctx, fp->Target, fp);
 
    if (!p.shader_program->LinkStatus)
       _mesa_problem(ctx, "Failed to link fixed function fragment shader: %s\n",

@@ -39,7 +39,6 @@
 
 #include "ast.h"
 #include "ir_optimization.h"
-#include "ir_print_visitor.h"
 #include "program.h"
 #include "ir_reader.h"
 #include "standalone_scaffolding.h"
@@ -54,7 +53,8 @@ static string read_stdin_to_eof()
 }
 
 static GLboolean
-do_optimization(struct exec_list *ir, const char *optimization)
+do_optimization(struct exec_list *ir, const char *optimization,
+                const struct gl_shader_compiler_options *options)
 {
    int int_0;
    int int_1;
@@ -62,11 +62,10 @@ do_optimization(struct exec_list *ir, const char *optimization)
    int int_3;
    int int_4;
 
-   if (sscanf(optimization, "do_common_optimization ( %d , %d ) ",
-              &int_0, &int_1) == 2) {
-      return do_common_optimization(ir, int_0 != 0, false, int_1);
+   if (sscanf(optimization, "do_common_optimization ( %d ) ", &int_0) == 1) {
+      return do_common_optimization(ir, int_0 != 0, false, options, true);
    } else if (strcmp(optimization, "do_algebraic") == 0) {
-      return do_algebraic(ir);
+      return do_algebraic(ir, true);
    } else if (strcmp(optimization, "do_constant_folding") == 0) {
       return do_constant_folding(ir);
    } else if (strcmp(optimization, "do_constant_variable") == 0) {
@@ -98,8 +97,6 @@ do_optimization(struct exec_list *ir, const char *optimization)
       return do_lower_texture_projection(ir);
    } else if (strcmp(optimization, "do_if_simplification") == 0) {
       return do_if_simplification(ir);
-   } else if (strcmp(optimization, "do_discard_simplification") == 0) {
-      return do_discard_simplification(ir);
    } else if (sscanf(optimization, "lower_if_to_cond_assign ( %d ) ",
                      &int_0) == 1) {
       return lower_if_to_cond_assign(ir, int_0);
@@ -143,7 +140,8 @@ do_optimization(struct exec_list *ir, const char *optimization)
 
 static GLboolean
 do_optimization_passes(struct exec_list *ir, char **optimizations,
-                       int num_optimizations, bool quiet)
+                       int num_optimizations, bool quiet,
+                       const struct gl_shader_compiler_options *options)
 {
    GLboolean overall_progress = false;
 
@@ -152,7 +150,7 @@ do_optimization_passes(struct exec_list *ir, char **optimizations,
       if (!quiet) {
          printf("*** Running optimization %s...", optimization);
       }
-      GLboolean progress = do_optimization(ir, optimization);
+      GLboolean progress = do_optimization(ir, optimization, options);
       if (!quiet) {
          printf("%s\n", progress ? "progress" : "no progress");
       }
@@ -199,17 +197,18 @@ int test_optpass(int argc, char **argv)
 
    struct gl_context local_ctx;
    struct gl_context *ctx = &local_ctx;
-   initialize_context_to_defaults(ctx, API_OPENGL);
+   initialize_context_to_defaults(ctx, API_OPENGL_COMPAT);
 
    ctx->Driver.NewShader = _mesa_new_shader;
 
    struct gl_shader *shader = rzalloc(NULL, struct gl_shader);
    shader->Type = shader_type;
+   shader->Stage = _mesa_shader_enum_to_shader_stage(shader_type);
 
    string input = read_stdin_to_eof();
 
    struct _mesa_glsl_parse_state *state
-      = new(shader) _mesa_glsl_parse_state(ctx, shader->Type, shader);
+      = new(shader) _mesa_glsl_parse_state(ctx, shader->Stage, shader);
 
    if (input_format_ir) {
       shader->ir = new(shader) exec_list;
@@ -218,8 +217,8 @@ int test_optpass(int argc, char **argv)
    } else {
       shader->Source = input.c_str();
       const char *source = shader->Source;
-      state->error = preprocess(state, &source, &state->info_log,
-                                state->extensions, ctx->API) != 0;
+      state->error = glcpp_preprocess(state, &source, &state->info_log,
+                                state->extensions, ctx) != 0;
 
       if (!state->error) {
          _mesa_glsl_lexer_ctor(state, source);
@@ -235,16 +234,18 @@ int test_optpass(int argc, char **argv)
    /* Print out the initial IR */
    if (!state->error && !quiet) {
       printf("*** pre-optimization IR:\n");
-      _mesa_print_ir(shader->ir, state);
+      _mesa_print_ir(stdout, shader->ir, state);
       printf("\n--\n");
    }
 
    /* Optimization passes */
    if (!state->error) {
       GLboolean progress;
+      const struct gl_shader_compiler_options *options =
+         &ctx->ShaderCompilerOptions[_mesa_shader_enum_to_shader_stage(shader_type)];
       do {
          progress = do_optimization_passes(shader->ir, &argv[optind],
-                                           argc - optind, quiet != 0);
+                                           argc - optind, quiet != 0, options);
       } while (loop && progress);
    }
 
@@ -253,7 +254,7 @@ int test_optpass(int argc, char **argv)
       if (!quiet) {
          printf("*** resulting IR:\n");
       }
-      _mesa_print_ir(shader->ir, state);
+      _mesa_print_ir(stdout, shader->ir, state);
       if (!quiet) {
          printf("\n--\n");
       }

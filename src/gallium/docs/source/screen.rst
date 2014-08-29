@@ -26,14 +26,14 @@ The integer capabilities:
   normalized coordinates, and mipmaps.
 * ``PIPE_CAP_TWO_SIDED_STENCIL``: Whether the stencil test can also affect back-facing
   polygons.
-* ``PIPE_CAP_DUAL_SOURCE_BLEND``: Whether dual-source blend factors are supported. See
+* ``PIPE_CAP_MAX_DUAL_SOURCE_RENDER_TARGETS``: How many dual-source blend RTs are support.
   :ref:`Blend` for more information.
 * ``PIPE_CAP_ANISOTROPIC_FILTER``: Whether textures can be filtered anisotropically.
 * ``PIPE_CAP_POINT_SPRITE``: Whether point sprites are available.
 * ``PIPE_CAP_MAX_RENDER_TARGETS``: The maximum number of render targets that may be
   bound.
 * ``PIPE_CAP_OCCLUSION_QUERY``: Whether occlusion queries are available.
-* ``PIPE_CAP_TIMER_QUERY``: Whether timer queries are available.
+* ``PIPE_CAP_QUERY_TIME_ELAPSED``: Whether PIPE_QUERY_TIME_ELAPSED queries are available.
 * ``PIPE_CAP_TEXTURE_SHADOW_MAP``: indicates whether the fragment shader hardware
   can do the depth texture / Z comparison operation in TEX instructions
   for shadow testing.
@@ -53,16 +53,12 @@ The integer capabilities:
   opcodes to the Shader Model 3 specification. XXX oh god this is horrible
 * ``PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS``: The maximum number of stream buffers.
 * ``PIPE_CAP_PRIMITIVE_RESTART``: Whether primitive restart is supported.
-* ``PIPE_CAP_MAX_COMBINED_SAMPLERS``: The total number of samplers accessible from
-  the vertex and fragment shader, inclusive.
 * ``PIPE_CAP_INDEP_BLEND_ENABLE``: Whether per-rendertarget blend enabling and channel
   masks are supported. If 0, then the first rendertarget's blend mask is
   replicated across all MRTs.
 * ``PIPE_CAP_INDEP_BLEND_FUNC``: Whether per-rendertarget blend functions are
   available. If 0, then the first rendertarget's blend functions affect all
   MRTs.
-* ``PIPE_CAP_DEPTHSTENCIL_CLEAR_SEPARATE``: Whether clearing only depth or only
-  stencil in a combined depth-stencil buffer is supported.
 * ``PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS``: The maximum number of texture array
   layers supported. If 0, the array textures are not supported at all and
   the ARRAY texture targets are invalid.
@@ -74,6 +70,136 @@ The integer capabilities:
   property FS_COORD_PIXEL_CENTER with value HALF_INTEGER is supported.
 * ``PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER``: Whether the TGSI
   property FS_COORD_PIXEL_CENTER with value INTEGER is supported.
+* ``PIPE_CAP_DEPTH_CLIP_DISABLE``: Whether the driver is capable of disabling
+  depth clipping (through pipe_rasterizer_state)
+* ``PIPE_CAP_SHADER_STENCIL_EXPORT``: Whether a stencil reference value can be
+  written from a fragment shader.
+* ``PIPE_CAP_TGSI_INSTANCEID``: Whether TGSI_SEMANTIC_INSTANCEID is supported
+  in the vertex shader.
+* ``PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR``: Whether the driver supports
+  per-instance vertex attribs.
+* ``PIPE_CAP_FRAGMENT_COLOR_CLAMPED``: Whether fragment color clamping is
+  supported.  That is, is the pipe_rasterizer_state::clamp_fragment_color
+  flag supported by the driver?  If not, the state tracker will insert
+  clamping code into the fragment shaders when needed.
+
+* ``PIPE_CAP_MIXED_COLORBUFFER_FORMATS``: Whether mixed colorbuffer formats are
+  supported, e.g. RGBA8 and RGBA32F as the first and second colorbuffer, resp.
+* ``PIPE_CAP_VERTEX_COLOR_UNCLAMPED``: Whether the driver is capable of
+  outputting unclamped vertex colors from a vertex shader. If unsupported,
+  the vertex colors are always clamped. This is the default for DX9 hardware.
+* ``PIPE_CAP_VERTEX_COLOR_CLAMPED``: Whether the driver is capable of
+  clamping vertex colors when they come out of a vertex shader, as specified
+  by the pipe_rasterizer_state::clamp_vertex_color flag.  If unsupported,
+  the vertex colors are never clamped. This is the default for DX10 hardware.
+  If both clamped and unclamped CAPs are supported, the clamping can be
+  controlled through pipe_rasterizer_state.  If the driver cannot do vertex
+  color clamping, the state tracker may insert clamping code into the vertex
+  shader.
+* ``PIPE_CAP_GLSL_FEATURE_LEVEL``: Whether the driver supports features
+  equivalent to a specific GLSL version. E.g. for GLSL 1.3, report 130.
+* ``PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION``: Whether quads adhere to
+  the flatshade_first setting in ``pipe_rasterizer_state``.
+* ``PIPE_CAP_USER_VERTEX_BUFFERS``: Whether the driver supports user vertex
+  buffers.  If not, the state tracker must upload all data which is not in hw
+  resources.  If user-space buffers are supported, the driver must also still
+  accept HW resource buffers.
+* ``PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY``: This CAP describes a hw
+  limitation.  If true, pipe_vertex_buffer::buffer_offset must always be aligned
+  to 4.  If false, there are no restrictions on the offset.
+* ``PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY``: This CAP describes a hw
+  limitation.  If true, pipe_vertex_buffer::stride must always be aligned to 4.
+  If false, there are no restrictions on the stride.
+* ``PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY``: This CAP describes
+  a hw limitation.  If true, pipe_vertex_element::src_offset must always be
+  aligned to 4.  If false, there are no restrictions on src_offset.
+* ``PIPE_CAP_COMPUTE``: Whether the implementation supports the
+  compute entry points defined in pipe_context and pipe_screen.
+* ``PIPE_CAP_USER_INDEX_BUFFERS``: Whether user index buffers are supported.
+  If not, the state tracker must upload all indices which are not in hw
+  resources.  If user-space buffers are supported, the driver must also still
+  accept HW resource buffers.
+* ``PIPE_CAP_USER_CONSTANT_BUFFERS``: Whether user-space constant buffers
+  are supported.  If not, the state tracker must put constants into HW
+  resources/buffers.  If user-space constant buffers are supported, the
+  driver must still accept HW constant buffers also.
+* ``PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT``: Describes the required
+  alignment of pipe_constant_buffer::buffer_offset.
+* ``PIPE_CAP_START_INSTANCE``: Whether the driver supports
+  pipe_draw_info::start_instance.
+* ``PIPE_CAP_QUERY_TIMESTAMP``: Whether PIPE_QUERY_TIMESTAMP and
+  the pipe_screen::get_timestamp hook are implemented.
+* ``PIPE_CAP_TEXTURE_MULTISAMPLE``: Whether all MSAA resources supported
+  for rendering are also supported for texturing.
+* ``PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT``: The minimum alignment that should be
+  expected for a pointer returned by transfer_map if the resource is
+  PIPE_BUFFER. In other words, the pointer returned by transfer_map is
+  always aligned to this value.
+* ``PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT``: Describes the required
+  alignment for pipe_sampler_view::u.buf.first_element, in bytes.
+  If a driver does not support first/last_element, it should return 0.
+* ``PIPE_CAP_TGSI_TEXCOORD``: This CAP describes a hw limitation.
+  If true, the hardware cannot replace arbitrary shader inputs with sprite
+  coordinates and hence the inputs that are desired to be replaceable must
+  be declared with TGSI_SEMANTIC_TEXCOORD instead of TGSI_SEMANTIC_GENERIC.
+  The rasterizer's sprite_coord_enable state therefore also applies to the
+  TEXCOORD semantic.
+  Also, TGSI_SEMANTIC_PCOORD becomes available, which labels a fragment shader
+  input that will always be replaced with sprite coordinates.
+* ``PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER``: Whether it is preferable
+  to use a blit to implement a texture transfer which needs format conversions
+  and swizzling in state trackers. Generally, all hardware drivers with
+  dedicated memory should return 1 and all software rasterizers should return 0.
+* ``PIPE_CAP_QUERY_PIPELINE_STATISTICS``: Whether PIPE_QUERY_PIPELINE_STATISTICS
+  is supported.
+* ``PIPE_CAP_TEXTURE_BORDER_COLOR_QUIRK``: Bitmask indicating whether special
+  considerations have to be given to the interaction between the border color
+  in the sampler object and the sampler view used with it.
+  If PIPE_QUIRK_TEXTURE_BORDER_COLOR_SWIZZLE_R600 is set, the border color
+  may be affected in undefined ways for any kind of permutational swizzle
+  (any swizzle XYZW where X/Y/Z/W are not ZERO, ONE, or R/G/B/A respectively)
+  in the sampler view.
+  If PIPE_QUIRK_TEXTURE_BORDER_COLOR_SWIZZLE_NV50 is set, the border color
+  state should be swizzled manually according to the swizzle in the sampler
+  view it is intended to be used with, or herein undefined results may occur
+  for permutational swizzles.
+* ``PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE``: The maximum accessible size with
+  a buffer sampler view, in bytes.
+* ``PIPE_CAP_MAX_VIEWPORTS``: The maximum number of viewports (and scissors
+  since they are linked) a driver can support. Returning 0 is equivalent
+  to returning 1 because every driver has to support at least a single
+  viewport/scissor combination.
+* ``PIPE_CAP_ENDIANNESS``:: The endianness of the device.  Either
+  PIPE_ENDIAN_BIG or PIPE_ENDIAN_LITTLE.
+* ``PIPE_CAP_MIXED_FRAMEBUFFER_SIZES``: Whether it is allowed to have
+  different sizes for fb color/zs attachments. This controls whether
+  ARB_framebuffer_object is provided.
+* ``PIPE_CAP_TGSI_VS_LAYER``: Whether TGSI_SEMANTIC_LAYER is supported
+  as a vertex shader output.
+* ``PIPE_CAP_MAX_GEOMETRY_OUTPUT_VERTICES``: The maximum number of vertices
+  output by a single invocation of a geometry shader.
+* ``PIPE_CAP_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS``: The maximum number of
+  vertex components output by a single invocation of a geometry shader.
+  This is the product of the number of attribute components per vertex and
+  the number of output vertices.
+* ``PIPE_CAP_MAX_TEXTURE_GATHER_COMPONENTS``: Max number of components
+  in format that texture gather can operate on. 1 == RED, ALPHA etc,
+  4 == All formats.
+* ``PIPE_CAP_TEXTURE_GATHER_SM5``: Whether the texture gather
+  hardware implements the SM5 features, component selection,
+  shadow comparison, and run-time offsets.
+* ``PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT``: Whether
+  PIPE_TRANSFER_PERSISTENT and PIPE_TRANSFER_COHERENT are supported
+  for buffers.
+* ``PIPE_CAP_TEXTURE_QUERY_LOD``: Whether the ``LODQ`` instruction is
+  supported.
+* ``PIPE_CAP_MIN_TEXTURE_GATHER_OFFSET``: The minimum offset that can be used
+  in conjunction with a texture gather opcode.
+* ``PIPE_CAP_MAX_TEXTURE_GATHER_OFFSET``: The maximum offset that can be used
+  in conjunction with a texture gather opcode.
+* ``PIPE_CAP_SAMPLE_SHADING``: Whether there is support for per-sample
+  shading. The context->set_min_samples function will be expected to be
+  implemented.
 
 
 .. _pipe_capf:
@@ -116,7 +242,7 @@ support different features.
   to any shader stage using ``set_constant_buffer``. If 0 or 1, the pipe will
   only permit binding one constant buffer per shader, and the shaders will
   not permit two-dimensional access to constants.
-  
+
 If a value greater than 0 is returned, the driver can have multiple
 constant buffers bound to shader stages. The CONST register file can
 be accessed with two-dimensional indices, like in the example below.
@@ -128,7 +254,7 @@ MOV OUT[0], CONST[0][3]  # copy vector 3 of constbuf 0
 For backwards compatibility, one-dimensional access to CONST register
 file is still supported. In that case, the constbuf index is assumed
 to be 0.
-  
+
 * ``PIPE_SHADER_CAP_MAX_TEMPS``: The maximum number of temporary registers.
 * ``PIPE_SHADER_CAP_MAX_ADDRS``: The maximum number of address registers.
 * ``PIPE_SHADER_CAP_MAX_PREDS``: The maximum number of predicate registers.
@@ -145,9 +271,50 @@ to be 0.
   BGNSUB, ENDSUB, CAL, and RET, including RET in the main block.
 * ``PIPE_SHADER_CAP_INTEGERS``: Whether integer opcodes are supported.
   If unsupported, only float opcodes are supported.
-* ``PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS``: THe maximum number of texture
+* ``PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS``: The maximum number of texture
   samplers.
+* ``PIPE_SHADER_CAP_PREFERRED_IR``: Preferred representation of the
+  program.  It should be one of the ``pipe_shader_ir`` enum values.
+* ``PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS``: The maximum number of texture
+  sampler views. Must not be lower than PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS.
 
+
+.. _pipe_compute_cap:
+
+PIPE_COMPUTE_CAP_*
+^^^^^^^^^^^^^^^^^^
+
+Compute-specific capabilities. They can be queried using
+pipe_screen::get_compute_param.
+
+* ``PIPE_COMPUTE_CAP_IR_TARGET``: A description of the target of the form
+  ``processor-arch-manufacturer-os`` that will be passed on to the compiler.
+  This CAP is only relevant for drivers that specify PIPE_SHADER_IR_LLVM for
+  their preferred IR.
+  Value type: null-terminated string.
+* ``PIPE_COMPUTE_CAP_GRID_DIMENSION``: Number of supported dimensions
+  for grid and block coordinates.  Value type: ``uint64_t``.
+* ``PIPE_COMPUTE_CAP_MAX_GRID_SIZE``: Maximum grid size in block
+  units.  Value type: ``uint64_t []``.
+* ``PIPE_COMPUTE_CAP_MAX_BLOCK_SIZE``: Maximum block size in thread
+  units.  Value type: ``uint64_t []``.
+* ``PIPE_COMPUTE_CAP_MAX_THREADS_PER_BLOCK``: Maximum number of threads that
+  a single block can contain.  Value type: ``uint64_t``.
+  This may be less than the product of the components of MAX_BLOCK_SIZE and is
+  usually limited by the number of threads that can be resident simultaneously
+  on a compute unit.
+* ``PIPE_COMPUTE_CAP_MAX_GLOBAL_SIZE``: Maximum size of the GLOBAL
+  resource.  Value type: ``uint64_t``.
+* ``PIPE_COMPUTE_CAP_MAX_LOCAL_SIZE``: Maximum size of the LOCAL
+  resource.  Value type: ``uint64_t``.
+* ``PIPE_COMPUTE_CAP_MAX_PRIVATE_SIZE``: Maximum size of the PRIVATE
+  resource.  Value type: ``uint64_t``.
+* ``PIPE_COMPUTE_CAP_MAX_INPUT_SIZE``: Maximum size of the INPUT
+  resource.  Value type: ``uint64_t``.
+* ``PIPE_COMPUTE_CAP_MAX_MEM_ALLOC_SIZE``: Maximum size of a memory object
+  allocation in bytes.  Value type: ``uint64_t``.
+* ``PIPE_COMPUTE_CAP_MAX_CLOCK_FREQUENCY``: Maximum frequency of the GPU
+  clock in MHz. Value type: ``uint32_t``
 
 .. _pipe_bind:
 
@@ -186,6 +353,12 @@ resources might be created and handled quite differently.
 * ``PIPE_BIND_SCANOUT``: A front color buffer or scanout buffer.
 * ``PIPE_BIND_SHARED``: A sharable buffer that can be given to another
   process.
+* ``PIPE_BIND_GLOBAL``: A buffer that can be mapped into the global
+  address space of a compute program.
+* ``PIPE_BIND_SHADER_RESOURCE``: A buffer or texture that can be
+  bound to the graphics pipeline as a shader resource.
+* ``PIPE_BIND_COMPUTE_RESOURCE``: A buffer or texture that can be
+  bound to the compute program as a shader resource.
 
 .. _pipe_usage:
 
@@ -193,12 +366,17 @@ PIPE_USAGE_*
 ^^^^^^^^^^^^
 
 The PIPE_USAGE enums are hints about the expected usage pattern of a resource.
+Note that drivers must always support read and write CPU access at any time
+no matter which hint they got.
 
-* ``PIPE_USAGE_DEFAULT``: Expect many uploads to the resource, intermixed with draws.
-* ``PIPE_USAGE_DYNAMIC``: Expect many uploads to the resource, intermixed with draws.
-* ``PIPE_USAGE_STATIC``: Same as immutable (?)
-* ``PIPE_USAGE_IMMUTABLE``: Resource will not be changed after first upload.
-* ``PIPE_USAGE_STREAM``: Upload will be followed by draw, followed by upload, ...
+* ``PIPE_USAGE_DEFAULT``: Optimized for fast GPU access.
+* ``PIPE_USAGE_IMMUTABLE``: Optimized for fast GPU access and the resource is
+  not expected to be mapped or changed (even by the GPU) after the first upload.
+* ``PIPE_USAGE_DYNAMIC``: Expect frequent write-only CPU access. What is
+  uploaded is expected to be used at least several times by the GPU.
+* ``PIPE_USAGE_STREAM``: Expect frequent write-only CPU access. What is
+  uploaded is expected to be used only once by the GPU.
+* ``PIPE_USAGE_STAGING``: Optimized for fast CPU access.
 
 
 Methods
@@ -261,6 +439,16 @@ the maximum allowed legal value is 32.
 
 Returns TRUE if all usages can be satisfied.
 
+
+can_create_resource
+^^^^^^^^^^^^^^^^^^^
+
+Check if a resource can actually be created (but don't actually allocate any
+memory).  This is used to implement OpenGL's proxy textures.  Typically, a
+driver will simply check if the total size of the given resource is less than
+some limit.
+
+
 .. _resource_create:
 
 resource_create
@@ -304,3 +492,23 @@ resource_destroy
 
 Destroy a resource. A resource is destroyed if it has no more references.
 
+
+
+get_timestamp
+^^^^^^^^^^^^^
+
+Query a timestamp in nanoseconds. The returned value should match
+PIPE_QUERY_TIMESTAMP. This function returns immediately and doesn't
+wait for rendering to complete (which cannot be achieved with queries).
+
+
+
+get_driver_query_info
+^^^^^^^^^^^^^^^^^^^^^
+
+Return a driver-specific query. If the **info** parameter is NULL,
+the number of available queries is returned.  Otherwise, the driver
+query at the specified **index** is returned in **info**.
+The function returns non-zero on success.
+The driver-specific query is described with the pipe_driver_query_info
+structure.

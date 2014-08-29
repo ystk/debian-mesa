@@ -19,14 +19,14 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  *
  **************************************************************************/
 
-#include "pipe/p_video_decoder.h"
+#include "pipe/p_video_codec.h"
 #include "util/u_memory.h"
 
 #include "vl_vlc.h"
@@ -629,7 +629,7 @@ motion_vector(struct vl_mpg12_bs *bs, int r, int s, int dmv, short delta[2], sho
    int t;
    for (t = 0; t < 2; ++t) {
       int motion_code;
-      int r_size = bs->desc.f_code[s][t];
+      int r_size = bs->desc->f_code[s][t];
 
       vl_vlc_fillbits(&bs->vlc);
       motion_code = vl_vlc_get_vlclbf(&bs->vlc, tbl_B10, 11);
@@ -667,18 +667,18 @@ motion_vector_frame(struct vl_mpg12_bs *bs, int s, struct pipe_mpeg12_macroblock
    if (mb->macroblock_modes.bits.frame_motion_type == PIPE_MPEG12_MO_TYPE_FIELD) {
       mb->motion_vertical_field_select |= vl_vlc_get_uimsbf(&bs->vlc, 1) << s;
       motion_vector(bs, 0, s, dmv, delta, dmvector);
-      mb->PMV[0][s][0] = wrap(mb->PMV[0][s][0] + delta[0], bs->desc.f_code[s][0]);
-      mb->PMV[0][s][1] = wrap(DIV2DOWN(mb->PMV[0][s][1]) + delta[1], bs->desc.f_code[s][1]) * 2;
+      mb->PMV[0][s][0] = wrap(mb->PMV[0][s][0] + delta[0], bs->desc->f_code[s][0]);
+      mb->PMV[0][s][1] = wrap(DIV2DOWN(mb->PMV[0][s][1]) + delta[1], bs->desc->f_code[s][1]) * 2;
 
       mb->motion_vertical_field_select |= vl_vlc_get_uimsbf(&bs->vlc, 1) << (s + 2);
       motion_vector(bs, 1, s, dmv, delta, dmvector);
-      mb->PMV[1][s][0] = wrap(mb->PMV[1][s][0] + delta[0], bs->desc.f_code[s][0]);
-      mb->PMV[1][s][1] = wrap(DIV2DOWN(mb->PMV[1][s][1]) + delta[1], bs->desc.f_code[s][1]) * 2;
+      mb->PMV[1][s][0] = wrap(mb->PMV[1][s][0] + delta[0], bs->desc->f_code[s][0]);
+      mb->PMV[1][s][1] = wrap(DIV2DOWN(mb->PMV[1][s][1]) + delta[1], bs->desc->f_code[s][1]) * 2;
 
    } else {
       motion_vector(bs, 0, s, dmv, delta, dmvector);
-      mb->PMV[0][s][0] = wrap(mb->PMV[0][s][0] + delta[0], bs->desc.f_code[s][0]);
-      mb->PMV[0][s][1] = wrap(mb->PMV[0][s][1] + delta[1], bs->desc.f_code[s][1]);
+      mb->PMV[0][s][0] = wrap(mb->PMV[0][s][0] + delta[0], bs->desc->f_code[s][0]);
+      mb->PMV[0][s][1] = wrap(mb->PMV[0][s][1] + delta[1], bs->desc->f_code[s][1]);
    }
 }
 
@@ -729,6 +729,7 @@ decode_dct(struct vl_mpg12_bs *bs, struct pipe_mpeg12_macroblock *mb, int scale)
       vl_vlc_eatbits(&bs->vlc, entry->length);
       if (entry->run == dct_End_of_Block) {
 
+next_d:
          dst += 64;
          cbp <<= 1;
          cbp &= 0x3F;
@@ -760,12 +761,27 @@ entry:
             dst[0] = bs->pred_dc[cc];
             i = 0;
 
+            if (bs->desc->picture_coding_type == PIPE_MPEG12_PICTURE_CODING_TYPE_D)
+               goto next_d;
          } else {
             entry = tbl_B14_DC + vl_vlc_peekbits(&bs->vlc, 17);
             i = -1;
             continue;
          }
 
+      } else if (entry->run == dct_Escape &&
+                 bs->decoder->profile == PIPE_VIDEO_PROFILE_MPEG1) {
+         i += vl_vlc_get_uimsbf(&bs->vlc, 6) + 1;
+         if (i > 64)
+            break;
+
+         dst[i] = vl_vlc_get_simsbf(&bs->vlc, 8);
+         if (dst[i] == -128)
+            dst[i] = vl_vlc_get_uimsbf(&bs->vlc, 8) - 256;
+         else if (dst[i] == 0)
+            dst[i] = vl_vlc_get_uimsbf(&bs->vlc, 8);
+
+         dst[i] *= scale;
       } else if (entry->run == dct_Escape) {
          i += vl_vlc_get_uimsbf(&bs->vlc, 6) + 1;
          if (i > 64)
@@ -784,10 +800,13 @@ entry:
       vl_vlc_fillbits(&bs->vlc);
       entry = table + vl_vlc_peekbits(&bs->vlc, 17);
    }
+
+   if (bs->desc->picture_coding_type == PIPE_MPEG12_PICTURE_CODING_TYPE_D)
+      vl_vlc_eatbits(&bs->vlc, 1);
 }
 
 static INLINE void
-decode_slice(struct vl_mpg12_bs *bs)
+decode_slice(struct vl_mpg12_bs *bs, struct pipe_video_buffer *target)
 {
    struct pipe_mpeg12_macroblock mb;
    short dct_blocks[64*6];
@@ -795,42 +814,54 @@ decode_slice(struct vl_mpg12_bs *bs)
    signed x = -1;
 
    memset(&mb, 0, sizeof(mb));
-   mb.base.codec = PIPE_VIDEO_CODEC_MPEG12;
+   mb.base.codec = PIPE_VIDEO_FORMAT_MPEG12;
    mb.y = vl_vlc_get_uimsbf(&bs->vlc, 8) - 1;
    mb.blocks = dct_blocks;
 
    reset_predictor(bs);
    vl_vlc_fillbits(&bs->vlc);
-   dct_scale = quant_scale[bs->desc.q_scale_type][vl_vlc_get_uimsbf(&bs->vlc, 5)];
+   dct_scale = quant_scale[bs->desc->q_scale_type][vl_vlc_get_uimsbf(&bs->vlc, 5)];
 
    if (vl_vlc_get_uimsbf(&bs->vlc, 1))
       while (vl_vlc_get_uimsbf(&bs->vlc, 9) & 1)
          vl_vlc_fillbits(&bs->vlc);
 
    vl_vlc_fillbits(&bs->vlc);
-   assert(vl_vlc_bits_left(&bs->vlc) > 23 && vl_vlc_peekbits(&bs->vlc, 23));
+   assert(vl_vlc_peekbits(&bs->vlc, 23));
    do {
       int inc = 0;
 
-      if (bs->decoder->profile == PIPE_VIDEO_PROFILE_MPEG1)
+      while (1) {
+         /* MPEG-1 macroblock stuffing, can appear an arbitrary number of times. */
          while (vl_vlc_peekbits(&bs->vlc, 11) == 15) {
             vl_vlc_eatbits(&bs->vlc, 11);
             vl_vlc_fillbits(&bs->vlc);
          }
 
-      while (vl_vlc_peekbits(&bs->vlc, 11) == 8) {
-         vl_vlc_eatbits(&bs->vlc, 11);
-         vl_vlc_fillbits(&bs->vlc);
-         inc += 33;
+         if (vl_vlc_peekbits(&bs->vlc, 11) == 8) {
+            vl_vlc_eatbits(&bs->vlc, 11);
+            vl_vlc_fillbits(&bs->vlc);
+            inc += 33;
+         } else {
+            inc += vl_vlc_get_vlclbf(&bs->vlc, tbl_B1, 11);
+            break;
+         }
       }
-      inc += vl_vlc_get_vlclbf(&bs->vlc, tbl_B1, 11);
+
       if (x != -1) {
+         if (!inc)
+            return;
          mb.num_skipped_macroblocks = inc - 1;
-         bs->decoder->decode_macroblock(bs->decoder, &mb.base, 1);
+         bs->decoder->decode_macroblock(bs->decoder, target, &bs->desc->base, &mb.base, 1);
       }
       mb.x = x += inc;
+      if (bs->decoder->profile == PIPE_VIDEO_PROFILE_MPEG1) {
+         int width = align(bs->decoder->width, 16) / 16;
+         mb.y += mb.x / width;
+         mb.x = x %= width;
+      }
 
-      switch (bs->desc.picture_coding_type) {
+      switch (bs->desc->picture_coding_type) {
       case PIPE_MPEG12_PICTURE_CODING_TYPE_I:
          mb.macroblock_type = vl_vlc_get_vlclbf(&bs->vlc, tbl_B2, 2);
          break;
@@ -843,57 +874,57 @@ decode_slice(struct vl_mpg12_bs *bs)
          mb.macroblock_type = vl_vlc_get_vlclbf(&bs->vlc, tbl_B4, 6);
          break;
 
-      default:
-         mb.macroblock_type = 0;
-         /* dumb gcc */
-         assert(0);
+      case PIPE_MPEG12_PICTURE_CODING_TYPE_D:
+         vl_vlc_eatbits(&bs->vlc, 1);
+         mb.macroblock_type = PIPE_MPEG12_MB_TYPE_INTRA;
+         break;
       }
 
       mb.macroblock_modes.value = 0;
       if (mb.macroblock_type & (PIPE_MPEG12_MB_TYPE_MOTION_FORWARD | PIPE_MPEG12_MB_TYPE_MOTION_BACKWARD)) {
-         if (bs->desc.picture_structure == PIPE_MPEG12_PICTURE_STRUCTURE_FRAME) {
-            if (bs->desc.frame_pred_frame_dct == 0)
+         if (bs->desc->picture_structure == PIPE_MPEG12_PICTURE_STRUCTURE_FRAME) {
+            if (bs->desc->frame_pred_frame_dct == 0)
                mb.macroblock_modes.bits.frame_motion_type = vl_vlc_get_uimsbf(&bs->vlc, 2);
             else
                mb.macroblock_modes.bits.frame_motion_type = 2;
          } else
             mb.macroblock_modes.bits.field_motion_type = vl_vlc_get_uimsbf(&bs->vlc, 2);
 
-      } else if ((mb.macroblock_type & PIPE_MPEG12_MB_TYPE_INTRA) && bs->desc.concealment_motion_vectors) {
-         if (bs->desc.picture_structure == PIPE_MPEG12_PICTURE_STRUCTURE_FRAME)
+      } else if ((mb.macroblock_type & PIPE_MPEG12_MB_TYPE_INTRA) && bs->desc->concealment_motion_vectors) {
+         if (bs->desc->picture_structure == PIPE_MPEG12_PICTURE_STRUCTURE_FRAME)
             mb.macroblock_modes.bits.frame_motion_type = 2;
          else
             mb.macroblock_modes.bits.field_motion_type = 1;
       }
 
-      if (bs->desc.picture_structure == PIPE_MPEG12_PICTURE_STRUCTURE_FRAME &&
-          bs->desc.frame_pred_frame_dct == 0 &&
+      if (bs->desc->picture_structure == PIPE_MPEG12_PICTURE_STRUCTURE_FRAME &&
+          bs->desc->frame_pred_frame_dct == 0 &&
           mb.macroblock_type & (PIPE_MPEG12_MB_TYPE_INTRA | PIPE_MPEG12_MB_TYPE_PATTERN))
          mb.macroblock_modes.bits.dct_type = vl_vlc_get_uimsbf(&bs->vlc, 1);
 
       if (mb.macroblock_type & PIPE_MPEG12_MB_TYPE_QUANT)
-         dct_scale = quant_scale[bs->desc.q_scale_type][vl_vlc_get_uimsbf(&bs->vlc, 5)];
+         dct_scale = quant_scale[bs->desc->q_scale_type][vl_vlc_get_uimsbf(&bs->vlc, 5)];
 
-      if (inc > 1 && bs->desc.picture_coding_type == PIPE_MPEG12_PICTURE_CODING_TYPE_P)
+      if (inc > 1 && bs->desc->picture_coding_type == PIPE_MPEG12_PICTURE_CODING_TYPE_P)
          memset(mb.PMV, 0, sizeof(mb.PMV));
 
       mb.motion_vertical_field_select = 0;
       if ((mb.macroblock_type & PIPE_MPEG12_MB_TYPE_MOTION_FORWARD) ||
-          (mb.macroblock_type & PIPE_MPEG12_MB_TYPE_INTRA && bs->desc.concealment_motion_vectors)) {
-         if (bs->desc.picture_structure == PIPE_MPEG12_PICTURE_STRUCTURE_FRAME)
+          (mb.macroblock_type & PIPE_MPEG12_MB_TYPE_INTRA && bs->desc->concealment_motion_vectors)) {
+         if (bs->desc->picture_structure == PIPE_MPEG12_PICTURE_STRUCTURE_FRAME)
             motion_vector_frame(bs, 0, &mb);
          else
             motion_vector_field(bs, 0, &mb);
       }
 
       if (mb.macroblock_type & PIPE_MPEG12_MB_TYPE_MOTION_BACKWARD) {
-         if (bs->desc.picture_structure == PIPE_MPEG12_PICTURE_STRUCTURE_FRAME)
+         if (bs->desc->picture_structure == PIPE_MPEG12_PICTURE_STRUCTURE_FRAME)
             motion_vector_frame(bs, 1, &mb);
          else
             motion_vector_field(bs, 1, &mb);
       }
 
-      if (mb.macroblock_type & PIPE_MPEG12_MB_TYPE_INTRA && bs->desc.concealment_motion_vectors) {
+      if (mb.macroblock_type & PIPE_MPEG12_MB_TYPE_INTRA && bs->desc->concealment_motion_vectors) {
          unsigned extra = vl_vlc_get_uimsbf(&bs->vlc, 1);
          mb.PMV[1][0][0] = mb.PMV[0][0][0];
          mb.PMV[1][0][1] = mb.PMV[0][0][1];
@@ -930,11 +961,11 @@ decode_slice(struct vl_mpg12_bs *bs)
    } while (vl_vlc_bits_left(&bs->vlc) && vl_vlc_peekbits(&bs->vlc, 23));
 
    mb.num_skipped_macroblocks = 0;
-   bs->decoder->decode_macroblock(bs->decoder, &mb.base, 1);
+   bs->decoder->decode_macroblock(bs->decoder, target, &bs->desc->base, &mb.base, 1);
 }
 
 void
-vl_mpg12_bs_init(struct vl_mpg12_bs *bs, struct pipe_video_decoder *decoder)
+vl_mpg12_bs_init(struct vl_mpg12_bs *bs, struct pipe_video_codec *decoder)
 {
    static bool tables_initialized = false;
 
@@ -951,25 +982,25 @@ vl_mpg12_bs_init(struct vl_mpg12_bs *bs, struct pipe_video_decoder *decoder)
 }
 
 void
-vl_mpg12_bs_set_picture_desc(struct vl_mpg12_bs *bs, struct pipe_mpeg12_picture_desc *picture)
-{
-   bs->desc = *picture;
-   bs->intra_dct_tbl = picture->intra_vlc_format ? tbl_B15 : tbl_B14_AC;
-}
-
-void
-vl_mpg12_bs_decode(struct vl_mpg12_bs *bs, unsigned num_buffers,
-                   const void * const *buffers, const unsigned *sizes)
+vl_mpg12_bs_decode(struct vl_mpg12_bs *bs,
+                   struct pipe_video_buffer *target,
+                   struct pipe_mpeg12_picture_desc *picture,
+                   unsigned num_buffers,
+                   const void * const *buffers,
+                   const unsigned *sizes)
 {
    assert(bs);
 
+   bs->desc = picture;
+   bs->intra_dct_tbl = picture->intra_vlc_format ? tbl_B15 : tbl_B14_AC;
+
    vl_vlc_init(&bs->vlc, num_buffers, buffers, sizes);
-   while (vl_vlc_bits_left(&bs->vlc) > 32) {
+   while (vl_vlc_search_byte(&bs->vlc, ~0, 0x00) && vl_vlc_bits_left(&bs->vlc) > 32) {
       uint32_t code = vl_vlc_peekbits(&bs->vlc, 32);
 
       if (code >= 0x101 && code <= 0x1AF) {
          vl_vlc_eatbits(&bs->vlc, 24);
-         decode_slice(bs);
+         decode_slice(bs, target);
 
          /* align to a byte again */
          vl_vlc_eatbits(&bs->vlc, vl_vlc_valid_bits(&bs->vlc) & 7);

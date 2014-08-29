@@ -17,9 +17,10 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 
@@ -145,9 +146,15 @@ _mesa_unpack_image(GLuint dimensions,
 
 
 void
-_mesa_pack_rgba_span_int(struct gl_context *ctx, GLuint n, GLuint rgba[][4],
-                         GLenum dstFormat, GLenum dstType,
-                         GLvoid *dstAddr);
+_mesa_pack_rgba_span_from_uints(struct gl_context *ctx, GLuint n, GLuint rgba[][4],
+                                GLenum dstFormat, GLenum dstType,
+                                GLvoid *dstAddr);
+
+
+void
+_mesa_pack_rgba_span_from_ints(struct gl_context *ctx, GLuint n, GLint rgba[][4],
+                               GLenum dstFormat, GLenum dstType,
+                               GLvoid *dstAddr);
 
 
 extern void

@@ -1,8 +1,8 @@
 /*
  Copyright (C) Intel Corp.  2006.  All Rights Reserved.
- Intel funded Tungsten Graphics (http://www.tungstengraphics.com) to
+ Intel funded Tungsten Graphics to
  develop this 3D driver.
- 
+
  Permission is hereby granted, free of charge, to any person obtaining
  a copy of this software and associated documentation files (the
  "Software"), to deal in the Software without restriction, including
@@ -10,11 +10,11 @@
  distribute, sublicense, and/or sell copies of the Software, and to
  permit persons to whom the Software is furnished to do so, subject to
  the following conditions:
- 
+
  The above copyright notice and this permission notice (including the
  next paragraph) shall be included in all copies or substantial
  portions of the Software.
- 
+
  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
  EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
@@ -22,13 +22,13 @@
  LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
  OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- 
+
  **********************************************************************/
  /*
   * Authors:
-  *   Keith Whitwell <keith@tungstengraphics.com>
+  *   Keith Whitwell <keithw@vmware.com>
   */
- 
+
 
 #include "main/glheader.h"
 #include "main/macros.h"
@@ -52,9 +52,9 @@
  *
  * - The thread will need to use the destination_indices register.
  */
-static void brw_gs_alloc_regs( struct brw_gs_compile *c,
-			       GLuint nr_verts,
-                               bool sol_program )
+static void brw_ff_gs_alloc_regs(struct brw_ff_gs_compile *c,
+                                 GLuint nr_verts,
+                                 bool sol_program)
 {
    GLuint i = 0,j;
 
@@ -81,7 +81,7 @@ static void brw_gs_alloc_regs( struct brw_gs_compile *c,
          retype(brw_vec4_grf(i++, 0), BRW_REGISTER_TYPE_UD);
    }
 
-   c->prog_data.urb_read_length = c->nr_regs; 
+   c->prog_data.urb_read_length = c->nr_regs;
    c->prog_data.total_grf = i;
 }
 
@@ -100,7 +100,7 @@ static void brw_gs_alloc_regs( struct brw_gs_compile *c,
  * This function sets up the above data by copying by copying the contents of
  * R0 to the header register.
  */
-static void brw_gs_initialize_header(struct brw_gs_compile *c)
+static void brw_ff_gs_initialize_header(struct brw_ff_gs_compile *c)
 {
    struct brw_compile *p = &c->func;
    brw_MOV(p, c->reg.header, c->reg.R0);
@@ -113,8 +113,8 @@ static void brw_gs_initialize_header(struct brw_gs_compile *c)
  * PrimEnd, Increment CL_INVOCATIONS, and SONumPrimsWritten, many of which we
  * need to be able to update on a per-vertex basis.
  */
-static void brw_gs_overwrite_header_dw2(struct brw_gs_compile *c,
-                                        unsigned dw2)
+static void brw_ff_gs_overwrite_header_dw2(struct brw_ff_gs_compile *c,
+                                           unsigned dw2)
 {
    struct brw_compile *p = &c->func;
    brw_MOV(p, get_element_ud(c->reg.header, 2), brw_imm_ud(dw2));
@@ -128,7 +128,7 @@ static void brw_gs_overwrite_header_dw2(struct brw_gs_compile *c,
  * DWORD 2.  So this function extracts the primitive type field, bitshifts it
  * appropriately, and stores it in c->reg.header.
  */
-static void brw_gs_overwrite_header_dw2_from_r0(struct brw_gs_compile *c)
+static void brw_ff_gs_overwrite_header_dw2_from_r0(struct brw_ff_gs_compile *c)
 {
    struct brw_compile *p = &c->func;
    brw_AND(p, get_element_ud(c->reg.header, 2), get_element_ud(c->reg.R0, 2),
@@ -143,7 +143,8 @@ static void brw_gs_overwrite_header_dw2_from_r0(struct brw_gs_compile *c)
  * This is used to set/unset the "PrimStart" and "PrimEnd" flags appropriately
  * for each vertex.
  */
-static void brw_gs_offset_header_dw2(struct brw_gs_compile *c, int offset)
+static void brw_ff_gs_offset_header_dw2(struct brw_ff_gs_compile *c,
+                                        int offset)
 {
    struct brw_compile *p = &c->func;
    brw_ADD(p, get_element_d(c->reg.header, 2), get_element_d(c->reg.header, 2),
@@ -163,77 +164,67 @@ static void brw_gs_offset_header_dw2(struct brw_gs_compile *c, int offset)
  * will be stored in DWORD 0 of c->reg.header for use in the next URB_WRITE
  * message.
  */
-static void brw_gs_emit_vue(struct brw_gs_compile *c, 
-			    struct brw_reg vert,
-			    bool last)
+static void brw_ff_gs_emit_vue(struct brw_ff_gs_compile *c,
+                               struct brw_reg vert,
+                               bool last)
 {
    struct brw_compile *p = &c->func;
-   bool allocate = !last;
+   int write_offset = 0;
+   bool complete = false;
 
-   /* Copy the vertex from vertn into m1..mN+1:
-    */
-   brw_copy8(p, brw_message_reg(1), vert, c->nr_regs);
+   do {
+      /* We can't write more than 14 registers at a time to the URB */
+      int write_len = MIN2(c->nr_regs - write_offset, 14);
+      if (write_len == c->nr_regs - write_offset)
+         complete = true;
 
-   /* Send each vertex as a seperate write to the urb.  This is
-    * different to the concept in brw_sf_emit.c, where subsequent
-    * writes are used to build up a single urb entry.  Each of these
-    * writes instantiates a seperate urb entry, and a new one must be
-    * allocated each time.
-    */
-   brw_urb_WRITE(p, 
-		 allocate ? c->reg.temp
-                          : retype(brw_null_reg(), BRW_REGISTER_TYPE_UD),
-		 0,
-		 c->reg.header,
-		 allocate,
-		 1,		/* used */
-		 c->nr_regs + 1, /* msg length */
-		 allocate ? 1 : 0, /* response length */
-		 allocate ? 0 : 1, /* eot */
-		 1,		/* writes_complete */
-		 0,		/* urb offset */
-		 BRW_URB_SWIZZLE_NONE);
+      /* Copy the vertex from vertn into m1..mN+1:
+       */
+      brw_copy8(p, brw_message_reg(1), offset(vert, write_offset), write_len);
 
-   if (allocate) {
+      /* Send the vertex data to the URB.  If this is the last write for this
+       * vertex, then we mark it as complete, and either end the thread or
+       * allocate another vertex URB entry (depending whether this is the last
+       * vertex).
+       */
+      enum brw_urb_write_flags flags;
+      if (!complete)
+         flags = BRW_URB_WRITE_NO_FLAGS;
+      else if (last)
+         flags = BRW_URB_WRITE_EOT_COMPLETE;
+      else
+         flags = BRW_URB_WRITE_ALLOCATE_COMPLETE;
+      brw_urb_WRITE(p,
+                    (flags & BRW_URB_WRITE_ALLOCATE) ? c->reg.temp
+                    : retype(brw_null_reg(), BRW_REGISTER_TYPE_UD),
+                    0,
+                    c->reg.header,
+                    flags,
+                    write_len + 1, /* msg length */
+                    (flags & BRW_URB_WRITE_ALLOCATE) ? 1
+                    : 0, /* response length */
+                    write_offset,  /* urb offset */
+                    BRW_URB_SWIZZLE_NONE);
+      write_offset += write_len;
+   } while (!complete);
+
+   if (!last) {
       brw_MOV(p, get_element_ud(c->reg.header, 0),
               get_element_ud(c->reg.temp, 0));
    }
 }
 
 /**
- * De-allocate the URB entry that was previously allocated to this thread
- * (without writing any vertex data to it), and terminate the thread.  This is
- * used to implement RASTERIZER_DISCARD functionality.
- */
-static void brw_gs_terminate(struct brw_gs_compile *c)
-{
-   struct brw_compile *p = &c->func;
-   brw_urb_WRITE(p,
-                 retype(brw_null_reg(), BRW_REGISTER_TYPE_UD), /* dest */
-                 0, /* msg_reg_nr */
-                 c->reg.header, /* src0 */
-                 false, /* allocate */
-                 false, /* used */
-                 1, /* msg_length */
-                 0, /* response_length */
-                 true, /* eot */
-                 true, /* writes_complete */
-                 0, /* offset */
-                 BRW_URB_SWIZZLE_NONE);
-}
-
-/**
  * Send an FF_SYNC message to ensure that all previously spawned GS threads
  * have finished sending primitives down the pipeline, and to allocate a URB
- * entry for the first output vertex.  Only needed when intel->needs_ff_sync
- * is true.
+ * entry for the first output vertex.  Only needed on Ironlake+.
  *
  * This function modifies c->reg.header: in DWORD 1, it stores num_prim (which
  * is needed by the FF_SYNC message), and in DWORD 0, it stores the handle to
  * the allocated URB entry (which will be needed by the URB_WRITE meesage that
  * follows).
  */
-static void brw_gs_ff_sync(struct brw_gs_compile *c, int num_prim)
+static void brw_ff_gs_ff_sync(struct brw_ff_gs_compile *c, int num_prim)
 {
    struct brw_compile *p = &c->func;
 
@@ -250,97 +241,100 @@ static void brw_gs_ff_sync(struct brw_gs_compile *c, int num_prim)
 }
 
 
-void brw_gs_quads( struct brw_gs_compile *c, struct brw_gs_prog_key *key )
+void
+brw_ff_gs_quads(struct brw_ff_gs_compile *c, struct brw_ff_gs_prog_key *key)
 {
-   struct intel_context *intel = &c->func.brw->intel;
+   struct brw_context *brw = c->func.brw;
 
-   brw_gs_alloc_regs(c, 4, false);
-   brw_gs_initialize_header(c);
+   brw_ff_gs_alloc_regs(c, 4, false);
+   brw_ff_gs_initialize_header(c);
    /* Use polygons for correct edgeflag behaviour. Note that vertex 3
     * is the PV for quads, but vertex 0 for polygons:
     */
-   if (intel->needs_ff_sync)
-      brw_gs_ff_sync(c, 1);
-   brw_gs_overwrite_header_dw2(
+   if (brw->gen == 5)
+      brw_ff_gs_ff_sync(c, 1);
+   brw_ff_gs_overwrite_header_dw2(
       c, ((_3DPRIM_POLYGON << URB_WRITE_PRIM_TYPE_SHIFT)
           | URB_WRITE_PRIM_START));
    if (key->pv_first) {
-      brw_gs_emit_vue(c, c->reg.vertex[0], 0);
-      brw_gs_overwrite_header_dw2(
+      brw_ff_gs_emit_vue(c, c->reg.vertex[0], 0);
+      brw_ff_gs_overwrite_header_dw2(
          c, _3DPRIM_POLYGON << URB_WRITE_PRIM_TYPE_SHIFT);
-      brw_gs_emit_vue(c, c->reg.vertex[1], 0);
-      brw_gs_emit_vue(c, c->reg.vertex[2], 0);
-      brw_gs_overwrite_header_dw2(
+      brw_ff_gs_emit_vue(c, c->reg.vertex[1], 0);
+      brw_ff_gs_emit_vue(c, c->reg.vertex[2], 0);
+      brw_ff_gs_overwrite_header_dw2(
          c, ((_3DPRIM_POLYGON << URB_WRITE_PRIM_TYPE_SHIFT)
              | URB_WRITE_PRIM_END));
-      brw_gs_emit_vue(c, c->reg.vertex[3], 1);
+      brw_ff_gs_emit_vue(c, c->reg.vertex[3], 1);
    }
    else {
-      brw_gs_emit_vue(c, c->reg.vertex[3], 0);
-      brw_gs_overwrite_header_dw2(
+      brw_ff_gs_emit_vue(c, c->reg.vertex[3], 0);
+      brw_ff_gs_overwrite_header_dw2(
          c, _3DPRIM_POLYGON << URB_WRITE_PRIM_TYPE_SHIFT);
-      brw_gs_emit_vue(c, c->reg.vertex[0], 0);
-      brw_gs_emit_vue(c, c->reg.vertex[1], 0);
-      brw_gs_overwrite_header_dw2(
+      brw_ff_gs_emit_vue(c, c->reg.vertex[0], 0);
+      brw_ff_gs_emit_vue(c, c->reg.vertex[1], 0);
+      brw_ff_gs_overwrite_header_dw2(
          c, ((_3DPRIM_POLYGON << URB_WRITE_PRIM_TYPE_SHIFT)
              | URB_WRITE_PRIM_END));
-      brw_gs_emit_vue(c, c->reg.vertex[2], 1);
+      brw_ff_gs_emit_vue(c, c->reg.vertex[2], 1);
    }
 }
 
-void brw_gs_quad_strip( struct brw_gs_compile *c, struct brw_gs_prog_key *key )
+void
+brw_ff_gs_quad_strip(struct brw_ff_gs_compile *c,
+                     struct brw_ff_gs_prog_key *key)
 {
-   struct intel_context *intel = &c->func.brw->intel;
+   struct brw_context *brw = c->func.brw;
 
-   brw_gs_alloc_regs(c, 4, false);
-   brw_gs_initialize_header(c);
-   
-   if (intel->needs_ff_sync)
-      brw_gs_ff_sync(c, 1);
-   brw_gs_overwrite_header_dw2(
+   brw_ff_gs_alloc_regs(c, 4, false);
+   brw_ff_gs_initialize_header(c);
+
+   if (brw->gen == 5)
+      brw_ff_gs_ff_sync(c, 1);
+   brw_ff_gs_overwrite_header_dw2(
       c, ((_3DPRIM_POLYGON << URB_WRITE_PRIM_TYPE_SHIFT)
           | URB_WRITE_PRIM_START));
    if (key->pv_first) {
-      brw_gs_emit_vue(c, c->reg.vertex[0], 0);
-      brw_gs_overwrite_header_dw2(
+      brw_ff_gs_emit_vue(c, c->reg.vertex[0], 0);
+      brw_ff_gs_overwrite_header_dw2(
          c, _3DPRIM_POLYGON << URB_WRITE_PRIM_TYPE_SHIFT);
-      brw_gs_emit_vue(c, c->reg.vertex[1], 0);
-      brw_gs_emit_vue(c, c->reg.vertex[2], 0);
-      brw_gs_overwrite_header_dw2(
+      brw_ff_gs_emit_vue(c, c->reg.vertex[1], 0);
+      brw_ff_gs_emit_vue(c, c->reg.vertex[2], 0);
+      brw_ff_gs_overwrite_header_dw2(
          c, ((_3DPRIM_POLYGON << URB_WRITE_PRIM_TYPE_SHIFT)
              | URB_WRITE_PRIM_END));
-      brw_gs_emit_vue(c, c->reg.vertex[3], 1);
+      brw_ff_gs_emit_vue(c, c->reg.vertex[3], 1);
    }
    else {
-      brw_gs_emit_vue(c, c->reg.vertex[2], 0);
-      brw_gs_overwrite_header_dw2(
+      brw_ff_gs_emit_vue(c, c->reg.vertex[2], 0);
+      brw_ff_gs_overwrite_header_dw2(
          c, _3DPRIM_POLYGON << URB_WRITE_PRIM_TYPE_SHIFT);
-      brw_gs_emit_vue(c, c->reg.vertex[3], 0);
-      brw_gs_emit_vue(c, c->reg.vertex[0], 0);
-      brw_gs_overwrite_header_dw2(
+      brw_ff_gs_emit_vue(c, c->reg.vertex[3], 0);
+      brw_ff_gs_emit_vue(c, c->reg.vertex[0], 0);
+      brw_ff_gs_overwrite_header_dw2(
          c, ((_3DPRIM_POLYGON << URB_WRITE_PRIM_TYPE_SHIFT)
              | URB_WRITE_PRIM_END));
-      brw_gs_emit_vue(c, c->reg.vertex[1], 1);
+      brw_ff_gs_emit_vue(c, c->reg.vertex[1], 1);
    }
 }
 
-void brw_gs_lines( struct brw_gs_compile *c )
+void brw_ff_gs_lines(struct brw_ff_gs_compile *c)
 {
-   struct intel_context *intel = &c->func.brw->intel;
+   struct brw_context *brw = c->func.brw;
 
-   brw_gs_alloc_regs(c, 2, false);
-   brw_gs_initialize_header(c);
+   brw_ff_gs_alloc_regs(c, 2, false);
+   brw_ff_gs_initialize_header(c);
 
-   if (intel->needs_ff_sync)
-      brw_gs_ff_sync(c, 1);
-   brw_gs_overwrite_header_dw2(
+   if (brw->gen == 5)
+      brw_ff_gs_ff_sync(c, 1);
+   brw_ff_gs_overwrite_header_dw2(
       c, ((_3DPRIM_LINESTRIP << URB_WRITE_PRIM_TYPE_SHIFT)
           | URB_WRITE_PRIM_START));
-   brw_gs_emit_vue(c, c->reg.vertex[0], 0);
-   brw_gs_overwrite_header_dw2(
+   brw_ff_gs_emit_vue(c, c->reg.vertex[0], 0);
+   brw_ff_gs_overwrite_header_dw2(
       c, ((_3DPRIM_LINESTRIP << URB_WRITE_PRIM_TYPE_SHIFT)
           | URB_WRITE_PRIM_END));
-   brw_gs_emit_vue(c, c->reg.vertex[1], 1);
+   brw_ff_gs_emit_vue(c, c->reg.vertex[1], 1);
 }
 
 /**
@@ -348,14 +342,14 @@ void brw_gs_lines( struct brw_gs_compile *c )
  * (transform feedback).
  */
 void
-gen6_sol_program(struct brw_gs_compile *c, struct brw_gs_prog_key *key,
+gen6_sol_program(struct brw_ff_gs_compile *c, struct brw_ff_gs_prog_key *key,
 	         unsigned num_verts, bool check_edge_flags)
 {
    struct brw_compile *p = &c->func;
    c->prog_data.svbi_postincrement_value = num_verts;
 
-   brw_gs_alloc_regs(c, num_verts, true);
-   brw_gs_initialize_header(c);
+   brw_ff_gs_alloc_regs(c, num_verts, true);
+   brw_ff_gs_initialize_header(c);
 
    if (key->num_transform_feedback_bindings > 0) {
       unsigned vertex, binding;
@@ -431,9 +425,9 @@ gen6_sol_program(struct brw_gs_compile *c, struct brw_gs_prog_key *key,
 
          for (binding = 0; binding < key->num_transform_feedback_bindings;
               ++binding) {
-            unsigned char vert_result =
+            unsigned char varying =
                key->transform_feedback_bindings[binding];
-            unsigned char slot = c->vue_map.vert_result_to_slot[vert_result];
+            unsigned char slot = c->vue_map.varying_to_slot[varying];
             /* From the Sandybridge PRM, Volume 2, Part 1, Section 4.5.1:
              *
              *   "Prior to End of Thread with a URB_WRITE, the kernel must
@@ -446,8 +440,8 @@ gen6_sol_program(struct brw_gs_compile *c, struct brw_gs_prog_key *key,
             struct brw_reg vertex_slot = c->reg.vertex[vertex];
             vertex_slot.nr += slot / 2;
             vertex_slot.subnr = (slot % 2) * 16;
-            /* gl_PointSize is stored in VERT_RESULT_PSIZ.w. */
-            vertex_slot.dw1.bits.swizzle = vert_result == VERT_RESULT_PSIZ
+            /* gl_PointSize is stored in VARYING_SLOT_PSIZ.w. */
+            vertex_slot.dw1.bits.swizzle = varying == VARYING_SLOT_PSIZ
                ? BRW_SWIZZLE_WWWW : key->transform_feedback_swizzles[binding];
             brw_set_access_mode(p, BRW_ALIGN_16);
             brw_MOV(p, stride(c->reg.header, 4, 4, 1),
@@ -457,7 +451,7 @@ gen6_sol_program(struct brw_gs_compile *c, struct brw_gs_prog_key *key,
                           final_write ? c->reg.temp : brw_null_reg(), /* dest */
                           1, /* msg_reg_nr */
                           c->reg.header, /* src0 */
-                          SURF_INDEX_SOL_BINDING(binding), /* binding_table_index */
+                          SURF_INDEX_GEN6_SOL_BINDING(binding), /* binding_table_index */
                           final_write); /* send_commit_msg */
          }
       }
@@ -467,7 +461,7 @@ gen6_sol_program(struct brw_gs_compile *c, struct brw_gs_prog_key *key,
        * the register that we overwrote while streaming out transform feedback
        * data.
        */
-      brw_gs_initialize_header(c);
+      brw_ff_gs_initialize_header(c);
 
       /* Finally, wait for the write commit to occur so that we can proceed to
        * other things safely.
@@ -482,27 +476,21 @@ gen6_sol_program(struct brw_gs_compile *c, struct brw_gs_prog_key *key,
       brw_MOV(p, c->reg.temp, c->reg.temp);
    }
 
-   brw_gs_ff_sync(c, 1);
+   brw_ff_gs_ff_sync(c, 1);
 
-   /* If RASTERIZER_DISCARD is enabled, we have nothing further to do, so
-    * release the URB that was just allocated, and terminate the thread.
-    */
-   if (key->rasterizer_discard) {
-      brw_gs_terminate(c);
-      return;
-   }
-
-   brw_gs_overwrite_header_dw2_from_r0(c);
+   brw_ff_gs_overwrite_header_dw2_from_r0(c);
    switch (num_verts) {
    case 1:
-      brw_gs_offset_header_dw2(c, URB_WRITE_PRIM_START | URB_WRITE_PRIM_END);
-      brw_gs_emit_vue(c, c->reg.vertex[0], true);
+      brw_ff_gs_offset_header_dw2(c,
+                                  URB_WRITE_PRIM_START | URB_WRITE_PRIM_END);
+      brw_ff_gs_emit_vue(c, c->reg.vertex[0], true);
       break;
    case 2:
-      brw_gs_offset_header_dw2(c, URB_WRITE_PRIM_START);
-      brw_gs_emit_vue(c, c->reg.vertex[0], false);
-      brw_gs_offset_header_dw2(c, URB_WRITE_PRIM_END - URB_WRITE_PRIM_START);
-      brw_gs_emit_vue(c, c->reg.vertex[1], true);
+      brw_ff_gs_offset_header_dw2(c, URB_WRITE_PRIM_START);
+      brw_ff_gs_emit_vue(c, c->reg.vertex[0], false);
+      brw_ff_gs_offset_header_dw2(c,
+                                  URB_WRITE_PRIM_END - URB_WRITE_PRIM_START);
+      brw_ff_gs_emit_vue(c, c->reg.vertex[1], true);
       break;
    case 3:
       if (check_edge_flags) {
@@ -515,10 +503,10 @@ gen6_sol_program(struct brw_gs_compile *c, struct brw_gs_prog_key *key,
                  brw_imm_ud(BRW_GS_EDGE_INDICATOR_0));
          brw_IF(p, BRW_EXECUTE_1);
       }
-      brw_gs_offset_header_dw2(c, URB_WRITE_PRIM_START);
-      brw_gs_emit_vue(c, c->reg.vertex[0], false);
-      brw_gs_offset_header_dw2(c, -URB_WRITE_PRIM_START);
-      brw_gs_emit_vue(c, c->reg.vertex[1], false);
+      brw_ff_gs_offset_header_dw2(c, URB_WRITE_PRIM_START);
+      brw_ff_gs_emit_vue(c, c->reg.vertex[0], false);
+      brw_ff_gs_offset_header_dw2(c, -URB_WRITE_PRIM_START);
+      brw_ff_gs_emit_vue(c, c->reg.vertex[1], false);
       if (check_edge_flags) {
          brw_ENDIF(p);
          /* Only emit vertex 2 in PRIM_END mode if this is the last triangle
@@ -531,9 +519,9 @@ gen6_sol_program(struct brw_gs_compile *c, struct brw_gs_prog_key *key,
                  brw_imm_ud(BRW_GS_EDGE_INDICATOR_1));
          brw_set_predicate_control(p, BRW_PREDICATE_NORMAL);
       }
-      brw_gs_offset_header_dw2(c, URB_WRITE_PRIM_END);
+      brw_ff_gs_offset_header_dw2(c, URB_WRITE_PRIM_END);
       brw_set_predicate_control(p, BRW_PREDICATE_NONE);
-      brw_gs_emit_vue(c, c->reg.vertex[2], true);
+      brw_ff_gs_emit_vue(c, c->reg.vertex[2], true);
       break;
    }
 }

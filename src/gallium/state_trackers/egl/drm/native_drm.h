@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  7.8
  *
  * Copyright (C) 2010 Chia-I Wu <olv@0xlab.org>
  *
@@ -38,7 +37,7 @@
 #include "common/native_helper.h"
 
 #ifdef HAVE_WAYLAND_BACKEND
-#include "common/native_wayland_drm_bufmgr_helper.h"
+#include "common/native_wayland_drm_bufmgr.h"
 #endif
 
 #include "gbm_gallium_drmint.h"
@@ -68,10 +67,6 @@ struct drm_display {
    struct drm_surface **shown_surfaces;
    /* save the original settings of the CRTCs */
    struct drm_crtc *saved_crtcs;
-
-#ifdef HAVE_WAYLAND_BACKEND
-   struct wl_drm *wl_server_drm; /* for EGL_WL_bind_wayland_display */
-#endif
 };
 
 struct drm_config {

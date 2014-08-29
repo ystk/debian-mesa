@@ -34,9 +34,9 @@
 
 #include "u_math.h"
 #include "u_memory.h"
-#include "u_rect.h"
 #include "u_format.h"
 #include "u_format_s3tc.h"
+#include "u_surface.h"
 
 #include "pipe/p_defines.h"
 
@@ -61,43 +61,16 @@ util_format_is_float(enum pipe_format format)
 }
 
 
-/**
- * Return the number of logical channels in the given format by
- * examining swizzles.
- * XXX this could be made into a public function if useful elsewhere.
- */
-static unsigned
-nr_logical_channels(const struct util_format_description *desc)
-{
-   boolean swizzle_used[UTIL_FORMAT_SWIZZLE_MAX];
-
-   memset(swizzle_used, 0, sizeof(swizzle_used));
-
-   swizzle_used[desc->swizzle[0]] = TRUE;
-   swizzle_used[desc->swizzle[1]] = TRUE;
-   swizzle_used[desc->swizzle[2]] = TRUE;
-   swizzle_used[desc->swizzle[3]] = TRUE;
-
-   return (swizzle_used[UTIL_FORMAT_SWIZZLE_X] +
-           swizzle_used[UTIL_FORMAT_SWIZZLE_Y] +
-           swizzle_used[UTIL_FORMAT_SWIZZLE_Z] +
-           swizzle_used[UTIL_FORMAT_SWIZZLE_W]);
-}
-
-
 /** Test if the format contains RGB, but not alpha */
 boolean
-util_format_is_rgb_no_alpha(enum pipe_format format)
+util_format_has_alpha(enum pipe_format format)
 {
    const struct util_format_description *desc =
       util_format_description(format);
 
-   if ((desc->colorspace == UTIL_FORMAT_COLORSPACE_RGB ||
-        desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB) &&
-       nr_logical_channels(desc) == 3) {
-      return TRUE;
-   }
-   return FALSE;
+   return (desc->colorspace == UTIL_FORMAT_COLORSPACE_RGB ||
+           desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB) &&
+          desc->swizzle[3] != UTIL_FORMAT_SWIZZLE_1;
 }
 
 
@@ -158,6 +131,27 @@ util_format_is_pure_uint(enum pipe_format format)
    return (desc->channel[i].type == UTIL_FORMAT_TYPE_UNSIGNED && desc->channel[i].pure_integer) ? TRUE : FALSE;
 }
 
+/**
+ * Returns true if all non-void channels are normalized signed.
+ */
+boolean
+util_format_is_snorm(enum pipe_format format)
+{
+   const struct util_format_description *desc = util_format_description(format);
+   int i;
+
+   if (desc->is_mixed)
+      return FALSE;
+
+   i = util_format_get_first_non_void_channel(format);
+   if (i == -1)
+      return FALSE;
+
+   return desc->channel[i].type == UTIL_FORMAT_TYPE_SIGNED &&
+          !desc->channel[i].pure_integer &&
+          desc->channel[i].normalized;
+}
+
 boolean
 util_format_is_luminance_alpha(enum pipe_format format)
 {
@@ -211,6 +205,43 @@ util_format_is_supported(enum pipe_format format, unsigned bind)
 #endif
 
    return TRUE;
+}
+
+
+/**
+ * Calculates the MRD for the depth format. MRD is used in depth bias
+ * for UNORM and unbound depth buffers. When the depth buffer is floating
+ * point, the depth bias calculation does not use the MRD. However, the
+ * default MRD will be 1.0 / ((1 << 24) - 1).
+ */
+double
+util_get_depth_format_mrd(const struct util_format_description *desc)
+{
+   /*
+    * Depth buffer formats without a depth component OR scenarios
+    * without a bound depth buffer default to D24.
+    */
+   double mrd = 1.0 / ((1 << 24) - 1);
+   unsigned depth_channel;
+
+   assert(desc);
+
+   /*
+    * Some depth formats do not store the depth component in the first
+    * channel, detect the format and adjust the depth channel. Get the
+    * swizzled depth component channel.
+    */
+   depth_channel = desc->swizzle[0];
+
+   if (desc->channel[depth_channel].type == UTIL_FORMAT_TYPE_UNSIGNED &&
+       desc->channel[depth_channel].normalized) {
+      int depth_bits;
+
+      depth_bits = desc->channel[depth_channel].size;
+      mrd = 1.0 / ((1ULL << depth_bits) - 1);
+   }
+
+   return mrd;
 }
 
 
@@ -303,7 +334,7 @@ util_format_read_4ui(enum pipe_format format,
 {
    const struct util_format_description *format_desc;
    const uint8_t *src_row;
-   unsigned *dst_row;
+   uint32_t *dst_row;
 
    format_desc = util_format_description(format);
 
@@ -324,7 +355,7 @@ util_format_write_4ui(enum pipe_format format,
 {
    const struct util_format_description *format_desc;
    uint8_t *dst_row;
-   const unsigned *src_row;
+   const uint32_t *src_row;
 
    format_desc = util_format_description(format);
 
@@ -345,7 +376,7 @@ util_format_read_4i(enum pipe_format format,
 {
    const struct util_format_description *format_desc;
    const uint8_t *src_row;
-   int *dst_row;
+   int32_t *dst_row;
 
    format_desc = util_format_description(format);
 
@@ -366,7 +397,7 @@ util_format_write_4i(enum pipe_format format,
 {
    const struct util_format_description *format_desc;
    uint8_t *dst_row;
-   const int *src_row;
+   const int32_t *src_row;
 
    format_desc = util_format_description(format);
 
@@ -496,7 +527,7 @@ util_format_fits_8unorm(const struct util_format_description *format_desc)
 }
 
 
-void
+boolean
 util_format_translate(enum pipe_format dst_format,
                       void *dst, unsigned dst_stride,
                       unsigned dst_x, unsigned dst_y,
@@ -524,7 +555,7 @@ util_format_translate(enum pipe_format dst_format,
       util_copy_rect(dst, dst_format, dst_stride,  dst_x, dst_y,
                      width, height, src, (int)src_stride,
                      src_x, src_y);
-      return;
+      return TRUE;
    }
 
    assert(dst_x % dst_format_desc->block.width == 0);
@@ -586,15 +617,11 @@ util_format_translate(enum pipe_format dst_format,
          src_row += src_step;
       }
 
-      if (tmp_s) {
-         FREE(tmp_s);
-      }
+      FREE(tmp_s);
 
-      if (tmp_z) {
-         FREE(tmp_z);
-      }
+      FREE(tmp_z);
 
-      return;
+      return TRUE;
    }
 
    if (util_format_fits_8unorm(src_format_desc) ||
@@ -602,10 +629,15 @@ util_format_translate(enum pipe_format dst_format,
       unsigned tmp_stride;
       uint8_t *tmp_row;
 
+      if (!src_format_desc->unpack_rgba_8unorm ||
+          !dst_format_desc->pack_rgba_8unorm) {
+         return FALSE;
+      }
+
       tmp_stride = MAX2(width, x_step) * 4 * sizeof *tmp_row;
       tmp_row = MALLOC(y_step * tmp_stride);
       if (!tmp_row)
-         return;
+         return FALSE;
 
       while (height >= y_step) {
          src_format_desc->unpack_rgba_8unorm(tmp_row, tmp_stride, src_row, src_stride, width, y_step);
@@ -627,10 +659,15 @@ util_format_translate(enum pipe_format dst_format,
       unsigned tmp_stride;
       float *tmp_row;
 
+      if (!src_format_desc->unpack_rgba_float ||
+          !dst_format_desc->pack_rgba_float) {
+         return FALSE;
+      }
+
       tmp_stride = MAX2(width, x_step) * 4 * sizeof *tmp_row;
       tmp_row = MALLOC(y_step * tmp_stride);
       if (!tmp_row)
-         return;
+         return FALSE;
 
       while (height >= y_step) {
          src_format_desc->unpack_rgba_float(tmp_row, tmp_stride, src_row, src_stride, width, y_step);
@@ -648,6 +685,7 @@ util_format_translate(enum pipe_format dst_format,
 
       FREE(tmp_row);
    }
+   return TRUE;
 }
 
 void util_format_compose_swizzles(const unsigned char swz1[4],
@@ -659,6 +697,40 @@ void util_format_compose_swizzles(const unsigned char swz1[4],
    for (i = 0; i < 4; i++) {
       dst[i] = swz2[i] <= UTIL_FORMAT_SWIZZLE_W ?
                swz1[swz2[i]] : swz2[i];
+   }
+}
+
+void util_format_apply_color_swizzle(union pipe_color_union *dst,
+                                     const union pipe_color_union *src,
+                                     const unsigned char swz[4],
+                                     const boolean is_integer)
+{
+   unsigned c;
+
+   if (is_integer) {
+      for (c = 0; c < 4; ++c) {
+         switch (swz[c]) {
+         case PIPE_SWIZZLE_RED:   dst->ui[c] = src->ui[0]; break;
+         case PIPE_SWIZZLE_GREEN: dst->ui[c] = src->ui[1]; break;
+         case PIPE_SWIZZLE_BLUE:  dst->ui[c] = src->ui[2]; break;
+         case PIPE_SWIZZLE_ALPHA: dst->ui[c] = src->ui[3]; break;
+         default:
+            dst->ui[c] = (swz[c] == PIPE_SWIZZLE_ONE) ? 1 : 0;
+            break;
+         }
+      }
+   } else {
+      for (c = 0; c < 4; ++c) {
+         switch (swz[c]) {
+         case PIPE_SWIZZLE_RED:   dst->f[c] = src->f[0]; break;
+         case PIPE_SWIZZLE_GREEN: dst->f[c] = src->f[1]; break;
+         case PIPE_SWIZZLE_BLUE:  dst->f[c] = src->f[2]; break;
+         case PIPE_SWIZZLE_ALPHA: dst->f[c] = src->f[3]; break;
+         default:
+            dst->f[c] = (swz[c] == PIPE_SWIZZLE_ONE) ? 1.0f : 0.0f;
+            break;
+         }
+      }
    }
 }
 

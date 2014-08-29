@@ -48,6 +48,7 @@ static const char* r300_get_vendor(struct pipe_screen* pscreen)
 }
 
 static const char* chip_families[] = {
+    "unknown",
     "ATI R300",
     "ATI R350",
     "ATI RV350",
@@ -88,6 +89,7 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
     switch (param) {
         /* Supported features (boolean caps). */
         case PIPE_CAP_NPOT_TEXTURES:
+        case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
         case PIPE_CAP_TWO_SIDED_STENCIL:
         case PIPE_CAP_ANISOTROPIC_FILTER:
         case PIPE_CAP_POINT_SPRITE:
@@ -100,27 +102,44 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
         case PIPE_CAP_CONDITIONAL_RENDER:
         case PIPE_CAP_TEXTURE_BARRIER:
-        case PIPE_CAP_TGSI_CAN_COMPACT_VARYINGS:
         case PIPE_CAP_TGSI_CAN_COMPACT_CONSTANTS:
+        case PIPE_CAP_USER_INDEX_BUFFERS:
+        case PIPE_CAP_USER_CONSTANT_BUFFERS:
+        case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
+        case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
             return 1;
+
+        case PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT:
+            return R300_BUFFER_ALIGNMENT;
+
+        case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
+            return 16;
+
+        case PIPE_CAP_GLSL_FEATURE_LEVEL:
+            return 120;
 
         /* r300 cannot do swizzling of compressed textures. Supported otherwise. */
         case PIPE_CAP_TEXTURE_SWIZZLE:
             return util_format_s3tc_enabled ? r300screen->caps.dxtc_swizzle : 1;
 
+        /* We don't support color clamping on r500, so that we can use color
+         * intepolators for generic varyings. */
+        case PIPE_CAP_VERTEX_COLOR_CLAMPED:
+            return !is_r500;
+
         /* Supported on r500 only. */
-        case PIPE_CAP_FRAGMENT_COLOR_CLAMP_CONTROL:
+        case PIPE_CAP_VERTEX_COLOR_UNCLAMPED:
         case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
         case PIPE_CAP_SM3:
             return is_r500 ? 1 : 0;
 
         /* Unsupported features. */
-        case PIPE_CAP_TIMER_QUERY:
-        case PIPE_CAP_DUAL_SOURCE_BLEND:
+        case PIPE_CAP_QUERY_TIME_ELAPSED:
+        case PIPE_CAP_QUERY_PIPELINE_STATISTICS:
+        case PIPE_CAP_MAX_DUAL_SOURCE_RENDER_TARGETS:
         case PIPE_CAP_INDEP_BLEND_ENABLE:
         case PIPE_CAP_INDEP_BLEND_FUNC:
         case PIPE_CAP_DEPTH_CLIP_DISABLE:
-        case PIPE_CAP_DEPTHSTENCIL_CLEAR_SEPARATE:
         case PIPE_CAP_SHADER_STENCIL_EXPORT:
         case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS:
         case PIPE_CAP_TGSI_INSTANCEID:
@@ -128,22 +147,49 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
         case PIPE_CAP_SEAMLESS_CUBE_MAP:
         case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
-        case PIPE_CAP_SCALED_RESOLVE:
         case PIPE_CAP_MIN_TEXEL_OFFSET:
         case PIPE_CAP_MAX_TEXEL_OFFSET:
+        case PIPE_CAP_MIN_TEXTURE_GATHER_OFFSET:
+        case PIPE_CAP_MAX_TEXTURE_GATHER_OFFSET:
         case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
         case PIPE_CAP_MAX_STREAM_OUTPUT_SEPARATE_COMPONENTS:
         case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
+        case PIPE_CAP_MAX_GEOMETRY_OUTPUT_VERTICES:
+        case PIPE_CAP_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS:
         case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
+        case PIPE_CAP_FRAGMENT_COLOR_CLAMPED:
+        case PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION:
+        case PIPE_CAP_COMPUTE:
+        case PIPE_CAP_START_INSTANCE:
+        case PIPE_CAP_QUERY_TIMESTAMP:
+        case PIPE_CAP_TEXTURE_MULTISAMPLE:
+        case PIPE_CAP_CUBE_MAP_ARRAY:
+        case PIPE_CAP_TEXTURE_BUFFER_OBJECTS:
+        case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
+        case PIPE_CAP_TEXTURE_BORDER_COLOR_QUIRK:
+        case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
+        case PIPE_CAP_TGSI_VS_LAYER:
+        case PIPE_CAP_MAX_TEXTURE_GATHER_COMPONENTS:
+        case PIPE_CAP_TEXTURE_GATHER_SM5:
+        case PIPE_CAP_TEXTURE_QUERY_LOD:
+        case PIPE_CAP_FAKE_SW_MSAA:
+        case PIPE_CAP_SAMPLE_SHADING:
             return 0;
 
         /* SWTCL-only features. */
         case PIPE_CAP_PRIMITIVE_RESTART:
+        case PIPE_CAP_USER_VERTEX_BUFFERS:
             return !r300screen->caps.has_tcl;
 
+        /* HWTCL-only features / limitations. */
+        case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
+        case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
+        case PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY:
+            return r300screen->caps.has_tcl;
+	case PIPE_CAP_TGSI_TEXCOORD:
+            return 0;
+
         /* Texturing. */
-        case PIPE_CAP_MAX_COMBINED_SAMPLERS:
-            return r300screen->caps.num_tex_units;
         case PIPE_CAP_MAX_TEXTURE_2D_LEVELS:
         case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
         case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
@@ -153,6 +199,11 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         /* Render targets. */
         case PIPE_CAP_MAX_RENDER_TARGETS:
             return 4;
+	case PIPE_CAP_ENDIANNESS:
+            return PIPE_ENDIAN_LITTLE;
+
+        case PIPE_CAP_MAX_VIEWPORTS:
+            return 1;
     }
     return 0;
 }
@@ -195,23 +246,27 @@ static int r300_get_shader_param(struct pipe_screen *pscreen, unsigned shader, e
         case PIPE_SHADER_CAP_MAX_PREDS:
             return is_r500 ? 1 : 0;
         case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
+        case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
            return r300screen->caps.num_tex_units;
         case PIPE_SHADER_CAP_MAX_ADDRS:
         case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
+        case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
         case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
         case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
         case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
         case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
         case PIPE_SHADER_CAP_SUBROUTINES:
         case PIPE_SHADER_CAP_INTEGERS:
-        case PIPE_SHADER_CAP_OUTPUT_READ:
             return 0;
+        case PIPE_SHADER_CAP_PREFERRED_IR:
+            return PIPE_SHADER_IR_TGSI;
         }
         break;
     case PIPE_SHADER_VERTEX:
         switch (param)
         {
         case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
+        case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
         case PIPE_SHADER_CAP_SUBROUTINES:
             return 0;
         default:;
@@ -245,14 +300,17 @@ static int r300_get_shader_param(struct pipe_screen *pscreen, unsigned shader, e
         case PIPE_SHADER_CAP_MAX_TEX_INSTRUCTIONS:
         case PIPE_SHADER_CAP_MAX_TEX_INDIRECTIONS:
         case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
+        case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
         case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
         case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
         case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
         case PIPE_SHADER_CAP_SUBROUTINES:
         case PIPE_SHADER_CAP_INTEGERS:
         case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
-        case PIPE_SHADER_CAP_OUTPUT_READ:
+        case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
             return 0;
+        case PIPE_SHADER_CAP_PREFERRED_IR:
+            return PIPE_SHADER_IR_TGSI;
         }
         break;
     }
@@ -298,19 +356,56 @@ static float r300_get_paramf(struct pipe_screen* pscreen,
 
 static int r300_get_video_param(struct pipe_screen *screen,
 				enum pipe_video_profile profile,
+				enum pipe_video_entrypoint entrypoint,
 				enum pipe_video_cap param)
 {
    switch (param) {
       case PIPE_VIDEO_CAP_SUPPORTED:
-         return vl_profile_supported(screen, profile);
+         return vl_profile_supported(screen, profile, entrypoint);
       case PIPE_VIDEO_CAP_NPOT_TEXTURES:
          return 0;
       case PIPE_VIDEO_CAP_MAX_WIDTH:
       case PIPE_VIDEO_CAP_MAX_HEIGHT:
          return vl_video_buffer_max_size(screen);
+      case PIPE_VIDEO_CAP_PREFERED_FORMAT:
+         return PIPE_FORMAT_NV12;
+      case PIPE_VIDEO_CAP_PREFERS_INTERLACED:
+         return false;
+      case PIPE_VIDEO_CAP_SUPPORTS_INTERLACED:
+         return false;
+      case PIPE_VIDEO_CAP_SUPPORTS_PROGRESSIVE:
+         return true;
+      case PIPE_VIDEO_CAP_MAX_LEVEL:
+         return vl_level_supported(screen, profile);
       default:
          return 0;
    }
+}
+
+/**
+ * Whether the format matches:
+ *   PIPE_FORMAT_?10?10?10?2_UNORM
+ */
+static INLINE boolean
+util_format_is_rgba1010102_variant(const struct util_format_description *desc)
+{
+   static const unsigned size[4] = {10, 10, 10, 2};
+   unsigned chan;
+
+   if (desc->block.width != 1 ||
+       desc->block.height != 1 ||
+       desc->block.bits != 32)
+      return FALSE;
+
+   for (chan = 0; chan < 4; ++chan) {
+      if(desc->channel[chan].type != UTIL_FORMAT_TYPE_UNSIGNED &&
+         desc->channel[chan].type != UTIL_FORMAT_TYPE_VOID)
+         return FALSE;
+      if (desc->channel[chan].size != size[chan])
+         return FALSE;
+   }
+
+   return TRUE;
 }
 
 static boolean r300_is_format_supported(struct pipe_screen* screen,
@@ -340,15 +435,14 @@ static boolean r300_is_format_supported(struct pipe_screen* screen,
                             format == PIPE_FORMAT_A16_FLOAT ||
                             format == PIPE_FORMAT_L16_FLOAT ||
                             format == PIPE_FORMAT_L16A16_FLOAT ||
+                            format == PIPE_FORMAT_R16A16_FLOAT ||
                             format == PIPE_FORMAT_I16_FLOAT;
     boolean is_half_float = format == PIPE_FORMAT_R16_FLOAT ||
                             format == PIPE_FORMAT_R16G16_FLOAT ||
                             format == PIPE_FORMAT_R16G16B16_FLOAT ||
-                            format == PIPE_FORMAT_R16G16B16A16_FLOAT;
-    boolean is_fixed = format == PIPE_FORMAT_R32_FIXED ||
-                       format == PIPE_FORMAT_R32G32_FIXED ||
-                       format == PIPE_FORMAT_R32G32B32_FIXED ||
-                       format == PIPE_FORMAT_R32G32B32A32_FIXED;
+                            format == PIPE_FORMAT_R16G16B16A16_FLOAT ||
+                            format == PIPE_FORMAT_R16G16B16X16_FLOAT;
+    const struct util_format_description *desc;
 
     if (!util_format_is_supported(format, usage))
        return FALSE;
@@ -359,17 +453,37 @@ static boolean r300_is_format_supported(struct pipe_screen* screen,
         case 1:
             break;
         case 2:
-        case 3:
         case 4:
         case 6:
-            return FALSE;
-#if 0
-            if (usage != PIPE_BIND_RENDER_TARGET ||
-                !util_format_is_rgba8_variant(
-                    util_format_description(format))) {
+            /* We need DRM 2.8.0. */
+            if (!drm_2_8_0) {
                 return FALSE;
             }
-#endif
+            /* No texturing and scanout. */
+            if (usage & (PIPE_BIND_SAMPLER_VIEW |
+                         PIPE_BIND_DISPLAY_TARGET |
+                         PIPE_BIND_SCANOUT)) {
+                return FALSE;
+            }
+
+            desc = util_format_description(format);
+
+            if (is_r500) {
+                /* Only allow depth/stencil, RGBA8, RGBA1010102, RGBA16F. */
+                if (!util_format_is_depth_or_stencil(format) &&
+                    !util_format_is_rgba8_variant(desc) &&
+                    !util_format_is_rgba1010102_variant(desc) &&
+                    format != PIPE_FORMAT_R16G16B16A16_FLOAT &&
+                    format != PIPE_FORMAT_R16G16B16X16_FLOAT) {
+                    return FALSE;
+                }
+            } else {
+                /* Only allow depth/stencil, RGBA8. */
+                if (!util_format_is_depth_or_stencil(format) &&
+                    !util_format_is_rgba8_variant(desc)) {
+                    return FALSE;
+                }
+            }
             break;
         default:
             return FALSE;
@@ -377,6 +491,9 @@ static boolean r300_is_format_supported(struct pipe_screen* screen,
 
     /* Check sampler format support. */
     if ((usage & PIPE_BIND_SAMPLER_VIEW) &&
+        /* these two are broken for an unknown reason */
+        format != PIPE_FORMAT_R8G8B8X8_SNORM &&
+        format != PIPE_FORMAT_R16G16B16X16_SNORM &&
         /* ATI1N is r5xx-only. */
         (is_r500 || !is_ati1n) &&
         /* ATI2N is supported on r4xx-r5xx. */
@@ -409,12 +526,19 @@ static boolean r300_is_format_supported(struct pipe_screen* screen,
     }
 
     /* Check vertex buffer format support. */
-    if (usage & PIPE_BIND_VERTEX_BUFFER &&
-        /* Half float is supported on >= R400. */
-        (is_r400 || is_r500 || !is_half_float) &&
-        /* We have a fallback for FIXED. */
-        (is_fixed || r300_translate_vertex_data_type(format) != R300_INVALID_FORMAT)) {
-        retval |= PIPE_BIND_VERTEX_BUFFER;
+    if (usage & PIPE_BIND_VERTEX_BUFFER) {
+        if (r300_screen(screen)->caps.has_tcl) {
+            /* Half float is supported on >= R400. */
+            if ((is_r400 || is_r500 || !is_half_float) &&
+                r300_translate_vertex_data_type(format) != R300_INVALID_FORMAT) {
+                retval |= PIPE_BIND_VERTEX_BUFFER;
+            }
+        } else {
+            /* SW TCL */
+            if (!util_format_is_pure_integer(format)) {
+                retval |= PIPE_BIND_VERTEX_BUFFER;
+            }
+        }
     }
 
     /* Transfers are always supported. */
@@ -431,8 +555,10 @@ static void r300_destroy_screen(struct pipe_screen* pscreen)
     struct r300_screen* r300screen = r300_screen(pscreen);
     struct radeon_winsys *rws = radeon_winsys(pscreen);
 
-    util_slab_destroy(&r300screen->pool_buffers);
-    pipe_mutex_destroy(r300screen->num_contexts_mutex);
+    if (rws && !rws->unref(rws))
+      return;
+
+    pipe_mutex_destroy(r300screen->cmask_mutex);
 
     if (rws)
       rws->destroy(rws);
@@ -444,17 +570,17 @@ static void r300_fence_reference(struct pipe_screen *screen,
                                  struct pipe_fence_handle **ptr,
                                  struct pipe_fence_handle *fence)
 {
-    pb_reference((struct pb_buffer**)ptr,
-                             (struct pb_buffer*)fence);
+    struct radeon_winsys *rws = r300_screen(screen)->rws;
+
+    rws->fence_reference(ptr, fence);
 }
 
 static boolean r300_fence_signalled(struct pipe_screen *screen,
                                     struct pipe_fence_handle *fence)
 {
     struct radeon_winsys *rws = r300_screen(screen)->rws;
-    struct pb_buffer *rfence = (struct pb_buffer*)fence;
 
-    return !rws->buffer_is_busy(rfence, RADEON_USAGE_READWRITE);
+    return rws->fence_wait(rws, fence, 0);
 }
 
 static boolean r300_fence_finish(struct pipe_screen *screen,
@@ -462,26 +588,8 @@ static boolean r300_fence_finish(struct pipe_screen *screen,
                                  uint64_t timeout)
 {
     struct radeon_winsys *rws = r300_screen(screen)->rws;
-    struct pb_buffer *rfence = (struct pb_buffer*)fence;
 
-    if (timeout != PIPE_TIMEOUT_INFINITE) {
-        int64_t start_time = os_time_get();
-
-        /* Convert to microseconds. */
-        timeout /= 1000;
-
-        /* Wait in a loop. */
-        while (rws->buffer_is_busy(rfence, RADEON_USAGE_READWRITE)) {
-            if (os_time_get() - start_time >= timeout) {
-                return FALSE;
-            }
-            os_time_sleep(10);
-        }
-        return TRUE;
-    }
-
-    rws->buffer_wait(rfence, RADEON_USAGE_READWRITE);
-    return TRUE;
+    return rws->fence_wait(rws, fence, timeout);
 }
 
 struct pipe_screen* r300_screen_create(struct radeon_winsys *rws)
@@ -506,14 +614,7 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws)
     if (r300screen->info.drm_minor < 8)
         r300screen->caps.has_us_format = FALSE;
 
-    pipe_mutex_init(r300screen->num_contexts_mutex);
-
-    util_slab_create(&r300screen->pool_buffers,
-                     sizeof(struct r300_resource), 64,
-                     UTIL_SLAB_SINGLETHREADED);
-
     r300screen->rws = rws;
-    r300screen->screen.winsys = (struct pipe_winsys*)rws;
     r300screen->screen.destroy = r300_destroy_screen;
     r300screen->screen.get_name = r300_get_name;
     r300screen->screen.get_vendor = r300_get_vendor;
@@ -531,6 +632,7 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws)
     r300_init_screen_resource_functions(r300screen);
 
     util_format_s3tc_init();
+    pipe_mutex_init(r300screen->cmask_mutex);
 
     return &r300screen->screen;
 }

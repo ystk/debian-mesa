@@ -32,7 +32,6 @@
 
 #include "gbmint.h"
 
-#include "common.h"
 #include "common_drm.h"
 
 struct gbm_gallium_drm_device {
@@ -70,5 +69,8 @@ gbm_gallium_drm_device_create(int fd);
 
 int
 gallium_screen_create(struct gbm_gallium_drm_device *gdrm);
+
+void
+gallium_screen_destroy(struct gbm_gallium_drm_device *gdrm);
 
 #endif

@@ -40,7 +40,7 @@ extern "C" {
 }
 
 void GLAPIENTRY
-_mesa_BindAttribLocationARB(GLhandleARB program, GLuint index,
+_mesa_BindAttribLocation(GLhandleARB program, GLuint index,
                             const GLcharARB *name)
 {
    GET_CURRENT_CONTEXT(ctx);
@@ -59,7 +59,7 @@ _mesa_BindAttribLocationARB(GLhandleARB program, GLuint index,
       return;
    }
 
-   if (index >= ctx->Const.VertexProgram.MaxAttribs) {
+   if (index >= ctx->Const.Program[MESA_SHADER_VERTEX].MaxAttribs) {
       _mesa_error(ctx, GL_INVALID_VALUE, "glBindAttribLocation(index)");
       return;
    }
@@ -76,8 +76,32 @@ _mesa_BindAttribLocationARB(GLhandleARB program, GLuint index,
     */
 }
 
+static bool
+is_active_attrib(const ir_variable *var)
+{
+   if (!var)
+      return false;
+
+   switch (var->data.mode) {
+   case ir_var_shader_in:
+      return var->data.location != -1;
+
+   case ir_var_system_value:
+      /* From GL 4.3 core spec, section 11.1.1 (Vertex Attributes):
+       * "For GetActiveAttrib, all active vertex shader input variables
+       * are enumerated, including the special built-in inputs gl_VertexID
+       * and gl_InstanceID."
+       */
+      return !strcmp(var->name, "gl_VertexID") ||
+             !strcmp(var->name, "gl_InstanceID");
+
+   default:
+      return false;
+   }
+}
+
 void GLAPIENTRY
-_mesa_GetActiveAttribARB(GLhandleARB program, GLuint desired_index,
+_mesa_GetActiveAttrib(GLhandleARB program, GLuint desired_index,
                          GLsizei maxLength, GLsizei * length, GLint * size,
                          GLenum * type, GLcharARB * name)
 {
@@ -105,10 +129,8 @@ _mesa_GetActiveAttribARB(GLhandleARB program, GLuint desired_index,
    foreach_list(node, ir) {
       const ir_variable *const var = ((ir_instruction *) node)->as_variable();
 
-      if (var == NULL
-	  || var->mode != ir_var_in
-	  || var->location == -1)
-	 continue;
+      if (!is_active_attrib(var))
+         continue;
 
       if (current_index == desired_index) {
 	 _mesa_copy_string(name, maxLength, length, var->name);
@@ -131,8 +153,65 @@ _mesa_GetActiveAttribARB(GLhandleARB program, GLuint desired_index,
    _mesa_error(ctx, GL_INVALID_VALUE, "glGetActiveAttrib(index)");
 }
 
+/* Locations associated with shader variables (array or non-array) can be
+ * queried using its base name or using the base name appended with the
+ * valid array index. For example, in case of below vertex shader, valid
+ * queries can be made to know the location of "xyz", "array", "array[0]",
+ * "array[1]", "array[2]" and "array[3]". In this example index reurned
+ * will be 0, 0, 0, 1, 2, 3 respectively.
+ *
+ * [Vertex Shader]
+ * layout(location=0) in vec4 xyz;
+ * layout(location=1) in vec4[4] array;
+ * void main()
+ * { }
+ *
+ * This requirement came up with the addition of ARB_program_interface_query
+ * to OpenGL 4.3 specification. See page 101 (page 122 of the PDF) for details.
+ *
+ * This utility function is used by:
+ * _mesa_GetAttribLocation
+ * _mesa_GetFragDataLocation
+ * _mesa_GetFragDataIndex
+ *
+ * Returns 0:
+ *    if the 'name' string matches var->name.
+ * Returns 'matched index':
+ *    if the 'name' string matches var->name appended with valid array index.
+ */
+int static inline
+get_matching_index(const ir_variable *const var, const char *name) {
+   unsigned idx = 0;
+   const char *const paren = strchr(name, '[');
+   const unsigned len = (paren != NULL) ? paren - name : strlen(name);
+
+   if (paren != NULL) {
+      if (!var->type->is_array())
+         return -1;
+
+      char *endptr;
+      idx = (unsigned) strtol(paren + 1, &endptr, 10);
+      const unsigned idx_len = endptr != (paren + 1) ? endptr - paren - 1 : 0;
+
+      /* Validate the sub string representing index in 'name' string */
+      if ((idx > 0 && paren[1] == '0') /* leading zeroes */
+          || (idx == 0 && idx_len > 1) /* all zeroes */
+          || paren[1] == ' ' /* whitespace */
+          || endptr[0] != ']' /* closing brace */
+          || endptr[1] != '\0' /* null char */
+          || idx_len == 0 /* missing index */
+          || idx >= var->type->length) /* exceeding array bound */
+         return -1;
+   }
+
+   if (strncmp(var->name, name, len) == 0 && var->name[len] == '\0')
+      return idx;
+
+   return -1;
+}
+
 GLint GLAPIENTRY
-_mesa_GetAttribLocationARB(GLhandleARB program, const GLcharARB * name)
+_mesa_GetAttribLocation(GLhandleARB program, const GLcharARB * name)
 {
    GET_CURRENT_CONTEXT(ctx);
    struct gl_shader_program *const shProg =
@@ -169,13 +248,15 @@ _mesa_GetAttribLocationARB(GLhandleARB program, const GLcharARB * name)
        *     attribute, or if an error occurs, -1 will be returned."
        */
       if (var == NULL
-	  || var->mode != ir_var_in
-	  || var->location == -1
-	  || var->location < VERT_ATTRIB_GENERIC0)
+	  || var->data.mode != ir_var_shader_in
+	  || var->data.location == -1
+	  || var->data.location < VERT_ATTRIB_GENERIC0)
 	 continue;
 
-      if (strcmp(var->name, name) == 0)
-	 return var->location - VERT_ATTRIB_GENERIC0;
+      int index = get_matching_index(var, (const char *) name);
+
+      if (index >= 0)
+         return var->data.location + index - VERT_ATTRIB_GENERIC0;
    }
 
    return -1;
@@ -196,10 +277,8 @@ _mesa_count_active_attribs(struct gl_shader_program *shProg)
    foreach_list(node, ir) {
       const ir_variable *const var = ((ir_instruction *) node)->as_variable();
 
-      if (var == NULL
-	  || var->mode != ir_var_in
-	  || var->location == -1)
-	 continue;
+      if (!is_active_attrib(var))
+         continue;
 
       i++;
    }
@@ -223,8 +302,8 @@ _mesa_longest_attribute_name_length(struct gl_shader_program *shProg)
       const ir_variable *const var = ((ir_instruction *) node)->as_variable();
 
       if (var == NULL
-	  || var->mode != ir_var_in
-	  || var->location == -1)
+	  || var->data.mode != ir_var_shader_in
+	  || var->data.location == -1)
 	 continue;
 
       const size_t len = strlen(var->name);
@@ -239,10 +318,17 @@ void GLAPIENTRY
 _mesa_BindFragDataLocation(GLuint program, GLuint colorNumber,
 			   const GLchar *name)
 {
+   _mesa_BindFragDataLocationIndexed(program, colorNumber, 0, name);
+}
+
+void GLAPIENTRY
+_mesa_BindFragDataLocationIndexed(GLuint program, GLuint colorNumber,
+                                  GLuint index, const GLchar *name)
+{
    GET_CURRENT_CONTEXT(ctx);
 
    struct gl_shader_program *const shProg =
-      _mesa_lookup_shader_program_err(ctx, program, "glBindFragDataLocation");
+      _mesa_lookup_shader_program_err(ctx, program, "glBindFragDataLocationIndexed");
    if (!shProg)
       return;
 
@@ -250,13 +336,22 @@ _mesa_BindFragDataLocation(GLuint program, GLuint colorNumber,
       return;
 
    if (strncmp(name, "gl_", 3) == 0) {
-      _mesa_error(ctx, GL_INVALID_OPERATION,
-                  "glBindFragDataLocation(illegal name)");
+      _mesa_error(ctx, GL_INVALID_OPERATION, "glBindFragDataLocationIndexed(illegal name)");
       return;
    }
 
-   if (colorNumber >= ctx->Const.MaxDrawBuffers) {
-      _mesa_error(ctx, GL_INVALID_VALUE, "glBindFragDataLocation(index)");
+   if (index > 1) {
+      _mesa_error(ctx, GL_INVALID_VALUE, "glBindFragDataLocationIndexed(index)");
+      return;
+   }
+
+   if (index == 0 && colorNumber >= ctx->Const.MaxDrawBuffers) {
+      _mesa_error(ctx, GL_INVALID_VALUE, "glBindFragDataLocationIndexed(colorNumber)");
+      return;
+   }
+
+   if (index == 1 && colorNumber >= ctx->Const.MaxDualSourceDrawBuffers) {
+      _mesa_error(ctx, GL_INVALID_VALUE, "glBindFragDataLocationIndexed(colorNumber)");
       return;
    }
 
@@ -265,11 +360,68 @@ _mesa_BindFragDataLocation(GLuint program, GLuint colorNumber,
     * between built-in attributes and user-defined attributes.
     */
    shProg->FragDataBindings->put(colorNumber + FRAG_RESULT_DATA0, name);
-
+   shProg->FragDataIndexBindings->put(index, name);
    /*
     * Note that this binding won't go into effect until
     * glLinkProgram is called again.
     */
+
+}
+
+GLint GLAPIENTRY
+_mesa_GetFragDataIndex(GLuint program, const GLchar *name)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_shader_program *const shProg =
+      _mesa_lookup_shader_program_err(ctx, program, "glGetFragDataIndex");
+
+   if (!shProg) {
+      return -1;
+   }
+
+   if (!shProg->LinkStatus) {
+      _mesa_error(ctx, GL_INVALID_OPERATION,
+                  "glGetFragDataIndex(program not linked)");
+      return -1;
+   }
+
+   if (!name)
+      return -1;
+
+   if (strncmp(name, "gl_", 3) == 0) {
+      _mesa_error(ctx, GL_INVALID_OPERATION,
+                  "glGetFragDataIndex(illegal name)");
+      return -1;
+   }
+
+   /* Not having a fragment shader is not an error.
+    */
+   if (shProg->_LinkedShaders[MESA_SHADER_FRAGMENT] == NULL)
+      return -1;
+
+   exec_list *ir = shProg->_LinkedShaders[MESA_SHADER_FRAGMENT]->ir;
+   foreach_list(node, ir) {
+      const ir_variable *const var = ((ir_instruction *) node)->as_variable();
+
+      /* The extra check against FRAG_RESULT_DATA0 is because
+       * glGetFragDataLocation cannot be used on "conventional" attributes.
+       *
+       * From page 95 of the OpenGL 3.0 spec:
+       *
+       *     "If name is not an active attribute, if name is a conventional
+       *     attribute, or if an error occurs, -1 will be returned."
+       */
+      if (var == NULL
+          || var->data.mode != ir_var_shader_out
+          || var->data.location == -1
+          || var->data.location < FRAG_RESULT_DATA0)
+         continue;
+
+      if (get_matching_index(var, (const char *) name) >= 0)
+         return var->data.index;
+   }
+
+   return -1;
 }
 
 GLint GLAPIENTRY
@@ -316,13 +468,15 @@ _mesa_GetFragDataLocation(GLuint program, const GLchar *name)
        *     attribute, or if an error occurs, -1 will be returned."
        */
       if (var == NULL
-	  || var->mode != ir_var_out
-	  || var->location == -1
-	  || var->location < FRAG_RESULT_DATA0)
+	  || var->data.mode != ir_var_shader_out
+	  || var->data.location == -1
+	  || var->data.location < FRAG_RESULT_DATA0)
 	 continue;
 
-      if (strcmp(var->name, name) == 0)
-	 return var->location - FRAG_RESULT_DATA0;
+      int index = get_matching_index(var, (const char *) name);
+
+      if (index >= 0)
+         return var->data.location + index - FRAG_RESULT_DATA0;
    }
 
    return -1;

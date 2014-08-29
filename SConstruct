@@ -59,15 +59,15 @@ else:
 
 Help(opts.GenerateHelpText(env))
 
-# fail early for a common error on windows
-if env['gles']:
-    try:
-        import libxml2
-    except ImportError:
-        raise SCons.Errors.UserError, "GLES requires libxml2-python to build"
-
 #######################################################################
 # Environment setup
+
+with open("VERSION") as f:
+  mesa_version = f.read().strip()
+env.Append(CPPDEFINES = [
+    ('PACKAGE_VERSION', '\\"%s\\"' % mesa_version),
+    ('PACKAGE_BUGREPORT', '\\"https://bugs.freedesktop.org/enter_bug.cgi?product=Mesa\\"'),
+])
 
 # Includes
 env.Prepend(CPPPATH = [
@@ -79,9 +79,6 @@ env.Append(CPPPATH = [
 	'#/src/gallium/drivers',
 	'#/src/gallium/winsys',
 ])
-
-if env['msvc']:
-    env.Append(CPPPATH = ['#include/c99'])
 
 # for debugging
 #print env.Dump()
@@ -114,9 +111,6 @@ if env['crosscompile'] and not env['embedded']:
 
     host_env['hostonly'] = True
     assert host_env['crosscompile'] == False
-
-    if host_env['msvc']:
-        host_env.Append(CPPPATH = ['#include/c99'])
 
     target_env = env
     env = host_env

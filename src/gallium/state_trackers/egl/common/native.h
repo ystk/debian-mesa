@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  7.8
  *
  * Copyright (C) 2009-2010 Chia-I Wu <olv@0xlab.org>
  *
@@ -246,7 +245,7 @@ struct native_display {
 
    const struct native_display_buffer *buffer;
    const struct native_display_modeset *modeset;
-   const struct native_display_wayland_bufmgr *wayland_bufmgr;
+   struct native_display_wayland_bufmgr *wayland_bufmgr;
 };
 
 /**

@@ -47,10 +47,6 @@ struct radeon_bo_desc {
 struct radeon_bo {
     struct pb_buffer base;
 
-    /* Don't move these! */
-    unsigned last_flush;
-    unsigned binding;
-
     struct radeon_bomgr *mgr;
     struct radeon_drm_winsys *rws;
 
@@ -58,7 +54,9 @@ struct radeon_bo {
     pipe_mutex map_mutex;
 
     uint32_t handle;
-    uint32_t name;
+    uint32_t flink_name;
+    uint64_t va;
+    enum radeon_bo_domain initial_domain;
 
     /* how many command streams is this bo referenced in? */
     int num_cs_references;
@@ -66,9 +64,6 @@ struct radeon_bo {
     /* how many command streams, which are being emitted in a separate
      * thread, is this bo referenced in? */
     int num_active_ioctls;
-
-    boolean flinked;
-    uint32_t flink;
 };
 
 struct pb_manager *radeon_bomgr_create(struct radeon_drm_winsys *rws);
@@ -79,5 +74,7 @@ void radeon_bo_reference(struct radeon_bo **dst, struct radeon_bo *src)
 {
     pb_reference((struct pb_buffer**)dst, (struct pb_buffer*)src);
 }
+
+void *radeon_bo_do_map(struct radeon_bo *bo);
 
 #endif

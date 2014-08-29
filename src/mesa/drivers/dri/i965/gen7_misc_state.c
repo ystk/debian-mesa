@@ -21,129 +21,136 @@
  * IN THE SOFTWARE.
  */
 
+#include "main/mtypes.h"
 #include "intel_batchbuffer.h"
 #include "intel_mipmap_tree.h"
-#include "intel_regions.h"
 #include "intel_fbo.h"
 #include "brw_context.h"
 #include "brw_state.h"
 #include "brw_defines.h"
 
-static void emit_depthbuffer(struct brw_context *brw)
+void
+gen7_emit_depth_stencil_hiz(struct brw_context *brw,
+                            struct intel_mipmap_tree *depth_mt,
+                            uint32_t depth_offset, uint32_t depthbuffer_format,
+                            uint32_t depth_surface_type,
+                            struct intel_mipmap_tree *stencil_mt,
+                            bool hiz, bool separate_stencil,
+                            uint32_t width, uint32_t height,
+                            uint32_t tile_x, uint32_t tile_y)
 {
-   struct intel_context *intel = &brw->intel;
-   struct gl_context *ctx = &intel->ctx;
+   struct gl_context *ctx = &brw->ctx;
+   const uint8_t mocs = GEN7_MOCS_L3;
    struct gl_framebuffer *fb = ctx->DrawBuffer;
+   uint32_t surftype;
+   unsigned int depth = 1;
+   unsigned int min_array_element;
+   GLenum gl_target = GL_TEXTURE_2D;
+   unsigned int lod;
+   const struct intel_mipmap_tree *mt = depth_mt ? depth_mt : stencil_mt;
+   const struct intel_renderbuffer *irb = NULL;
+   const struct gl_renderbuffer *rb = NULL;
 
-   /* _NEW_BUFFERS */
-   struct intel_renderbuffer *drb = intel_get_renderbuffer(fb, BUFFER_DEPTH);
-   struct intel_renderbuffer *srb = intel_get_renderbuffer(fb, BUFFER_STENCIL);
-   struct intel_mipmap_tree *depth_mt = NULL,
-			    *stencil_mt = NULL,
-			    *hiz_mt = NULL;
-
-   if (drb)
-      depth_mt = drb->mt;
-
-   if (depth_mt)
-      hiz_mt = depth_mt->hiz_mt;
-
-   if (srb) {
-      stencil_mt = srb->mt;
-      if (stencil_mt->stencil_mt)
-	 stencil_mt = stencil_mt->stencil_mt;
-
-      assert(stencil_mt->format == MESA_FORMAT_S8);
+   /* Skip repeated NULL depth/stencil emits (think 2D rendering). */
+   if (!mt && brw->no_depth_or_stencil) {
+      assert(brw->hw_ctx);
+      return;
    }
 
-   /* Gen7 doesn't support packed depth/stencil */
-   assert(stencil_mt == NULL || depth_mt != stencil_mt);
-   assert(!depth_mt || !_mesa_is_format_packed_depth_stencil(depth_mt->format));
+   intel_emit_depth_stall_flushes(brw);
 
-   intel_emit_depth_stall_flushes(intel);
+   irb = intel_get_renderbuffer(fb, BUFFER_DEPTH);
+   if (!irb)
+      irb = intel_get_renderbuffer(fb, BUFFER_STENCIL);
+   rb = (struct gl_renderbuffer*) irb;
 
-   if (depth_mt == NULL) {
-      uint32_t dw1 = BRW_DEPTHFORMAT_D32_FLOAT << 18;
-      uint32_t dw3 = 0;
+   if (rb) {
+      depth = MAX2(irb->layer_count, 1);
+      if (rb->TexImage)
+         gl_target = rb->TexImage->TexObject->Target;
+   }
 
-      if (stencil_mt == NULL) {
-	 dw1 |= (BRW_SURFACE_NULL << 29);
-      } else {
-	 /* _NEW_STENCIL: enable stencil buffer writes */
-	 dw1 |= ((ctx->Stencil.WriteMask != 0) << 27);
-
-	 /* 3DSTATE_STENCIL_BUFFER inherits surface type and dimensions. */
-	 dw1 |= (BRW_SURFACE_2D << 29);
-	 dw3 = ((srb->Base.Base.Width - 1) << 4) |
-	       ((srb->Base.Base.Height - 1) << 18);
-      }
-
-      BEGIN_BATCH(7);
-      OUT_BATCH(GEN7_3DSTATE_DEPTH_BUFFER << 16 | (7 - 2));
-      OUT_BATCH(dw1);
-      OUT_BATCH(0);
-      OUT_BATCH(dw3);
-      OUT_BATCH(0);
-      OUT_BATCH(0);
-      OUT_BATCH(0);
-      ADVANCE_BATCH();
-   } else {
-      struct intel_region *region = depth_mt->region;
-      uint32_t tile_x, tile_y, offset;
-
-      offset = intel_renderbuffer_tile_offsets(drb, &tile_x, &tile_y);
-
-      /* According to the Sandy Bridge PRM, volume 2 part 1, pp326-327
-       * (3DSTATE_DEPTH_BUFFER dw5), in the documentation for "Depth
-       * Coordinate Offset X/Y":
-       *
-       *   "The 3 LSBs of both offsets must be zero to ensure correct
-       *   alignment"
-       *
-       * We have no guarantee that tile_x and tile_y are correctly aligned,
-       * since they are determined by the mipmap layout, which is only aligned
-       * to multiples of 4.
-       *
-       * So, to avoid hanging the GPU, just smash the low order 3 bits of
-       * tile_x and tile_y to 0.  This is a temporary workaround until we come
-       * up with a better solution.
+   switch (gl_target) {
+   case GL_TEXTURE_CUBE_MAP_ARRAY:
+   case GL_TEXTURE_CUBE_MAP:
+      /* The PRM claims that we should use BRW_SURFACE_CUBE for this
+       * situation, but experiments show that gl_Layer doesn't work when we do
+       * this.  So we use BRW_SURFACE_2D, since for rendering purposes this is
+       * equivalent.
        */
-      tile_x &= ~7;
-      tile_y &= ~7;
-
-      assert(region->tiling == I915_TILING_Y);
-
-      /* _NEW_DEPTH, _NEW_STENCIL */
-      BEGIN_BATCH(7);
-      OUT_BATCH(GEN7_3DSTATE_DEPTH_BUFFER << 16 | (7 - 2));
-      OUT_BATCH(((region->pitch * region->cpp) - 1) |
-		(brw_depthbuffer_format(brw) << 18) |
-		((hiz_mt ? 1 : 0) << 22) | /* hiz enable */
-		((stencil_mt != NULL && ctx->Stencil.WriteMask != 0) << 27) |
-		((ctx->Depth.Mask != 0) << 28) |
-		(BRW_SURFACE_2D << 29));
-      OUT_RELOC(region->bo,
-	        I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER,
-		offset);
-      OUT_BATCH((((drb->Base.Base.Width + tile_x) - 1) << 4) |
-                (((drb->Base.Base.Height + tile_y) - 1) << 18));
-      OUT_BATCH(0);
-      OUT_BATCH(tile_x | (tile_y << 16));
-      OUT_BATCH(0);
-      ADVANCE_BATCH();
+      surftype = BRW_SURFACE_2D;
+      depth *= 6;
+      break;
+   case GL_TEXTURE_3D:
+      assert(mt);
+      depth = MAX2(mt->logical_depth0, 1);
+      /* fallthrough */
+   default:
+      surftype = translate_tex_target(gl_target);
+      break;
    }
 
-   if (hiz_mt == NULL) {
+   min_array_element = irb ? irb->mt_layer : 0;
+
+   lod = irb ? irb->mt_level - irb->mt->first_level : 0;
+
+   if (mt) {
+      width = mt->logical_width0;
+      height = mt->logical_height0;
+   }
+
+   /* _NEW_DEPTH, _NEW_STENCIL, _NEW_BUFFERS */
+   BEGIN_BATCH(7);
+   /* 3DSTATE_DEPTH_BUFFER dw0 */
+   OUT_BATCH(GEN7_3DSTATE_DEPTH_BUFFER << 16 | (7 - 2));
+
+   /* 3DSTATE_DEPTH_BUFFER dw1 */
+   OUT_BATCH((depth_mt ? depth_mt->pitch - 1 : 0) |
+             (depthbuffer_format << 18) |
+             ((hiz ? 1 : 0) << 22) |
+             ((stencil_mt != NULL && ctx->Stencil._WriteEnabled) << 27) |
+             ((ctx->Depth.Mask != 0) << 28) |
+             (surftype << 29));
+
+   /* 3DSTATE_DEPTH_BUFFER dw2 */
+   if (depth_mt) {
+      OUT_RELOC(depth_mt->bo,
+	        I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER,
+	        0);
+   } else {
+      OUT_BATCH(0);
+   }
+
+   /* 3DSTATE_DEPTH_BUFFER dw3 */
+   OUT_BATCH(((width - 1) << 4) |
+             ((height - 1) << 18) |
+             lod);
+
+   /* 3DSTATE_DEPTH_BUFFER dw4 */
+   OUT_BATCH(((depth - 1) << 21) |
+             (min_array_element << 10) |
+             mocs);
+
+   /* 3DSTATE_DEPTH_BUFFER dw5 */
+   OUT_BATCH(0);
+
+   /* 3DSTATE_DEPTH_BUFFER dw6 */
+   OUT_BATCH((depth - 1) << 21);
+   ADVANCE_BATCH();
+
+   if (!hiz) {
       BEGIN_BATCH(3);
       OUT_BATCH(GEN7_3DSTATE_HIER_DEPTH_BUFFER << 16 | (3 - 2));
       OUT_BATCH(0);
       OUT_BATCH(0);
       ADVANCE_BATCH();
    } else {
+      struct intel_mipmap_tree *hiz_mt = depth_mt->hiz_mt;
       BEGIN_BATCH(3);
       OUT_BATCH(GEN7_3DSTATE_HIER_DEPTH_BUFFER << 16 | (3 - 2));
-      OUT_BATCH(hiz_mt->region->pitch * hiz_mt->region->cpp - 1);
-      OUT_RELOC(hiz_mt->region->bo,
+      OUT_BATCH((mocs << 25) |
+                (hiz_mt->pitch - 1));
+      OUT_RELOC(hiz_mt->bo,
                 I915_GEM_DOMAIN_RENDER,
                 I915_GEM_DOMAIN_RENDER,
                 0);
@@ -157,10 +164,24 @@ static void emit_depthbuffer(struct brw_context *brw)
       OUT_BATCH(0);
       ADVANCE_BATCH();
    } else {
+      const int enabled = brw->is_haswell ? HSW_STENCIL_ENABLED : 0;
+
       BEGIN_BATCH(3);
       OUT_BATCH(GEN7_3DSTATE_STENCIL_BUFFER << 16 | (3 - 2));
-      OUT_BATCH(stencil_mt->region->pitch * stencil_mt->region->cpp - 1);
-      OUT_RELOC(stencil_mt->region->bo,
+      /* The stencil buffer has quirky pitch requirements.  From the
+       * Sandybridge PRM, Volume 2 Part 1, page 329 (3DSTATE_STENCIL_BUFFER
+       * dword 1 bits 16:0 - Surface Pitch):
+       *
+       *    The pitch must be set to 2x the value computed based on width, as
+       *    the stencil buffer is stored with two rows interleaved.
+       *
+       * While the Ivybridge PRM lacks this comment, the BSpec contains the
+       * same text, and experiments indicate that this is necessary.
+       */
+      OUT_BATCH(enabled |
+                mocs << 25 |
+	        (2 * stencil_mt->pitch - 1));
+      OUT_RELOC(stencil_mt->bo,
 	        I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER,
 		0);
       ADVANCE_BATCH();
@@ -168,9 +189,11 @@ static void emit_depthbuffer(struct brw_context *brw)
 
    BEGIN_BATCH(3);
    OUT_BATCH(GEN7_3DSTATE_CLEAR_PARAMS << 16 | (3 - 2));
-   OUT_BATCH(0);
-   OUT_BATCH(0);
+   OUT_BATCH(depth_mt ? depth_mt->depth_clear_value : 0);
+   OUT_BATCH(1);
    ADVANCE_BATCH();
+
+   brw->no_depth_or_stencil = !mt;
 }
 
 /**
@@ -182,5 +205,5 @@ const struct brw_tracked_state gen7_depthbuffer = {
       .brw = BRW_NEW_BATCH,
       .cache = 0,
    },
-   .emit = emit_depthbuffer,
+   .emit = brw_emit_depthbuffer,
 };

@@ -23,8 +23,8 @@
 #ifndef R600_ASM_H
 #define R600_ASM_H
 
-struct r600_vertex_element;
-struct r600_pipe_context;
+#include "r600_pipe.h"
+#include "r600_isa.h"
 
 struct r600_bytecode_alu_src {
 	unsigned			sel;
@@ -48,10 +48,12 @@ struct r600_bytecode_alu {
 	struct list_head		list;
 	struct r600_bytecode_alu_src		src[3];
 	struct r600_bytecode_alu_dst		dst;
-	unsigned			inst;
+	unsigned			op;
 	unsigned			last;
 	unsigned			is_op3;
-	unsigned			predicate;
+	unsigned			execute_mask;
+	unsigned			update_pred;
+	unsigned			pred_sel;
 	unsigned			bank_swizzle;
 	unsigned			bank_swizzle_force;
 	unsigned			omod;
@@ -60,7 +62,8 @@ struct r600_bytecode_alu {
 
 struct r600_bytecode_tex {
 	struct list_head		list;
-	unsigned			inst;
+	unsigned			op;
+	unsigned			inst_mod;
 	unsigned			resource_id;
 	unsigned			src_gpr;
 	unsigned			src_rel;
@@ -75,9 +78,9 @@ struct r600_bytecode_tex {
 	unsigned			coord_type_y;
 	unsigned			coord_type_z;
 	unsigned			coord_type_w;
-	unsigned			offset_x;
-	unsigned			offset_y;
-	unsigned			offset_z;
+	int				offset_x;
+	int				offset_y;
+	int				offset_z;
 	unsigned			sampler_id;
 	unsigned			src_sel_x;
 	unsigned			src_sel_y;
@@ -87,7 +90,7 @@ struct r600_bytecode_tex {
 
 struct r600_bytecode_vtx {
 	struct list_head		list;
-	unsigned			inst;
+	unsigned			op;
 	unsigned			fetch_type;
 	unsigned			buffer_id;
 	unsigned			src_gpr;
@@ -112,10 +115,8 @@ struct r600_bytecode_output {
 	unsigned			array_size;
 	unsigned			comp_mask;
 	unsigned			type;
-	unsigned			end_of_program;
 
-	/* CF_INST. This is already bit-shifted and only needs to be or'd for bytecode. */
-	unsigned			inst;
+	unsigned			op;
 
 	unsigned			elem_size;
 	unsigned			gpr;
@@ -124,7 +125,7 @@ struct r600_bytecode_output {
 	unsigned			swizzle_z;
 	unsigned			swizzle_w;
 	unsigned			burst_count;
-	unsigned			barrier;
+	unsigned			index_gpr;
 };
 
 struct r600_bytecode_kcache {
@@ -136,9 +137,7 @@ struct r600_bytecode_kcache {
 struct r600_bytecode_cf {
 	struct list_head		list;
 
-	/* CF_INST. This is already bit-shifted and only needs to be or'd for bytecode. */
-	unsigned			inst;
-
+	unsigned			op;
 	unsigned			addr;
 	unsigned			ndw;
 	unsigned			id;
@@ -148,6 +147,8 @@ struct r600_bytecode_cf {
 	struct r600_bytecode_kcache		kcache[4];
 	unsigned			r6xx_uses_waterfall;
 	unsigned			eg_alu_extended;
+	unsigned			barrier;
+	unsigned			end_of_program;
 	struct list_head		alu;
 	struct list_head		tex;
 	struct list_head		vtx;
@@ -155,6 +156,7 @@ struct r600_bytecode_cf {
 	struct r600_bytecode_alu		*curr_bs_head;
 	struct r600_bytecode_alu		*prev_bs_head;
 	struct r600_bytecode_alu		*prev2_bs_head;
+	unsigned isa[2];
 };
 
 #define FC_NONE				0
@@ -172,19 +174,29 @@ struct r600_cf_stack_entry {
 };
 
 #define SQ_MAX_CALL_DEPTH 0x00000020
-struct r600_cf_callstack {
-	unsigned			fc_sp_before_entry;
-	int				sub_desc_index;
-	int				current;
-	int				max;
-};
 
 #define AR_HANDLE_NORMAL 0
 #define AR_HANDLE_RV6XX 1 /* except RV670 */
 
+struct r600_stack_info {
+	/* current level of non-WQM PUSH operations
+	 * (PUSH, PUSH_ELSE, ALU_PUSH_BEFORE) */
+	int push;
+	/* current level of WQM PUSH operations
+	 * (PUSH, PUSH_ELSE, PUSH_WQM) */
+	int push_wqm;
+	/* current loop level */
+	int loop;
+
+	/* required depth */
+	int max_entries;
+	/* subentries per entry */
+	int entry_size;
+};
 
 struct r600_bytecode {
 	enum chip_class			chip_class;
+	bool				has_compressed_msaa_texturing;
 	int				type;
 	struct list_head		cf;
 	struct r600_bytecode_cf		*cf_last;
@@ -192,41 +204,69 @@ struct r600_bytecode {
 	unsigned			ncf;
 	unsigned			ngpr;
 	unsigned			nstack;
+	unsigned			nlds_dw;
 	unsigned			nresource;
 	unsigned			force_add_cf;
-	u32				*bytecode;
-	u32				fc_sp;
+	uint32_t			*bytecode;
+	uint32_t			fc_sp;
 	struct r600_cf_stack_entry	fc_stack[32];
-	unsigned			call_sp;
-	struct r600_cf_callstack	callstack[SQ_MAX_CALL_DEPTH];
+	struct r600_stack_info		stack;
 	unsigned	ar_loaded;
 	unsigned	ar_reg;
+	unsigned	ar_chan;
 	unsigned        ar_handling;
 	unsigned        r6xx_nop_after_rel_dst;
+	unsigned        debug_id;
+	struct r600_isa* isa;
 };
 
 /* eg_asm.c */
 int eg_bytecode_cf_build(struct r600_bytecode *bc, struct r600_bytecode_cf *cf);
 
 /* r600_asm.c */
-void r600_bytecode_init(struct r600_bytecode *bc, enum chip_class chip_class, enum radeon_family family);
+void r600_bytecode_init(struct r600_bytecode *bc,
+			enum chip_class chip_class,
+			enum radeon_family family,
+			bool has_compressed_msaa_texturing);
 void r600_bytecode_clear(struct r600_bytecode *bc);
-int r600_bytecode_add_alu(struct r600_bytecode *bc, const struct r600_bytecode_alu *alu);
-int r600_bytecode_add_vtx(struct r600_bytecode *bc, const struct r600_bytecode_vtx *vtx);
-int r600_bytecode_add_tex(struct r600_bytecode *bc, const struct r600_bytecode_tex *tex);
-int r600_bytecode_add_output(struct r600_bytecode *bc, const struct r600_bytecode_output *output);
+int r600_bytecode_add_alu(struct r600_bytecode *bc,
+		const struct r600_bytecode_alu *alu);
+int r600_bytecode_add_vtx(struct r600_bytecode *bc,
+		const struct r600_bytecode_vtx *vtx);
+int r600_bytecode_add_tex(struct r600_bytecode *bc,
+		const struct r600_bytecode_tex *tex);
+int r600_bytecode_add_output(struct r600_bytecode *bc,
+		const struct r600_bytecode_output *output);
 int r600_bytecode_build(struct r600_bytecode *bc);
-int r600_bytecode_add_cfinst(struct r600_bytecode *bc, int inst);
-int r600_bytecode_add_alu_type(struct r600_bytecode *bc, const struct r600_bytecode_alu *alu, int type);
-void r600_bytecode_special_constants(u32 value, unsigned *sel, unsigned *neg);
-void r600_bytecode_dump(struct r600_bytecode *bc);
+int r600_bytecode_add_cf(struct r600_bytecode *bc);
+int r600_bytecode_add_cfinst(struct r600_bytecode *bc,
+		unsigned op);
+int r600_bytecode_add_alu_type(struct r600_bytecode *bc,
+		const struct r600_bytecode_alu *alu, unsigned type);
+void r600_bytecode_special_constants(uint32_t value,
+		unsigned *sel, unsigned *neg);
+void r600_bytecode_disasm(struct r600_bytecode *bc);
+void r600_bytecode_alu_read(struct r600_bytecode *bc,
+		struct r600_bytecode_alu *alu, uint32_t word0, uint32_t word1);
 
 int cm_bytecode_add_cf_end(struct r600_bytecode *bc);
 
-int r600_vertex_elements_build_fetch_shader(struct r600_pipe_context *rctx, struct r600_vertex_element *ve);
+void *r600_create_vertex_fetch_shader(struct pipe_context *ctx,
+				      unsigned count,
+				      const struct pipe_vertex_element *elements);
 
 /* r700_asm.c */
-void r700_bytecode_cf_vtx_build(uint32_t *bytecode, const struct r600_bytecode_cf *cf);
-int r700_bytecode_alu_build(struct r600_bytecode *bc, struct r600_bytecode_alu *alu, unsigned id);
+void r700_bytecode_cf_vtx_build(uint32_t *bytecode,
+		const struct r600_bytecode_cf *cf);
+int r700_bytecode_alu_build(struct r600_bytecode *bc,
+		struct r600_bytecode_alu *alu, unsigned id);
+void r700_bytecode_alu_read(struct r600_bytecode *bc,
+		struct r600_bytecode_alu *alu, uint32_t word0, uint32_t word1);
+void r600_bytecode_export_read(struct r600_bytecode *bc,
+		struct r600_bytecode_output *output, uint32_t word0, uint32_t word1);
+void eg_bytecode_export_read(struct r600_bytecode *bc,
+		struct r600_bytecode_output *output, uint32_t word0, uint32_t word1);
 
+void r600_vertex_data_type(enum pipe_format pformat, unsigned *format,
+			   unsigned *num_format, unsigned *format_comp, unsigned *endian);
 #endif

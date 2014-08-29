@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2003 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -46,13 +46,13 @@
  * max_lod =< last_level == true
  *
  *
- * This is all fine and dandy if it where for the fact that max_lod
+ * This is all fine and dandy if it were for the fact that max_lod
  * is set on the map state instead of the sampler state. That is
  * the max_lod we submit on map is:
  * max_lod = MIN2(last_level, max_lod);
  *
  * So we need to update the map state when we change samplers and
- * we need to be change the sampler state when map state is changed.
+ * we need to change the sampler state when map state is changed.
  * The first part is done by calling update_texture in update_samplers
  * and the second part is done else where in code tracking the state
  * changes.
@@ -96,7 +96,11 @@ static void update_sampler(struct i915_context *i915,
        pt->format == PIPE_FORMAT_YUYV)
       state[0] |= SS2_COLORSPACE_CONVERSION;
 
-   /* 3D textures don't seem to respect the border color.
+   if (pt->format == PIPE_FORMAT_B8G8R8A8_SRGB ||
+       pt->format == PIPE_FORMAT_L8_SRGB )
+      state[0] |= SS2_REVERSE_GAMMA_ENABLE;
+
+    /* 3D textures don't seem to respect the border color.
     * Fallback if there's ever a danger that they might refer to
     * it.  
     * 
@@ -157,13 +161,13 @@ static void update_samplers(struct i915_context *i915)
 
          update_sampler(i915,
                         unit,
-                        i915->sampler[unit],          /* sampler state */
+                        i915->fragment_sampler[unit], /* sampler state */
                         texture,                      /* texture */
                         i915->current.sampler[unit]); /* the result */
          update_map(i915,
                     unit,
                     texture,                             /* texture */
-                    i915->sampler[unit],                 /* sampler state */
+                    i915->fragment_sampler[unit],        /* sampler state */
                     i915->fragment_sampler_views[unit],  /* sampler view */
                     i915->current.texbuffer[unit]);      /* the result */
 
@@ -215,6 +219,7 @@ static uint translate_texture_format(enum pipe_format pipeFormat,
    case PIPE_FORMAT_B10G10R10A2_UNORM:
       return MAPSURF_32BIT | MT_32BIT_ARGB2101010;
    case PIPE_FORMAT_B8G8R8A8_UNORM:
+   case PIPE_FORMAT_B8G8R8A8_SRGB:
       return MAPSURF_32BIT | MT_32BIT_ARGB8888;
    case PIPE_FORMAT_B8G8R8X8_UNORM:
       return MAPSURF_32BIT | MT_32BIT_XRGB8888;
@@ -352,7 +357,7 @@ static void update_maps(struct i915_context *i915)
          update_map(i915,
                     unit,
                     texture,                            /* texture */
-                    i915->sampler[unit],                /* sampler state */
+                    i915->fragment_sampler[unit],       /* sampler state */
                     i915->fragment_sampler_views[unit], /* sampler view */
                     i915->current.texbuffer[unit]);
       }

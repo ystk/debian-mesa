@@ -7,6 +7,7 @@ env = env.Clone()
 
 env.Append(CPPPATH = [
     '#/include',
+    '#/src/loader',
     '#/src/egl/main',
     '#/src/gallium/auxiliary',
     '#/src/gallium/drivers',
@@ -30,6 +31,7 @@ env.Prepend(LIBS = [
     rbug,
     trace,
     galahad,
+    libloader,
     gallium,
     egl,
     st_egl,
@@ -90,19 +92,12 @@ if env['HAVE_DRM']:
     env.PkgUseModules('DRM')
 
     if env['HAVE_DRM_INTEL']:
+        env.PkgUseModules('DRM_INTEL')
         env.Append(CPPDEFINES = ['_EGL_PIPE_I915'])
         env.Prepend(LIBS = [
             i915drm,
             i915,
             ws_wrapper,
-        ])
-
-    if env['HAVE_DRM_RADEON']:
-        env.Append(CPPDEFINES = ['_EGL_PIPE_R300', '_EGL_PIPE_R600'])
-        env.Prepend(LIBS = [
-            radeonwinsys,
-            r300,
-            r600,
         ])
 
     env.Append(CPPDEFINES = ['_EGL_PIPE_VMWGFX'])

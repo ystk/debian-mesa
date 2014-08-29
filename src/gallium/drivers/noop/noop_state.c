@@ -116,7 +116,6 @@ static struct pipe_surface *noop_create_surface(struct pipe_context *ctx,
 	surface->format = surf_tmpl->format;
 	surface->width = texture->width0;
 	surface->height = texture->height0;
-	surface->usage = surf_tmpl->usage;
 	surface->texture = texture;
 	surface->u.tex.first_layer = surf_tmpl->u.tex.first_layer;
 	surface->u.tex.last_layer = surf_tmpl->u.tex.last_layer;
@@ -125,17 +124,15 @@ static struct pipe_surface *noop_create_surface(struct pipe_context *ctx,
 	return surface;
 }
 
-static void noop_set_vs_sampler_view(struct pipe_context *ctx, unsigned count,
-					struct pipe_sampler_view **views)
+static void noop_set_sampler_views(struct pipe_context *ctx, unsigned shader,
+                                   unsigned start, unsigned count,
+                                   struct pipe_sampler_view **views)
 {
 }
 
-static void noop_set_ps_sampler_view(struct pipe_context *ctx, unsigned count,
-					struct pipe_sampler_view **views)
-{
-}
-
-static void noop_bind_sampler(struct pipe_context *ctx, unsigned count, void **states)
+static void noop_bind_sampler_states(struct pipe_context *ctx, unsigned shader,
+                                     unsigned start, unsigned count,
+                                     void **states)
 {
 }
 
@@ -153,8 +150,10 @@ static void noop_set_sample_mask(struct pipe_context *pipe, unsigned sample_mask
 {
 }
 
-static void noop_set_scissor_state(struct pipe_context *ctx,
-					const struct pipe_scissor_state *state)
+static void noop_set_scissor_states(struct pipe_context *ctx,
+                                    unsigned start_slot,
+                                    unsigned num_scissors,
+                                    const struct pipe_scissor_state *state)
 {
 }
 
@@ -163,8 +162,10 @@ static void noop_set_stencil_ref(struct pipe_context *ctx,
 {
 }
 
-static void noop_set_viewport_state(struct pipe_context *ctx,
-					const struct pipe_viewport_state *state)
+static void noop_set_viewport_states(struct pipe_context *ctx,
+                                     unsigned start_slot,
+                                     unsigned num_viewports,
+                                     const struct pipe_viewport_state *state)
 {
 }
 
@@ -175,7 +176,7 @@ static void noop_set_framebuffer_state(struct pipe_context *ctx,
 
 static void noop_set_constant_buffer(struct pipe_context *ctx,
 					uint shader, uint index,
-					struct pipe_resource *buffer)
+					struct pipe_constant_buffer *cb)
 {
 }
 
@@ -215,8 +216,9 @@ static void noop_set_index_buffer(struct pipe_context *ctx,
 {
 }
 
-static void noop_set_vertex_buffers(struct pipe_context *ctx, unsigned count,
-					const struct pipe_vertex_buffer *buffers)
+static void noop_set_vertex_buffers(struct pipe_context *ctx,
+				    unsigned start_slot, unsigned count,
+				    const struct pipe_vertex_buffer *buffers)
 {
 }
 
@@ -272,7 +274,7 @@ static void noop_stream_output_target_destroy(struct pipe_context *ctx,
 static void noop_set_stream_output_targets(struct pipe_context *ctx,
                            unsigned num_targets,
                            struct pipe_stream_output_target **targets,
-                           unsigned append_bitmask)
+                           const unsigned *offsets)
 {
 }
 
@@ -291,11 +293,10 @@ void noop_init_state_functions(struct pipe_context *ctx)
 	ctx->create_vs_state = noop_create_shader_state;
 	ctx->bind_blend_state = noop_bind_state;
 	ctx->bind_depth_stencil_alpha_state = noop_bind_state;
-	ctx->bind_fragment_sampler_states = noop_bind_sampler;
+	ctx->bind_sampler_states = noop_bind_sampler_states;
 	ctx->bind_fs_state = noop_bind_state;
 	ctx->bind_rasterizer_state = noop_bind_state;
 	ctx->bind_vertex_elements_state = noop_bind_state;
-	ctx->bind_vertex_sampler_states = noop_bind_sampler;
 	ctx->bind_vs_state = noop_bind_state;
 	ctx->delete_blend_state = noop_delete_state;
 	ctx->delete_depth_stencil_alpha_state = noop_delete_state;
@@ -307,20 +308,18 @@ void noop_init_state_functions(struct pipe_context *ctx)
 	ctx->set_blend_color = noop_set_blend_color;
 	ctx->set_clip_state = noop_set_clip_state;
 	ctx->set_constant_buffer = noop_set_constant_buffer;
-	ctx->set_fragment_sampler_views = noop_set_ps_sampler_view;
+	ctx->set_sampler_views = noop_set_sampler_views;
 	ctx->set_framebuffer_state = noop_set_framebuffer_state;
 	ctx->set_polygon_stipple = noop_set_polygon_stipple;
 	ctx->set_sample_mask = noop_set_sample_mask;
-	ctx->set_scissor_state = noop_set_scissor_state;
+	ctx->set_scissor_states = noop_set_scissor_states;
 	ctx->set_stencil_ref = noop_set_stencil_ref;
 	ctx->set_vertex_buffers = noop_set_vertex_buffers;
 	ctx->set_index_buffer = noop_set_index_buffer;
-	ctx->set_vertex_sampler_views = noop_set_vs_sampler_view;
-	ctx->set_viewport_state = noop_set_viewport_state;
+	ctx->set_viewport_states = noop_set_viewport_states;
 	ctx->sampler_view_destroy = noop_sampler_view_destroy;
 	ctx->surface_destroy = noop_surface_destroy;
 	ctx->draw_vbo = noop_draw_vbo;
-	ctx->redefine_user_buffer = u_default_redefine_user_buffer;
 	ctx->create_stream_output_target = noop_create_stream_output_target;
 	ctx->stream_output_target_destroy = noop_stream_output_target_destroy;
 	ctx->set_stream_output_targets = noop_set_stream_output_targets;
