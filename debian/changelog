@@ -1,3 +1,82 @@
+mesa (10.3.2-1) unstable; urgency=medium
+
+  [ Sven Joachim ]
+  * New upstream stable release.
+    - Fixes crashes in vdpau with the r600g driver (Closes: #766058).
+
+ -- Julien Cristau <jcristau@debian.org>  Mon, 27 Oct 2014 11:40:24 +0100
+
+mesa (10.3.1-1) unstable; urgency=medium
+
+  * Build libgbm on kfreebsd (fixes FTBFS).
+  * New upstream stable release.
+  * Upload to unstable.
+
+ -- Julien Cristau <jcristau@debian.org>  Mon, 13 Oct 2014 17:56:27 +0200
+
+mesa (10.3.0-2) experimental; urgency=medium
+
+  * Add missing Replaces/Breaks for the gallium-pipe move.
+
+ -- Julien Cristau <jcristau@debian.org>  Fri, 10 Oct 2014 00:09:47 +0200
+
+mesa (10.3.0-1) experimental; urgency=medium
+
+  [ Maarten Lankhorst ]
+  * New upstream release.
+  * Remove upstreamed patch.
+    - 01_gallium-util-add-missing-u_debug-include.patch
+
+  [ Andreas Boll ]
+  * Move gallium-pipe installation from libgl1-mesa-dri.install.linux.in
+    to mesa-opencl-icd.install.in, because it's only needed for opencl.
+
+ -- Maarten Lankhorst <maarten.lankhorst@ubuntu.com>  Wed, 08 Oct 2014 10:30:05 +0200
+
+mesa (10.3.0~rc3-3) experimental; urgency=medium
+
+  [ Andreas Boll ]
+  * Bump llvm-3.5-dev and libclang-3.5-dev to 1:3.5-1, should fix FTBFS on
+    kfreebsd-*.
+  * Bump compat to v9 for changed dh_strip behavior:
+    - dh_strip puts separated debug symbols in a location based on their
+      build-id (Closes: #755921).
+  * Drop redundant libegl1-mesa-drivers.install.linux.in.
+
+  [ Dima Kogan ]
+  * All -dev packages are now Multi-Arch: same (Closes: #689088, #678040).
+
+  [ Julien Cristau ]
+  * Upload clean source without partial Ubuntu alternatives patches (closes: #761678)
+
+ -- Julien Cristau <jcristau@debian.org>  Mon, 15 Sep 2014 22:39:15 +0200
+
+mesa (10.3.0~rc3-2) experimental; urgency=medium
+
+  [ Andreas Boll ]
+  * Add 01_gallium-util-add-missing-u_debug-include.patch, fixes FTBFS on
+    big endian archs.
+  * Enable --with-egl-platforms=drm on kfreebsd-any, should fix FTBFS.
+  * Don't try to install vdpau hardlinks on hurd, should fix FTBFS.
+
+  [ Fabio Pedretti ]
+  * debian/rules: minor cleanup.
+
+ -- Maarten Lankhorst <maarten.lankhorst@ubuntu.com>  Mon, 15 Sep 2014 11:01:55 +0200
+
+mesa (10.3.0~rc3-1) experimental; urgency=medium
+
+  [ Maarten Lankhorst ]
+  * Build with llvm 3.5.
+  * New upstream release.
+  * Remove mention of tdfx.
+
+  [ Timo Aaltonen ]
+  * mesa-common-dev: Add glcorearb.h.
+  * not-installed: Skip libglapi.so.
+
+ -- Maarten Lankhorst <maarten.lankhorst@ubuntu.com>  Mon, 08 Sep 2014 15:50:42 +0200
+
 mesa (10.2.5-1) unstable; urgency=medium
 
   [ Andreas Boll ]

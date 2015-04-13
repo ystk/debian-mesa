@@ -1499,11 +1499,9 @@ lp_build_negate(struct lp_build_context *bld,
 
    assert(lp_check_value(bld->type, a));
 
-#if HAVE_LLVM >= 0x0207
    if (bld->type.floating)
       a = LLVMBuildFNeg(builder, a, "");
    else
-#endif
       a = LLVMBuildNeg(builder, a, "");
 
    return a;
@@ -1852,7 +1850,7 @@ lp_build_trunc(struct lp_build_context *bld,
       const struct lp_type type = bld->type;
       struct lp_type inttype;
       struct lp_build_context intbld;
-      LLVMValueRef cmpval = lp_build_const_vec(bld->gallivm, type, 2^24);
+      LLVMValueRef cmpval = lp_build_const_vec(bld->gallivm, type, 1<<24);
       LLVMValueRef trunc, res, anosign, mask;
       LLVMTypeRef int_vec_type = bld->int_vec_type;
       LLVMTypeRef vec_type = bld->vec_type;
@@ -1907,7 +1905,7 @@ lp_build_round(struct lp_build_context *bld,
       const struct lp_type type = bld->type;
       struct lp_type inttype;
       struct lp_build_context intbld;
-      LLVMValueRef cmpval = lp_build_const_vec(bld->gallivm, type, 2^24);
+      LLVMValueRef cmpval = lp_build_const_vec(bld->gallivm, type, 1<<24);
       LLVMValueRef res, anosign, mask;
       LLVMTypeRef int_vec_type = bld->int_vec_type;
       LLVMTypeRef vec_type = bld->vec_type;
@@ -1960,7 +1958,7 @@ lp_build_floor(struct lp_build_context *bld,
       const struct lp_type type = bld->type;
       struct lp_type inttype;
       struct lp_build_context intbld;
-      LLVMValueRef cmpval = lp_build_const_vec(bld->gallivm, type, 2^24);
+      LLVMValueRef cmpval = lp_build_const_vec(bld->gallivm, type, 1<<24);
       LLVMValueRef trunc, res, anosign, mask;
       LLVMTypeRef int_vec_type = bld->int_vec_type;
       LLVMTypeRef vec_type = bld->vec_type;
@@ -2029,7 +2027,7 @@ lp_build_ceil(struct lp_build_context *bld,
       const struct lp_type type = bld->type;
       struct lp_type inttype;
       struct lp_build_context intbld;
-      LLVMValueRef cmpval = lp_build_const_vec(bld->gallivm, type, 2^24);
+      LLVMValueRef cmpval = lp_build_const_vec(bld->gallivm, type, 1<<24);
       LLVMValueRef trunc, res, anosign, mask, tmp;
       LLVMTypeRef int_vec_type = bld->int_vec_type;
       LLVMTypeRef vec_type = bld->vec_type;

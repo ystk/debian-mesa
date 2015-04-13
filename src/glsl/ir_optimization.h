@@ -71,7 +71,9 @@ bool do_common_optimization(exec_list *ir, bool linked,
                             const struct gl_shader_compiler_options *options,
                             bool native_integers);
 
-bool do_algebraic(exec_list *instructions, bool native_integers);
+bool do_rebalance_tree(exec_list *instructions);
+bool do_algebraic(exec_list *instructions, bool native_integers,
+                  const struct gl_shader_compiler_options *options);
 bool do_constant_folding(exec_list *instructions);
 bool do_constant_variable(exec_list *instructions);
 bool do_constant_variable_unlinked(exec_list *instructions);
@@ -122,6 +124,8 @@ void lower_named_interface_blocks(void *mem_ctx, gl_shader *shader);
 bool optimize_redundant_jumps(exec_list *instructions);
 bool optimize_split_arrays(exec_list *instructions, bool linked);
 bool lower_offset_arrays(exec_list *instructions);
+
+bool lower_vertex_id(gl_shader *shader);
 
 ir_rvalue *
 compare_index_block(exec_list *instructions, ir_variable *index,
