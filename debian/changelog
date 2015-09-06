@@ -1,3 +1,11 @@
+mesa (10.3.2-1+deb8u1) jessie; urgency=medium
+
+  [ Timo Aaltonen ]
+  * radeonsi-disable-asynchronous-dma.diff: Disable asynchronous DMA
+    on radeonsi which can cause lockups. (Closes: #775264)
+
+ -- Julien Cristau <jcristau@debian.org>  Tue, 18 Aug 2015 20:06:29 +0200
+
 mesa (10.3.2-1) unstable; urgency=medium
 
   [ Sven Joachim ]
