@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  5.1
  *
  * Copyright (C) 1999-2003  Brian Paul   All Rights Reserved.
  *
@@ -17,14 +16,14 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  *
  *
  * Authors:
- *    Brian Paul
- *    Keith Whitwell <keith@tungstengraphics.com>
+ *    Brian Paul Keith Whitwell <keithw@vmware.com>
  */
 
 
@@ -44,7 +43,7 @@
  * stage is the lighting stage-private data
  * input is the vector of eye or object-space vertex coordinates
  */
-static void TAG(light_rgba_spec)( GLcontext *ctx,
+static void TAG(light_rgba_spec)( struct gl_context *ctx,
 				  struct vertex_buffer *VB,
 				  struct tnl_pipeline_stage *stage,
 				  GLvector4f *input )
@@ -69,16 +68,16 @@ static void TAG(light_rgba_spec)( GLcontext *ctx,
    const GLuint nr = VB->Count;
 
 #ifdef TRACE
-   fprintf(stderr, "%s\n", __FUNCTION__ );
+   fprintf(stderr, "%s\n", __func__ );
 #endif
 
-   VB->ColorPtr[0] = &store->LitColor[0];
-   VB->SecondaryColorPtr[0] = &store->LitSecondary[0];
+   VB->AttribPtr[_TNL_ATTRIB_COLOR0] = &store->LitColor[0];
+   VB->AttribPtr[_TNL_ATTRIB_COLOR1] = &store->LitSecondary[0];
    sumA[0] = ctx->Light.Material.Attrib[MAT_ATTRIB_FRONT_DIFFUSE][3];
 
 #if IDX & LIGHT_TWOSIDE
-   VB->ColorPtr[1] = &store->LitColor[1];
-   VB->SecondaryColorPtr[1] = &store->LitSecondary[1];
+   VB->BackfaceColorPtr = &store->LitColor[1];
+   VB->BackfaceSecondaryColorPtr = &store->LitSecondary[1];
    sumA[1] = ctx->Light.Material.Attrib[MAT_ATTRIB_BACK_DIFFUSE][3];
 #endif
 
@@ -88,7 +87,7 @@ static void TAG(light_rgba_spec)( GLcontext *ctx,
 
    for (j = 0; j < nr; j++,STRIDE_F(vertex,vstride),STRIDE_F(normal,nstride)) {
       GLfloat sum[2][3], spec[2][3];
-      struct gl_light *light;
+      GLbitfield mask;
 
 #if IDX & LIGHT_MATERIAL
       update_materials( ctx, store );
@@ -107,13 +106,16 @@ static void TAG(light_rgba_spec)( GLcontext *ctx,
 #endif
 
       /* Add contribution from each enabled light source */
-      foreach (light, &ctx->Light.EnabledList) {
+      mask = ctx->Light._EnabledLights;
+      while (mask) {
+         const int l = u_bit_scan(&mask);
+         struct gl_light *light = &ctx->Light.Light[l];
 	 GLfloat n_dot_h;
 	 GLfloat correction;
 	 GLint side;
 	 GLfloat contrib[3];
 	 GLfloat attenuation;
-	 GLfloat VP[3];  /* unit vector from vertex to light */
+	 GLfloat VP[3];          /* unit vector from vertex to light */
 	 GLfloat n_dot_VP;       /* n dot VP */
 	 GLfloat *h;
 
@@ -130,7 +132,7 @@ static void TAG(light_rgba_spec)( GLcontext *ctx,
 
 	    d = (GLfloat) LEN_3FV( VP );
 
-	    if (d > 1e-6) {
+	    if (d > 1e-6F) {
 	       GLfloat invd = 1.0F / d;
 	       SELF_SCALE_SCALAR_3V(VP, invd);
 	    }
@@ -147,16 +149,13 @@ static void TAG(light_rgba_spec)( GLcontext *ctx,
 		  continue; /* this light makes no contribution */
 	       }
 	       else {
-		  GLdouble x = PV_dot_dir * (EXP_TABLE_SIZE-1);
-		  GLint k = (GLint) x;
-		  GLfloat spot = (GLfloat) (light->_SpotExpTable[k][0]
-				    + (x-k)*light->_SpotExpTable[k][1]);
+                  GLfloat spot = powf(PV_dot_dir, light->SpotExponent);
 		  attenuation *= spot;
 	       }
 	    }
 	 }
 
-	 if (attenuation < 1e-3)
+	 if (attenuation < 1e-3F)
 	    continue;		/* this light makes no contribution */
 
 	 /* Compute dot product or normal and vector from V to light pos */
@@ -207,11 +206,8 @@ static void TAG(light_rgba_spec)( GLcontext *ctx,
 	 n_dot_h = correction * DOT3(normal, h);
 
 	 if (n_dot_h > 0.0F) {
-	    GLfloat spec_coef;
-	    struct gl_shine_tab *tab = ctx->_ShineTable[side];
-	    GET_SHINE_TAB_ENTRY( tab, n_dot_h, spec_coef );
-
-	    if (spec_coef > 1.0e-10) {
+	    GLfloat spec_coef = lookup_shininess(ctx, side, n_dot_h);
+	    if (spec_coef > 1.0e-10F) {
 	       spec_coef *= attenuation;
 	       ACC_SCALE_SCALAR_3V( spec[side], spec_coef,
 				    light->_MatSpecular[side]);
@@ -232,7 +228,7 @@ static void TAG(light_rgba_spec)( GLcontext *ctx,
 }
 
 
-static void TAG(light_rgba)( GLcontext *ctx,
+static void TAG(light_rgba)( struct gl_context *ctx,
 			     struct vertex_buffer *VB,
 			     struct tnl_pipeline_stage *stage,
 			     GLvector4f *input )
@@ -256,14 +252,14 @@ static void TAG(light_rgba)( GLcontext *ctx,
    const GLuint nr = VB->Count;
 
 #ifdef TRACE
-   fprintf(stderr, "%s\n", __FUNCTION__ );
+   fprintf(stderr, "%s\n", __func__ );
 #endif
 
-   VB->ColorPtr[0] = &store->LitColor[0];
+   VB->AttribPtr[_TNL_ATTRIB_COLOR0] = &store->LitColor[0];
    sumA[0] = ctx->Light.Material.Attrib[MAT_ATTRIB_FRONT_DIFFUSE][3];
 
 #if IDX & LIGHT_TWOSIDE
-   VB->ColorPtr[1] = &store->LitColor[1];
+   VB->BackfaceColorPtr = &store->LitColor[1];
    sumA[1] = ctx->Light.Material.Attrib[MAT_ATTRIB_BACK_DIFFUSE][3];
 #endif
 
@@ -272,7 +268,7 @@ static void TAG(light_rgba)( GLcontext *ctx,
 
    for (j = 0; j < nr; j++,STRIDE_F(vertex,vstride),STRIDE_F(normal,nstride)) {
       GLfloat sum[2][3];
-      struct gl_light *light;
+      GLbitfield mask;
 
 #if IDX & LIGHT_MATERIAL
       update_materials( ctx, store );
@@ -289,13 +285,15 @@ static void TAG(light_rgba)( GLcontext *ctx,
 #endif
 
       /* Add contribution from each enabled light source */
-      foreach (light, &ctx->Light.EnabledList) {
-
+      mask = ctx->Light._EnabledLights;
+      while (mask) {
+         const int l = u_bit_scan(&mask);
+         struct gl_light *light = &ctx->Light.Light[l];
 	 GLfloat n_dot_h;
 	 GLfloat correction;
 	 GLint side;
 	 GLfloat contrib[3];
-	 GLfloat attenuation = 1.0;
+	 GLfloat attenuation;
 	 GLfloat VP[3];          /* unit vector from vertex to light */
 	 GLfloat n_dot_VP;       /* n dot VP */
 	 GLfloat *h;
@@ -309,12 +307,11 @@ static void TAG(light_rgba)( GLcontext *ctx,
 	 else {
 	    GLfloat d;     /* distance from vertex to light */
 
-
 	    SUB_3V(VP, light->_Position, vertex);
 
 	    d = (GLfloat) LEN_3FV( VP );
 
-	    if ( d > 1e-6) {
+	    if (d > 1e-6F) {
 	       GLfloat invd = 1.0F / d;
 	       SELF_SCALE_SCALAR_3V(VP, invd);
 	    }
@@ -331,16 +328,13 @@ static void TAG(light_rgba)( GLcontext *ctx,
 		  continue; /* this light makes no contribution */
 	       }
 	       else {
-		  GLdouble x = PV_dot_dir * (EXP_TABLE_SIZE-1);
-		  GLint k = (GLint) x;
-		  GLfloat spot = (GLfloat) (light->_SpotExpTable[k][0]
-				  + (x-k)*light->_SpotExpTable[k][1]);
+                  GLfloat spot = powf(PV_dot_dir, light->SpotExponent);
 		  attenuation *= spot;
 	       }
 	    }
 	 }
 
-	 if (attenuation < 1e-3)
+	 if (attenuation < 1e-3F)
 	    continue;		/* this light makes no contribution */
 
 	 /* Compute dot product or normal and vector from V to light pos */
@@ -391,13 +385,8 @@ static void TAG(light_rgba)( GLcontext *ctx,
 
 	    n_dot_h = correction * DOT3(normal, h);
 
-	    if (n_dot_h > 0.0F)
-	    {
-	       GLfloat spec_coef;
-	       struct gl_shine_tab *tab = ctx->_ShineTable[side];
-
-	       GET_SHINE_TAB_ENTRY( tab, n_dot_h, spec_coef );
-
+	    if (n_dot_h > 0.0F) {
+	       GLfloat spec_coef = lookup_shininess(ctx, side, n_dot_h);
 	       ACC_SCALE_SCALAR_3V( contrib, spec_coef,
 				    light->_MatSpecular[side]);
 	    }
@@ -421,7 +410,7 @@ static void TAG(light_rgba)( GLcontext *ctx,
 
 /* As below, but with just a single light.
  */
-static void TAG(light_fast_rgba_single)( GLcontext *ctx,
+static void TAG(light_fast_rgba_single)( struct gl_context *ctx,
 					 struct vertex_buffer *VB,
 					 struct tnl_pipeline_stage *stage,
 					 GLvector4f *input )
@@ -434,7 +423,8 @@ static void TAG(light_fast_rgba_single)( GLcontext *ctx,
 #if IDX & LIGHT_TWOSIDE
    GLfloat (*Bcolor)[4] = (GLfloat (*)[4]) store->LitColor[1].data;
 #endif
-   const struct gl_light *light = ctx->Light.EnabledList.next;
+   const struct gl_light *light =
+      &ctx->Light.Light[ffs(ctx->Light._EnabledLights) - 1];
    GLuint j = 0;
    GLfloat base[2][4];
 #if IDX & LIGHT_MATERIAL
@@ -444,14 +434,14 @@ static void TAG(light_fast_rgba_single)( GLcontext *ctx,
 #endif
 
 #ifdef TRACE
-   fprintf(stderr, "%s\n", __FUNCTION__ );
+   fprintf(stderr, "%s\n", __func__ );
 #endif
 
    (void) input;		/* doesn't refer to Eye or Obj */
 
-   VB->ColorPtr[0] = &store->LitColor[0];
+   VB->AttribPtr[_TNL_ATTRIB_COLOR0] = &store->LitColor[0];
 #if IDX & LIGHT_TWOSIDE
-   VB->ColorPtr[1] = &store->LitColor[1];
+   VB->BackfaceColorPtr = &store->LitColor[1];
 #endif
 
    if (nr > 1) {
@@ -497,8 +487,7 @@ static void TAG(light_fast_rgba_single)( GLcontext *ctx,
          COPY_3V(sum, base[1]);
          ACC_SCALE_SCALAR_3V(sum, -n_dot_VP, light->_MatDiffuse[1]);
          if (n_dot_h > 0.0F) {
-            GLfloat spec;
-            GET_SHINE_TAB_ENTRY( ctx->_ShineTable[1], n_dot_h, spec );
+            GLfloat spec = lookup_shininess(ctx, 1, n_dot_h);
             ACC_SCALE_SCALAR_3V(sum, spec, light->_MatSpecular[1]);
          }
          COPY_3V(Bcolor[j], sum );
@@ -512,10 +501,8 @@ static void TAG(light_fast_rgba_single)( GLcontext *ctx,
 	 COPY_3V(sum, base[0]);
 	 ACC_SCALE_SCALAR_3V(sum, n_dot_VP, light->_MatDiffuse[0]);
 	 if (n_dot_h > 0.0F) {
-	    GLfloat spec;
-	    GET_SHINE_TAB_ENTRY( ctx->_ShineTable[0], n_dot_h, spec );
+            GLfloat spec = lookup_shininess(ctx, 0, n_dot_h);
 	    ACC_SCALE_SCALAR_3V(sum, spec, light->_MatSpecular[0]);
-
 	 }
 	 COPY_3V(Fcolor[j], sum );
 	 Fcolor[j][3] = base[0][3];
@@ -529,7 +516,7 @@ static void TAG(light_fast_rgba_single)( GLcontext *ctx,
 
 /* Light infinite lights
  */
-static void TAG(light_fast_rgba)( GLcontext *ctx,
+static void TAG(light_fast_rgba)( struct gl_context *ctx,
 				  struct vertex_buffer *VB,
 				  struct tnl_pipeline_stage *stage,
 				  GLvector4f *input )
@@ -548,10 +535,9 @@ static void TAG(light_fast_rgba)( GLcontext *ctx,
 #else
    const GLuint nr = VB->AttribPtr[_TNL_ATTRIB_NORMAL]->count;
 #endif
-   const struct gl_light *light;
 
 #ifdef TRACE
-   fprintf(stderr, "%s %d\n", __FUNCTION__, nr );
+   fprintf(stderr, "%s %d\n", __func__, nr );
 #endif
 
    (void) input;
@@ -559,9 +545,9 @@ static void TAG(light_fast_rgba)( GLcontext *ctx,
    sumA[0] = ctx->Light.Material.Attrib[MAT_ATTRIB_FRONT_DIFFUSE][3];
    sumA[1] = ctx->Light.Material.Attrib[MAT_ATTRIB_BACK_DIFFUSE][3];
 
-   VB->ColorPtr[0] = &store->LitColor[0];
+   VB->AttribPtr[_TNL_ATTRIB_COLOR0] = &store->LitColor[0];
 #if IDX & LIGHT_TWOSIDE
-   VB->ColorPtr[1] = &store->LitColor[1];
+   VB->BackfaceColorPtr = &store->LitColor[1];
 #endif
 
    if (nr > 1) {
@@ -576,6 +562,7 @@ static void TAG(light_fast_rgba)( GLcontext *ctx,
    for (j = 0; j < nr; j++, STRIDE_F(normal,nstride)) {
 
       GLfloat sum[2][3];
+      GLbitfield mask;
 
 #if IDX & LIGHT_MATERIAL
       update_materials( ctx, store );
@@ -592,7 +579,10 @@ static void TAG(light_fast_rgba)( GLcontext *ctx,
       COPY_3V(sum[1], ctx->Light._BaseColor[1]);
 #endif
 
-      foreach (light, &ctx->Light.EnabledList) {
+      mask = ctx->Light._EnabledLights;
+      while (mask) {
+         const int l = u_bit_scan(&mask);
+         const struct gl_light *light = &ctx->Light.Light[l];
 	 GLfloat n_dot_h, n_dot_VP, spec;
 
 	 ACC_3V(sum[0], light->_MatAmbient[0]);
@@ -606,8 +596,7 @@ static void TAG(light_fast_rgba)( GLcontext *ctx,
 	    ACC_SCALE_SCALAR_3V(sum[0], n_dot_VP, light->_MatDiffuse[0]);
 	    n_dot_h = DOT3(normal, light->_h_inf_norm);
 	    if (n_dot_h > 0.0F) {
-	       struct gl_shine_tab *tab = ctx->_ShineTable[0];
-	       GET_SHINE_TAB_ENTRY( tab, n_dot_h, spec );
+               spec = lookup_shininess(ctx, 0, n_dot_h);
 	       ACC_SCALE_SCALAR_3V( sum[0], spec, light->_MatSpecular[0]);
 	    }
 	 }
@@ -616,8 +605,7 @@ static void TAG(light_fast_rgba)( GLcontext *ctx,
 	    ACC_SCALE_SCALAR_3V(sum[1], -n_dot_VP, light->_MatDiffuse[1]);
 	    n_dot_h = -DOT3(normal, light->_h_inf_norm);
 	    if (n_dot_h > 0.0F) {
-	       struct gl_shine_tab *tab = ctx->_ShineTable[1];
-	       GET_SHINE_TAB_ENTRY( tab, n_dot_h, spec );
+               spec = lookup_shininess(ctx, 1, n_dot_h);
 	       ACC_SCALE_SCALAR_3V( sum[1], spec, light->_MatSpecular[1]);
 	    }
 	 }
@@ -637,185 +625,12 @@ static void TAG(light_fast_rgba)( GLcontext *ctx,
 
 
 
-
-/*
- * Use current lighting/material settings to compute the color indexes
- * for an array of vertices.
- * Input:  n - number of vertices to light
- *         side - 0=use front material, 1=use back material
- *         vertex - array of [n] vertex position in eye coordinates
- *         normal - array of [n] surface normal vector
- * Output:  indexResult - resulting array of [n] color indexes
- */
-static void TAG(light_ci)( GLcontext *ctx,
-			   struct vertex_buffer *VB,
-			   struct tnl_pipeline_stage *stage,
-			   GLvector4f *input )
-{
-   struct light_stage_data *store = LIGHT_STAGE_DATA(stage);
-   GLuint j;
-   const GLuint vstride = input->stride;
-   const GLfloat *vertex = (GLfloat *) input->data;
-   const GLuint nstride = VB->AttribPtr[_TNL_ATTRIB_NORMAL]->stride;
-   const GLfloat *normal = (GLfloat *)VB->AttribPtr[_TNL_ATTRIB_NORMAL]->data;
-   GLfloat *indexResult[2];
-   const GLuint nr = VB->Count;
-
-#ifdef TRACE
-   fprintf(stderr, "%s\n", __FUNCTION__ );
-#endif
-
-   VB->IndexPtr[0] = &store->LitIndex[0];
-#if IDX & LIGHT_TWOSIDE
-   VB->IndexPtr[1] = &store->LitIndex[1];
-#endif
-
-   indexResult[0] = (GLfloat *)VB->IndexPtr[0]->data;
-#if IDX & LIGHT_TWOSIDE
-   indexResult[1] = (GLfloat *)VB->IndexPtr[1]->data;
-#endif
-
-   /* loop over vertices */
-   for (j=0; j<nr; j++,STRIDE_F(vertex,vstride),STRIDE_F(normal, nstride)) {
-      GLfloat diffuse[2], specular[2];
-      GLuint side = 0;
-      struct gl_light *light;
-
-#if IDX & LIGHT_MATERIAL
-      update_materials( ctx, store );
-#endif
-
-      diffuse[0] = specular[0] = 0.0F;
-
-#if IDX & LIGHT_TWOSIDE
-	 diffuse[1] = specular[1] = 0.0F;
-#endif
-
-      /* Accumulate diffuse and specular from each light source */
-      foreach (light, &ctx->Light.EnabledList) {
-
-	 GLfloat attenuation = 1.0F;
-	 GLfloat VP[3];  /* unit vector from vertex to light */
-	 GLfloat n_dot_VP;  /* dot product of l and n */
-	 GLfloat *h, n_dot_h, correction = 1.0;
-
-	 /* compute l and attenuation */
-	 if (!(light->_Flags & LIGHT_POSITIONAL)) {
-	    /* directional light */
-	    COPY_3V(VP, light->_VP_inf_norm);
-	 }
-	 else {
-	    GLfloat d;     /* distance from vertex to light */
-
-	    SUB_3V(VP, light->_Position, vertex);
-
-	    d = (GLfloat) LEN_3FV( VP );
-	    if ( d > 1e-6) {
-	       GLfloat invd = 1.0F / d;
-	       SELF_SCALE_SCALAR_3V(VP, invd);
-	    }
-
-	    attenuation = 1.0F / (light->ConstantAttenuation + d *
-				  (light->LinearAttenuation + d *
-				   light->QuadraticAttenuation));
-
-	    /* spotlight attenuation */
-	    if (light->_Flags & LIGHT_SPOT) {
-	       GLfloat PV_dot_dir = - DOT3(VP, light->_NormSpotDirection);
-	       if (PV_dot_dir < light->_CosCutoff) {
-		  continue; /* this light makes no contribution */
-	       }
-	       else {
-		  GLdouble x = PV_dot_dir * (EXP_TABLE_SIZE-1);
-		  GLint k = (GLint) x;
-		  GLfloat spot = (GLfloat) (light->_SpotExpTable[k][0]
-				  + (x-k)*light->_SpotExpTable[k][1]);
-		  attenuation *= spot;
-	       }
-	    }
-	 }
-
-	 if (attenuation < 1e-3)
-	    continue;		/* this light makes no contribution */
-
-	 n_dot_VP = DOT3( normal, VP );
-
-	 /* which side are we lighting? */
-	 if (n_dot_VP < 0.0F) {
-#if IDX & LIGHT_TWOSIDE
-	    side = 1;
-	    correction = -1;
-	    n_dot_VP = -n_dot_VP;
-#else
-            continue;
-#endif
-	 }
-
-	 /* accumulate diffuse term */
-	 diffuse[side] += n_dot_VP * light->_dli * attenuation;
-
-	 /* specular term */
-	 if (ctx->Light.Model.LocalViewer) {
-	    GLfloat v[3];
-	    COPY_3V(v, vertex);
-	    NORMALIZE_3FV(v);
-	    SUB_3V(VP, VP, v);                /* h = VP + VPe */
-	    h = VP;
-	    NORMALIZE_3FV(h);
-	 }
-	 else if (light->_Flags & LIGHT_POSITIONAL) {
-	    h = VP;
-            /* Strangely, disabling this addition fixes a conformance
-             * problem.  If this code is enabled, l_sed.c fails.
-             */
-	    /*ACC_3V(h, ctx->_EyeZDir);*/
-	    NORMALIZE_3FV(h);
-	 }
-         else {
-	    h = light->_h_inf_norm;
-	 }
-
-	 n_dot_h = correction * DOT3(normal, h);
-	 if (n_dot_h > 0.0F) {
-	    GLfloat spec_coef;
-	    struct gl_shine_tab *tab = ctx->_ShineTable[side];
-	    GET_SHINE_TAB_ENTRY( tab, n_dot_h, spec_coef);
-	    specular[side] += spec_coef * light->_sli * attenuation;
-	 }
-      } /*loop over lights*/
-
-      /* Now compute final color index */
-      for (side = 0 ; side < NR_SIDES ; side++) {
-	 const GLfloat *ind = ctx->Light.Material.Attrib[MAT_ATTRIB_FRONT_INDEXES + side];
-	 GLfloat index;
-
-	 if (specular[side] > 1.0F) {
-	    index = ind[MAT_INDEX_SPECULAR];
-	 }
-	 else {
-	    GLfloat d_a = ind[MAT_INDEX_DIFFUSE] - ind[MAT_INDEX_AMBIENT];
-	    GLfloat s_a = ind[MAT_INDEX_SPECULAR] - ind[MAT_INDEX_AMBIENT];
-	    index = (ind[MAT_INDEX_AMBIENT]
-		     + diffuse[side] * (1.0F-specular[side]) * d_a
-		     + specular[side] * s_a);
-	    if (index > ind[MAT_INDEX_SPECULAR]) {
-	       index = ind[MAT_INDEX_SPECULAR];
-	    }
-	 }
-	 indexResult[side][j] = index;
-      }
-   } /*for vertex*/
-}
-
-
-
 static void TAG(init_light_tab)( void )
 {
    _tnl_light_tab[IDX] = TAG(light_rgba);
    _tnl_light_fast_tab[IDX] = TAG(light_fast_rgba);
    _tnl_light_fast_single_tab[IDX] = TAG(light_fast_rgba_single);
    _tnl_light_spec_tab[IDX] = TAG(light_rgba_spec);
-   _tnl_light_ci_tab[IDX] = TAG(light_ci);
 }
 
 

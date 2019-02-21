@@ -1,5 +1,5 @@
 /*
- * Copyright 2008 Tungsten Graphics, inc.
+ * Copyright 2008 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -16,7 +16,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.  IN NO EVENT SHALL
- * TUNGSTEN GRAPHICS AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
+ * VMWARE AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
  * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
  * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -33,7 +33,7 @@
  *
  *
  * Authors:
- *    Keith Whitwell <keithw@tungstengraphics.com>
+ *    Keith Whitwell <keithw@vmware.com>
  */
 
 #ifndef _TRANSLATE_H
@@ -44,12 +44,27 @@
 #include "pipe/p_format.h"
 #include "pipe/p_state.h"
 
+/**
+ * Translate has to work on one more attribute because
+ * the draw module has to be able to pass the vertex
+ * position even if the fragment shader already consumes
+ * PIPE_MAX_ATTRIBS inputs.
+ */
+#define TRANSLATE_MAX_ATTRIBS (PIPE_MAX_ATTRIBS + 1)
+
+enum translate_element_type {
+   TRANSLATE_ELEMENT_NORMAL,
+   TRANSLATE_ELEMENT_INSTANCE_ID
+};
+
 struct translate_element 
 {
+   enum translate_element_type type;
    enum pipe_format input_format;
    enum pipe_format output_format;
    unsigned input_buffer:8;
    unsigned input_offset:24;
+   unsigned instance_divisor;
    unsigned output_offset;
 };
 
@@ -57,9 +72,40 @@ struct translate_element
 struct translate_key {
    unsigned output_stride;
    unsigned nr_elements;
-   struct translate_element element[PIPE_MAX_ATTRIBS + 1];
+   struct translate_element element[TRANSLATE_MAX_ATTRIBS];
 };
 
+
+struct translate;
+
+
+typedef void (PIPE_CDECL *run_elts_func)(struct translate *,
+                                         const unsigned *elts,
+                                         unsigned count,
+                                         unsigned start_instance,
+                                         unsigned instance_id,
+                                         void *output_buffer);
+
+typedef void (PIPE_CDECL *run_elts16_func)(struct translate *,
+                                           const uint16_t *elts,
+                                           unsigned count,
+                                           unsigned start_instance,
+                                           unsigned instance_id,
+                                           void *output_buffer);
+
+typedef void (PIPE_CDECL *run_elts8_func)(struct translate *,
+                                          const uint8_t *elts,
+                                          unsigned count,
+                                          unsigned start_instance,
+                                          unsigned instance_id,
+                                          void *output_buffer);
+
+typedef void (PIPE_CDECL *run_func)(struct translate *,
+                                    unsigned start,
+                                    unsigned count,
+                                    unsigned start_instance,
+                                    unsigned instance_id,
+                                    void *output_buffer);
 
 struct translate {
    struct translate_key key;
@@ -69,46 +115,40 @@ struct translate {
    void (*set_buffer)( struct translate *,
 		       unsigned i,
 		       const void *ptr,
-		       unsigned stride );
+		       unsigned stride,
+		       unsigned max_index );
 
-   void (PIPE_CDECL *run_elts)( struct translate *,
-                                const unsigned *elts,
-                                unsigned count,
-                                void *output_buffer);
-
-   void (PIPE_CDECL *run)( struct translate *,
-                           unsigned start,
-                           unsigned count,
-                           void *output_buffer);
+   run_elts_func run_elts;
+   run_elts16_func run_elts16;
+   run_elts8_func run_elts8;
+   run_func run;
 };
 
 
 
-#if 0
-struct translate_context *translate_context_create( void );
-void translate_context_destroy( struct translate_context * );
-
-struct translate *translate_lookup_or_create( struct translate_context *tctx,
-					      const struct translate_key *key );
-#endif
-
-
 struct translate *translate_create( const struct translate_key *key );
 
-static INLINE int translate_keysize( const struct translate_key *key )
+boolean translate_is_output_format_supported(enum pipe_format format);
+
+static inline int translate_keysize( const struct translate_key *key )
 {
    return 2 * sizeof(int) + key->nr_elements * sizeof(struct translate_element);
 }
 
-static INLINE int translate_key_compare( const struct translate_key *a,
+static inline int translate_key_compare( const struct translate_key *a,
                                          const struct translate_key *b )
 {
-   int keysize = translate_keysize(a);
-   return memcmp(a, b, keysize);
+   int keysize_a = translate_keysize(a);
+   int keysize_b = translate_keysize(b);
+
+   if (keysize_a != keysize_b) {
+      return keysize_a - keysize_b;
+   }
+   return memcmp(a, b, keysize_a);
 }
 
 
-static INLINE void translate_key_sanitize( struct translate_key *a )
+static inline void translate_key_sanitize( struct translate_key *a )
 {
    int keysize = translate_keysize(a);
    char *ptr = (char *)a;
@@ -123,5 +163,6 @@ struct translate *translate_sse2_create( const struct translate_key *key );
 
 struct translate *translate_generic_create( const struct translate_key *key );
 
+boolean translate_generic_is_output_format_supported(enum pipe_format format);
 
 #endif

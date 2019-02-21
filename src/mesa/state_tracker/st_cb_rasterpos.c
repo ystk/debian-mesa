@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -39,16 +39,15 @@
 #include "main/imports.h"
 #include "main/macros.h"
 #include "main/feedback.h"
+#include "main/rastpos.h"
 
 #include "st_context.h"
 #include "st_atom.h"
 #include "st_draw.h"
 #include "st_cb_rasterpos.h"
-#include "st_draw.h"
 #include "draw/draw_context.h"
 #include "draw/draw_pipe.h"
 #include "vbo/vbo.h"
-
 
 
 /**
@@ -57,7 +56,7 @@
 struct rastpos_stage
 {
    struct draw_stage stage;   /**< Base class */
-   GLcontext *ctx;            /**< Rendering context */
+   struct gl_context *ctx;            /**< Rendering context */
 
    /* vertex attrib info we can setup once and re-use */
    struct gl_client_array array[VERT_ATTRIB_MAX];
@@ -66,7 +65,7 @@ struct rastpos_stage
 };
 
 
-static INLINE struct rastpos_stage *
+static inline struct rastpos_stage *
 rastpos_stage( struct draw_stage *stage )
 {
    return (struct rastpos_stage *) stage;
@@ -101,7 +100,7 @@ rastpos_line( struct draw_stage *stage, struct prim_header *prim )
 static void
 rastpos_destroy(struct draw_stage *stage)
 {
-   _mesa_free(stage);
+   free(stage);
 }
 
 
@@ -110,7 +109,7 @@ rastpos_destroy(struct draw_stage *stage)
  * else copy the current attrib.
  */
 static void
-update_attrib(GLcontext *ctx, const GLuint *outputMapping,
+update_attrib(struct gl_context *ctx, const GLuint *outputMapping,
               const struct vertex_header *vert,
               GLfloat *dest,
               GLuint result, GLuint defaultAttrib)
@@ -132,8 +131,8 @@ static void
 rastpos_point(struct draw_stage *stage, struct prim_header *prim)
 {
    struct rastpos_stage *rs = rastpos_stage(stage);
-   GLcontext *ctx = rs->ctx;
-   struct st_context *st = ctx->st;
+   struct gl_context *ctx = rs->ctx;
+   struct st_context *st = st_context(ctx);
    const GLfloat height = (GLfloat) ctx->DrawBuffer->Height;
    const GLuint *outputMapping = st->vertex_result_to_slot;
    const GLfloat *pos;
@@ -155,16 +154,16 @@ rastpos_point(struct draw_stage *stage, struct prim_header *prim)
    /* update other raster attribs */
    update_attrib(ctx, outputMapping, prim->v[0],
                  ctx->Current.RasterColor,
-                 VERT_RESULT_COL0, VERT_ATTRIB_COLOR0);
+                 VARYING_SLOT_COL0, VERT_ATTRIB_COLOR0);
 
    update_attrib(ctx, outputMapping, prim->v[0],
                  ctx->Current.RasterSecondaryColor,
-                 VERT_RESULT_COL1, VERT_ATTRIB_COLOR1);
+                 VARYING_SLOT_COL1, VERT_ATTRIB_COLOR1);
 
    for (i = 0; i < ctx->Const.MaxTextureCoordUnits; i++) {
       update_attrib(ctx, outputMapping, prim->v[0],
                     ctx->Current.RasterTexCoords[i],
-                    VERT_RESULT_TEX0 + i, VERT_ATTRIB_TEX0 + i);
+                    VARYING_SLOT_TEX0 + i, VERT_ATTRIB_TEX0 + i);
    }
 
    if (ctx->RenderMode == GL_SELECT) {
@@ -177,7 +176,7 @@ rastpos_point(struct draw_stage *stage, struct prim_header *prim)
  * Create rasterpos "drawing" stage.
  */
 static struct rastpos_stage *
-new_draw_rastpos_stage(GLcontext *ctx, struct draw_context *draw)
+new_draw_rastpos_stage(struct gl_context *ctx, struct draw_context *draw)
 {
    struct rastpos_stage *rs = ST_CALLOC_STRUCT(rastpos_stage);
    GLuint i;
@@ -193,14 +192,12 @@ new_draw_rastpos_stage(GLcontext *ctx, struct draw_context *draw)
    rs->stage.destroy = rastpos_destroy;
    rs->ctx = ctx;
 
-   for (i = 0; i < Elements(rs->array); i++) {
+   for (i = 0; i < ARRAY_SIZE(rs->array); i++) {
       rs->array[i].Size = 4;
       rs->array[i].Type = GL_FLOAT;
       rs->array[i].Format = GL_RGBA;
-      rs->array[i].Stride = 0;
       rs->array[i].StrideB = 0;
       rs->array[i].Ptr = (GLubyte *) ctx->Current.Attrib[i];
-      rs->array[i].Enabled = GL_TRUE;
       rs->array[i].Normalized = GL_TRUE;
       rs->array[i].BufferObj = NULL;
       rs->arrays[i] = &rs->array[i];
@@ -219,11 +216,24 @@ new_draw_rastpos_stage(GLcontext *ctx, struct draw_context *draw)
 
 
 static void
-st_RasterPos(GLcontext *ctx, const GLfloat v[4])
+st_RasterPos(struct gl_context *ctx, const GLfloat v[4])
 {
-   struct st_context *st = ctx->st;
-   struct draw_context *draw = st->draw;
+   struct st_context *st = st_context(ctx);
+   struct draw_context *draw = st_get_draw_context(st);
    struct rastpos_stage *rs;
+   const struct gl_client_array **saved_arrays = ctx->Array._DrawArrays;
+
+   if (!st->draw)
+      return;
+
+   if (ctx->VertexProgram._Current == NULL ||
+       ctx->VertexProgram._Current == ctx->VertexProgram._TnlProgram) {
+      /* No vertex shader/program is enabled, used the simple/fast fixed-
+       * function implementation of RasterPos.
+       */
+      _mesa_RasterPos(ctx, v);
+      return;
+   }
 
    if (st->rastpos_stage) {
       /* get rastpos stage info */
@@ -239,7 +249,7 @@ st_RasterPos(GLcontext *ctx, const GLfloat v[4])
    draw_set_rasterize_stage(st->draw, st->rastpos_stage);
 
    /* make sure everything's up to date */
-   st_validate_state(ctx->st);
+   st_validate_state(st, ST_PIPELINE_RENDER);
 
    /* This will get set only if rastpos_point(), above, gets called */
    ctx->Current.RasterPosValid = GL_FALSE;
@@ -249,8 +259,14 @@ st_RasterPos(GLcontext *ctx, const GLfloat v[4])
     */
    rs->array[0].Ptr = (GLubyte *) v;
 
-   /* draw the point */
-   st_feedback_draw_vbo(ctx, rs->arrays, &rs->prim, 1, NULL, GL_TRUE, 0, 1);
+   /* Draw the point.
+    *
+    * Don't set DriverFlags.NewArray.
+    * st_feedback_draw_vbo doesn't check for that flag. */
+   ctx->Array._DrawArrays = rs->arrays;
+   st_feedback_draw_vbo(ctx, &rs->prim, 1, NULL, GL_TRUE, 0, 1,
+                        NULL, 0, NULL);
+   ctx->Array._DrawArrays = saved_arrays;
 
    /* restore draw's rasterization stage depending on rendermode */
    if (ctx->RenderMode == GL_FEEDBACK) {

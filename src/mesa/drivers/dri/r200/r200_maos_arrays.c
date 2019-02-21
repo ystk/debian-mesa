@@ -29,12 +29,11 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 /*
  * Authors:
- *   Keith Whitwell <keith@tungstengraphics.com>
+ *   Keith Whitwell <keithw@vmware.com>
  */
 
 #include "main/glheader.h"
 #include "main/mtypes.h"
-#include "main/colormac.h"
 #include "main/imports.h"
 #include "main/macros.h"
 
@@ -70,38 +69,10 @@ do {						\
 } while (0)
 #endif
 
-static void r200_emit_vecfog(GLcontext *ctx, struct radeon_aos *aos,
-			     GLvoid *data, int stride, int count)
-{
-	radeonContextPtr rmesa = RADEON_CONTEXT(ctx);
-	GLfloat *out;
-	int i;
-	int size = 1;
-
-	if (stride == 0) {
-		radeonAllocDmaRegion(rmesa, &aos->bo, &aos->offset, size * 4, 32);
-		count = 1;
-		aos->stride = 0;
-	} else {
-		radeonAllocDmaRegion(rmesa, &aos->bo, &aos->offset, size * 4, 32);
-		aos->stride = size;
-	}
-
-	aos->components = size;
-	aos->count = count;
-
-	out = (GLfloat*)((char*)aos->bo->ptr + aos->offset);
-	for (i = 0; i < count; i++) {
-	  out[0] = r200ComputeFogBlendFactor( ctx, *(GLfloat *)data );
-	  out++;
-	  data += stride;
-	}
-}
-
 /* Emit any changed arrays to new GART memory, re-emit a packet to
  * update the arrays.  
  */
-void r200EmitArrays( GLcontext *ctx, GLubyte *vimap_rev )
+void r200EmitArrays( struct gl_context *ctx, GLubyte *vimap_rev )
 {
    r200ContextPtr rmesa = R200_CONTEXT( ctx );
    struct vertex_buffer *VB = &TNL_CONTEXT( ctx )->vb;
@@ -151,11 +122,11 @@ void r200EmitArrays( GLcontext *ctx, GLubyte *vimap_rev )
 				       VB->AttribPtr[attrib]->stride,
 				       count);
 	       else
-		 r200_emit_vecfog( ctx,
-				   &(rmesa->radeon.tcl.aos[nr]),
-				   (char *)VB->AttribPtr[attrib]->data,
-				   VB->AttribPtr[attrib]->stride,
-				   count);
+		 rcommon_emit_vecfog( ctx,
+				      &(rmesa->radeon.tcl.aos[nr]),
+				      (char *)VB->AttribPtr[attrib]->data,
+				      VB->AttribPtr[attrib]->stride,
+				      count);
 	    }
 	    vfmt0 |= R200_VTX_DISCRETE_FOG;
 	    goto after_emit;
@@ -194,10 +165,12 @@ void r200EmitArrays( GLcontext *ctx, GLubyte *vimap_rev )
 	       /* fallthrough */
 	    case 4:
 	       vfmt0 |= R200_VTX_W1;
-	    break;
+	       /* fallthrough */
 	    }
+	    break;
 	 default:
 	    assert(0);
+	    emitsize = 0;
 	 }
 	 if (!rmesa->radeon.tcl.aos[nr].bo) {
 	   rcommon_emit_vector( ctx,

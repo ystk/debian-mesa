@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  6.5.3
  *
  * Copyright (C) 1999-2007  Brian Paul   All Rights Reserved.
  *
@@ -17,16 +16,19 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 
+#include "c99_math.h"
 #include "main/glheader.h"
 #include "main/imports.h"
 #include "main/macros.h"
 #include "main/mtypes.h"
+#include "main/teximage.h"
 #include "swrast/s_aaline.h"
 #include "swrast/s_context.h"
 #include "swrast/s_span.h"
@@ -59,16 +61,14 @@ struct LineInfo
 
    /* DO_Z */
    GLfloat zPlane[4];
-   /* DO_RGBA */
+   /* DO_RGBA - always enabled */
    GLfloat rPlane[4], gPlane[4], bPlane[4], aPlane[4];
-   /* DO_INDEX */
-   GLfloat iPlane[4];
    /* DO_ATTRIBS */
    GLfloat wPlane[4];
-   GLfloat attrPlane[FRAG_ATTRIB_MAX][4][4];
-   GLfloat lambda[FRAG_ATTRIB_MAX];
-   GLfloat texWidth[FRAG_ATTRIB_MAX];
-   GLfloat texHeight[FRAG_ATTRIB_MAX];
+   GLfloat attrPlane[VARYING_SLOT_MAX][4][4];
+   GLfloat lambda[VARYING_SLOT_MAX];
+   GLfloat texWidth[VARYING_SLOT_MAX];
+   GLfloat texHeight[VARYING_SLOT_MAX];
 
    SWspan span;
 };
@@ -116,11 +116,11 @@ compute_plane(GLfloat x0, GLfloat y0, GLfloat x1, GLfloat y1,
    const GLfloat b = pz * py;
    const GLfloat c = px * px + py * py;
    const GLfloat d = -(a * x0 + b * y0 + c * z0);
-   if (a == 0.0 && b == 0.0 && c == 0.0 && d == 0.0) {
-      plane[0] = 0.0;
-      plane[1] = 0.0;
-      plane[2] = 1.0;
-      plane[3] = 0.0;
+   if (a == 0.0F && b == 0.0F && c == 0.0F && d == 0.0F) {
+      plane[0] = 0.0F;
+      plane[1] = 0.0F;
+      plane[2] = 1.0F;
+      plane[3] = 0.0F;
    }
    else {
       plane[0] = a;
@@ -132,17 +132,17 @@ compute_plane(GLfloat x0, GLfloat y0, GLfloat x1, GLfloat y1,
 }
 
 
-static INLINE void
+static inline void
 constant_plane(GLfloat value, GLfloat plane[4])
 {
-   plane[0] = 0.0;
-   plane[1] = 0.0;
-   plane[2] = -1.0;
+   plane[0] = 0.0F;
+   plane[1] = 0.0F;
+   plane[2] = -1.0F;
    plane[3] = value;
 }
 
 
-static INLINE GLfloat
+static inline GLfloat
 solve_plane(GLfloat x, GLfloat y, const GLfloat plane[4])
 {
    const GLfloat z = (plane[3] + plane[0] * x + plane[1] * y) / -plane[2];
@@ -156,12 +156,12 @@ solve_plane(GLfloat x, GLfloat y, const GLfloat plane[4])
 /*
  * Return 1 / solve_plane().
  */
-static INLINE GLfloat
+static inline GLfloat
 solve_plane_recip(GLfloat x, GLfloat y, const GLfloat plane[4])
 {
    const GLfloat denom = plane[3] + plane[0] * x + plane[1] * y;
-   if (denom == 0.0)
-      return 0.0;
+   if (denom == 0.0F)
+      return 0.0F;
    else
       return -plane[2] / denom;
 }
@@ -170,7 +170,7 @@ solve_plane_recip(GLfloat x, GLfloat y, const GLfloat plane[4])
 /*
  * Solve plane and return clamped GLchan value.
  */
-static INLINE GLchan
+static inline GLchan
 solve_plane_chan(GLfloat x, GLfloat y, const GLfloat plane[4])
 {
    const GLfloat z = (plane[3] + plane[0] * x + plane[1] * y) / -plane[2];
@@ -189,7 +189,7 @@ solve_plane_chan(GLfloat x, GLfloat y, const GLfloat plane[4])
 /*
  * Compute mipmap level of detail.
  */
-static INLINE GLfloat
+static inline GLfloat
 compute_lambda(const GLfloat sPlane[4], const GLfloat tPlane[4],
                GLfloat invQ, GLfloat width, GLfloat height)
 {
@@ -204,7 +204,7 @@ compute_lambda(const GLfloat sPlane[4], const GLfloat tPlane[4],
    if (rho2 == 0.0F)
       return 0.0;
    else
-      return (GLfloat) (LOGF(rho2) * 1.442695 * 0.5);/* 1.442695 = 1/log(2) */
+      return logf(rho2) * 1.442695f * 0.5f;/* 1.442695 = 1/log(2) */
 }
 
 
@@ -325,21 +325,7 @@ compute_coveragef(const struct LineInfo *info,
 }
 
 
-/**
- * Compute coverage value for color index mode.
- * XXX this may not be quite correct.
- * \return coverage in [0,15].
- */
-static GLfloat
-compute_coveragei(const struct LineInfo *info,
-                  GLint winx, GLint winy)
-{
-   return compute_coveragef(info, winx, winy) * 15.0F;
-}
-
-
-
-typedef void (*plot_func)(GLcontext *ctx, struct LineInfo *line,
+typedef void (*plot_func)(struct gl_context *ctx, struct LineInfo *line,
                           int ix, int iy);
                          
 
@@ -348,7 +334,7 @@ typedef void (*plot_func)(GLcontext *ctx, struct LineInfo *line,
  * Draw an AA line segment (called many times per line when stippling)
  */
 static void
-segment(GLcontext *ctx,
+segment(struct gl_context *ctx,
         struct LineInfo *line,
         plot_func plot,
         GLfloat t0, GLfloat t1)
@@ -388,7 +374,7 @@ segment(GLcontext *ctx,
       if (x0 < x1) {
          xLeft = x0 - line->halfWidth;
          xRight = x1 + line->halfWidth;
-         if (line->dy >= 0.0) {
+         if (line->dy >= 0.0F) {
             yBot = y0 - 3.0F * line->halfWidth;
             yTop = y0 + line->halfWidth;
          }
@@ -400,7 +386,7 @@ segment(GLcontext *ctx,
       else {
          xLeft = x1 - line->halfWidth;
          xRight = x0 + line->halfWidth;
-         if (line->dy <= 0.0) {
+         if (line->dy <= 0.0F) {
             yBot = y1 - 3.0F * line->halfWidth;
             yTop = y1 + line->halfWidth;
          }
@@ -434,7 +420,7 @@ segment(GLcontext *ctx,
       if (y0 < y1) {
          yBot = y0 - line->halfWidth;
          yTop = y1 + line->halfWidth;
-         if (line->dx >= 0.0) {
+         if (line->dx >= 0.0F) {
             xLeft = x0 - 3.0F * line->halfWidth;
             xRight = x0 + line->halfWidth;
          }
@@ -446,7 +432,7 @@ segment(GLcontext *ctx,
       else {
          yBot = y1 - line->halfWidth;
          yTop = y0 + line->halfWidth;
-         if (line->dx <= 0.0) {
+         if (line->dx <= 0.0F) {
             xLeft = x1 - 3.0F * line->halfWidth;
             xRight = x1 + line->halfWidth;
          }
@@ -475,50 +461,34 @@ segment(GLcontext *ctx,
 }
 
 
-#define NAME(x) aa_ci_##x
-#define DO_Z
-#define DO_ATTRIBS /* for fog */
-#define DO_INDEX
-#include "s_aalinetemp.h"
-
-
 #define NAME(x) aa_rgba_##x
 #define DO_Z
-#define DO_RGBA
 #include "s_aalinetemp.h"
 
 
 #define NAME(x)  aa_general_rgba_##x
 #define DO_Z
-#define DO_RGBA
 #define DO_ATTRIBS
 #include "s_aalinetemp.h"
 
 
 
 void
-_swrast_choose_aa_line_function(GLcontext *ctx)
+_swrast_choose_aa_line_function(struct gl_context *ctx)
 {
    SWcontext *swrast = SWRAST_CONTEXT(ctx);
 
-   ASSERT(ctx->Line.SmoothFlag);
+   assert(ctx->Line.SmoothFlag);
 
-   if (ctx->Visual.rgbMode) {
-      /* RGBA */
-      if (ctx->Texture._EnabledCoordUnits != 0
-          || ctx->FragmentProgram._Current
-          || (ctx->Light.Enabled &&
-              ctx->Light.Model.ColorControl == GL_SEPARATE_SPECULAR_COLOR)
-          || ctx->Fog.ColorSumEnabled
-          || swrast->_FogEnabled) {
-         swrast->Line = aa_general_rgba_line;
-      }
-      else {
-         swrast->Line = aa_rgba_line;
-      }
+   if (ctx->Texture._EnabledCoordUnits != 0
+       || _swrast_use_fragment_program(ctx)
+       || (ctx->Light.Enabled &&
+           ctx->Light.Model.ColorControl == GL_SEPARATE_SPECULAR_COLOR)
+       || ctx->Fog.ColorSumEnabled
+       || swrast->_FogEnabled) {
+      swrast->Line = aa_general_rgba_line;
    }
    else {
-      /* Color Index */
-      swrast->Line = aa_ci_line;
+      swrast->Line = aa_rgba_line;
    }
 }

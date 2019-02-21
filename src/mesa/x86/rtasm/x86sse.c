@@ -1,6 +1,8 @@
 #ifdef USE_X86_ASM
 #if defined(__i386__) || defined(__386__)
 
+#include <stdio.h>
+
 #include "main/imports.h"
 #include "x86sse.h"
 
@@ -1184,7 +1186,7 @@ void x86_release_func( struct x86_function *p )
 void (*x86_get_func( struct x86_function *p ))(void)
 {
    if (DISASSEM && p->store)
-      _mesa_printf("disassemble %p %p\n", p->store, p->csr);
+      printf("disassemble %p %p\n", p->store, p->csr);
    return (void (*)(void)) (unsigned long) p->store;
 }
 

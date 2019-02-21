@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,14 +18,14 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  * 
  **************************************************************************/
 
-/* Authors:  Keith Whitwell <keith@tungstengraphics.com>
+/* Authors:  Keith Whitwell <keithw@vmware.com>
  */
 
 #ifndef LP_CONTEXT_H
@@ -34,116 +34,141 @@
 #include "pipe/p_context.h"
 
 #include "draw/draw_vertex.h"
+#include "util/u_blitter.h"
 
 #include "lp_tex_sample.h"
 #include "lp_jit.h"
+#include "lp_setup.h"
+#include "lp_state_fs.h"
+#include "lp_state_setup.h"
 
 
 struct llvmpipe_vbuf_render;
 struct draw_context;
 struct draw_stage;
-struct llvmpipe_tile_cache;
-struct llvmpipe_tex_tile_cache;
+struct draw_vertex_shader;
 struct lp_fragment_shader;
-struct lp_vertex_shader;
 struct lp_blend_state;
-
+struct lp_setup_context;
+struct lp_setup_variant;
+struct lp_velems_state;
 
 struct llvmpipe_context {
    struct pipe_context pipe;  /**< base class */
 
    /** Constant state objects */
    const struct pipe_blend_state *blend;
-   const struct pipe_sampler_state *sampler[PIPE_MAX_SAMPLERS];
+   struct pipe_sampler_state *samplers[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
+
    const struct pipe_depth_stencil_alpha_state *depth_stencil;
    const struct pipe_rasterizer_state *rasterizer;
    struct lp_fragment_shader *fs;
-   const struct lp_vertex_shader *vs;
+   struct draw_vertex_shader *vs;
+   const struct lp_geometry_shader *gs;
+   const struct lp_velems_state *velems;
+   const struct lp_so_state *so;
 
    /** Other rendering state */
-   struct pipe_blend_color blend_color[4][16];
+   unsigned sample_mask;
+   struct pipe_blend_color blend_color;
+   struct pipe_stencil_ref stencil_ref;
    struct pipe_clip_state clip;
-   struct pipe_constant_buffer constants[PIPE_SHADER_TYPES];
+   struct pipe_constant_buffer constants[PIPE_SHADER_TYPES][LP_MAX_TGSI_CONST_BUFFERS];
    struct pipe_framebuffer_state framebuffer;
    struct pipe_poly_stipple poly_stipple;
-   struct pipe_scissor_state scissor;
-   struct pipe_texture *texture[PIPE_MAX_SAMPLERS];
-   struct pipe_viewport_state viewport;
-   struct pipe_vertex_buffer vertex_buffer[PIPE_MAX_ATTRIBS];
-   struct pipe_vertex_element vertex_element[PIPE_MAX_ATTRIBS];
+   struct pipe_scissor_state scissors[PIPE_MAX_VIEWPORTS];
+   struct pipe_sampler_view *sampler_views[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_SAMPLER_VIEWS];
 
-   unsigned num_samplers;
-   unsigned num_textures;
-   unsigned num_vertex_elements;
+   struct pipe_viewport_state viewports[PIPE_MAX_VIEWPORTS];
+   struct pipe_vertex_buffer vertex_buffer[PIPE_MAX_ATTRIBS];
+   struct pipe_index_buffer index_buffer;
+
+   unsigned num_samplers[PIPE_SHADER_TYPES];
+   unsigned num_sampler_views[PIPE_SHADER_TYPES];
+
    unsigned num_vertex_buffers;
 
-   unsigned dirty; /**< Mask of LP_NEW_x flags */
+   struct draw_so_target *so_targets[PIPE_MAX_SO_BUFFERS];
+   int num_so_targets;
+   struct pipe_query_data_so_statistics so_stats;
 
-   /* Counter for occlusion queries.  Note this supports overlapping
-    * queries.
-    */
-   uint64_t occlusion_count;
-   unsigned active_query_count;
+   struct pipe_query_data_pipeline_statistics pipeline_statistics;
+   unsigned active_statistics_queries;
+
+   unsigned active_occlusion_queries;
+
+   unsigned dirty; /**< Mask of LP_NEW_x flags */
 
    /** Mapped vertex buffers */
    ubyte *mapped_vbuffer[PIPE_MAX_ATTRIBS];
    
    /** Vertex format */
    struct vertex_info vertex_info;
-   struct vertex_info vertex_info_vbuf;
+   
+   /** Which vertex shader output slot contains color */
+   int8_t color_slot[2];
+
+   /** Which vertex shader output slot contains bcolor */
+   int8_t bcolor_slot[2];
 
    /** Which vertex shader output slot contains point size */
-   int psize_slot;
+   int8_t psize_slot;
 
-   /* The reduced version of the primitive supplied by the state
-    * tracker.
-    */
-   unsigned reduced_api_prim;
+   /** Which vertex shader output slot contains viewport index */
+   int8_t viewport_index_slot;
 
-   /* The reduced primitive after unfilled triangles, wide-line
-    * decomposition, etc, are taken into account.  This is the
-    * primitive actually rasterized.
-    */
-   unsigned reduced_prim;
+   /** Which geometry shader output slot contains layer */
+   int8_t layer_slot;
 
-   /** Derived from scissor and surface bounds: */
-   struct pipe_scissor_state cliprect;
+   /** A fake frontface output for unfilled primitives */
+   int8_t face_slot;
 
-   unsigned line_stipple_counter;
+   /** Depth format and bias settings. */
+   boolean floating_point_depth;
+   double mrd;   /**< minimum resolvable depth value, for polygon offset */
 
-   /** TGSI exec things */
-   struct {
-      struct lp_shader_sampler vert_samplers[PIPE_MAX_SAMPLERS];
-      struct lp_shader_sampler *vert_samplers_list[PIPE_MAX_SAMPLERS];
-      struct lp_shader_sampler frag_samplers[PIPE_MAX_SAMPLERS];
-      struct lp_shader_sampler *frag_samplers_list[PIPE_MAX_SAMPLERS];
-   } tgsi;
+   /** The tiling engine */
+   struct lp_setup_context *setup;
+   struct lp_setup_variant setup_variant;
 
    /** The primitive drawing context */
    struct draw_context *draw;
 
-   /** Draw module backend */
-   struct vbuf_render *vbuf_backend;
-   struct draw_stage *vbuf;
-
-   boolean dirty_render_cache;
-   
-   struct llvmpipe_tile_cache *cbuf_cache[PIPE_MAX_COLOR_BUFS];
-   
-   /* TODO: we shouldn't be using external interfaces internally like this */
-   struct pipe_transfer *zsbuf_transfer;
-   uint8_t *zsbuf_map;
+   struct blitter_context *blitter;
 
    unsigned tex_timestamp;
-   struct llvmpipe_tex_tile_cache *tex_cache[PIPE_MAX_SAMPLERS];
+   boolean no_rast;
 
-   unsigned no_rast : 1;
+   /** List of all fragment shader variants */
+   struct lp_fs_variant_list_item fs_variants_list;
+   unsigned nr_fs_variants;
+   unsigned nr_fs_instrs;
 
-   struct lp_jit_context jit_context;
+   struct lp_setup_variant_list_item setup_variants_list;
+   unsigned nr_setup_variants;
+
+   /** Conditional query object and mode */
+   struct pipe_query *render_cond_query;
+   uint render_cond_mode;
+   boolean render_cond_cond;
+
+   /** The LLVMContext to use for LLVM related work */
+   LLVMContextRef context;
 };
 
 
-static INLINE struct llvmpipe_context *
+struct pipe_context *
+llvmpipe_create_context(struct pipe_screen *screen, void *priv,
+                        unsigned flags);
+
+struct pipe_resource *
+llvmpipe_user_buffer_create(struct pipe_screen *screen,
+                            void *ptr,
+                            unsigned bytes,
+                            unsigned bind_flags);
+
+
+static inline struct llvmpipe_context *
 llvmpipe_context( struct pipe_context *pipe )
 {
    return (struct llvmpipe_context *)pipe;

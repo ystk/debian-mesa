@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -39,8 +39,12 @@
 #define DRAW_VERTEX_H
 
 
+#include "pipe/p_compiler.h"
 #include "pipe/p_state.h"
+#include "util/u_debug.h"
+#include "util/u_memory.h"
 
+#define DRAW_ATTR_NONEXIST 255
 
 /**
  * Vertex attribute emit modes
@@ -52,19 +56,8 @@ enum attrib_emit {
    EMIT_2F,
    EMIT_3F,
    EMIT_4F,
-   EMIT_4UB  /**< XXX may need variations for RGBA vs BGRA, etc */
-};
-
-
-/**
- * Attribute interpolation mode
- */
-enum interp_mode {
-   INTERP_NONE,      /**< never interpolate vertex header info */
-   INTERP_POS,       /**< special case for frag position */
-   INTERP_CONSTANT,
-   INTERP_LINEAR,
-   INTERP_PERSPECTIVE
+   EMIT_4UB, /**< is RGBA like the rest */
+   EMIT_4UB_BGRA
 };
 
 
@@ -81,19 +74,18 @@ struct vertex_info
     * memcmp() comparisons.
     */
    struct {
-      unsigned interp_mode:4;      /**< INTERP_x */
-      unsigned emit:4;             /**< EMIT_x */
+      unsigned emit:8;             /**< EMIT_x */
       unsigned src_index:8;          /**< map to post-xform attribs */
-   } attrib[PIPE_MAX_SHADER_INPUTS];
+   } attrib[PIPE_MAX_SHADER_OUTPUTS];
 };
 
-static INLINE size_t
+static inline size_t
 draw_vinfo_size( const struct vertex_info *a )
 {
    return offsetof(const struct vertex_info, attrib[a->num_attribs]);
 }
 
-static INLINE int
+static inline int
 draw_vinfo_compare( const struct vertex_info *a,
                     const struct vertex_info *b )
 {
@@ -101,7 +93,7 @@ draw_vinfo_compare( const struct vertex_info *a,
    return memcmp( a, b, sizea );
 }
 
-static INLINE void
+static inline void
 draw_vinfo_copy( struct vertex_info *dst,
                  const struct vertex_info *src )
 {
@@ -117,16 +109,21 @@ draw_vinfo_copy( struct vertex_info *dst,
  *                   corresponds to this attribute.
  * \return slot in which the attribute was added
  */
-static INLINE uint
+static inline uint
 draw_emit_vertex_attr(struct vertex_info *vinfo,
                       enum attrib_emit emit, 
-                      enum interp_mode interp, /* only used by softpipe??? */
-                      uint src_index)
+                      int src_index)
 {
    const uint n = vinfo->num_attribs;
-   assert(n < PIPE_MAX_SHADER_INPUTS);
+
+   /* If the src_index is negative, meaning it hasn't been found
+    * we'll assign it all zeros later - set to DRAW_ATTR_NONEXIST */
+   if (src_index < 0) {
+      src_index = DRAW_ATTR_NONEXIST;
+   }
+
+   assert(n < ARRAY_SIZE(vinfo->attrib));
    vinfo->attrib[n].emit = emit;
-   vinfo->attrib[n].interp_mode = interp;
    vinfo->attrib[n].src_index = src_index;
    vinfo->num_attribs++;
    return n;
@@ -139,9 +136,11 @@ void draw_dump_emitted_vertex(const struct vertex_info *vinfo,
                               const uint8_t *data);
 
 
-static INLINE unsigned draw_translate_vinfo_format(unsigned format )
+static inline enum pipe_format draw_translate_vinfo_format(enum attrib_emit emit)
 {
-   switch (format) {
+   switch (emit) {
+   case EMIT_OMIT:
+      return PIPE_FORMAT_NONE;
    case EMIT_1F:
    case EMIT_1F_PSIZE:
       return PIPE_FORMAT_R32_FLOAT;
@@ -153,10 +152,36 @@ static INLINE unsigned draw_translate_vinfo_format(unsigned format )
       return PIPE_FORMAT_R32G32B32A32_FLOAT;
    case EMIT_4UB:
       return PIPE_FORMAT_R8G8B8A8_UNORM;
+   case EMIT_4UB_BGRA:
+      return PIPE_FORMAT_B8G8R8A8_UNORM;
    default:
+      assert(!"unexpected format");
       return PIPE_FORMAT_NONE;
    }
 }
 
+static inline unsigned draw_translate_vinfo_size(enum attrib_emit emit)
+{
+   switch (emit) {
+   case EMIT_OMIT:
+      return 0;
+   case EMIT_1F:
+   case EMIT_1F_PSIZE:
+      return 1 * sizeof(float);
+   case EMIT_2F:
+      return 2 * sizeof(float);
+   case EMIT_3F:
+      return 3 * sizeof(float);
+   case EMIT_4F:
+      return 4 * sizeof(float);
+   case EMIT_4UB:
+      return 4 * sizeof(unsigned char);
+   case EMIT_4UB_BGRA:
+      return 4 * sizeof(unsigned char);
+   default:
+      assert(!"unexpected format");
+      return 0;
+   }
+}
 
 #endif /* DRAW_VERTEX_H */

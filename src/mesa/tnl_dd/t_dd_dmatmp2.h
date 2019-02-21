@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  6.5.1
  *
  * Copyright (C) 1999-2006  Brian Paul   All Rights Reserved.
  *
@@ -17,12 +16,13 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  *
  * Authors:
- *    Keith Whitwell <keith@tungstengraphics.com>
+ *    Keith Whitwell <keithw@vmware.com>
  */
 
 
@@ -70,7 +70,7 @@ do { 						\
 /**********************************************************************/
 
 
-static ELT_TYPE *TAG(emit_elts)( GLcontext *ctx, 
+static ELT_TYPE *TAG(emit_elts)( struct gl_context *ctx, 
 			    ELT_TYPE *dest,
 			    GLuint *elts, GLuint nr )
 {
@@ -89,7 +89,7 @@ static ELT_TYPE *TAG(emit_elts)( GLcontext *ctx,
    return dest;
 }
 
-static ELT_TYPE *TAG(emit_consecutive_elts)( GLcontext *ctx, 
+static ELT_TYPE *TAG(emit_consecutive_elts)( struct gl_context *ctx, 
 					ELT_TYPE *dest,
 					GLuint start, GLuint nr )
 {
@@ -114,25 +114,25 @@ static ELT_TYPE *TAG(emit_consecutive_elts)( GLcontext *ctx,
 
 
 
-static void TAG(render_points_verts)( GLcontext *ctx,
+static void TAG(render_points_verts)( struct gl_context *ctx,
 				      GLuint start,
 				      GLuint count,
 				      GLuint flags )
 {
    if (start < count) {
       LOCAL_VARS;
-      if (0) fprintf(stderr, "%s\n", __FUNCTION__);
+      if (0) fprintf(stderr, "%s\n", __func__);
       EMIT_PRIM( ctx, GL_POINTS, HW_POINTS, start, count );
    }
 }
 
-static void TAG(render_lines_verts)( GLcontext *ctx,
+static void TAG(render_lines_verts)( struct gl_context *ctx,
 				     GLuint start,
 				     GLuint count,
 				     GLuint flags )
 {
    LOCAL_VARS;
-   if (0) fprintf(stderr, "%s\n", __FUNCTION__);
+   if (0) fprintf(stderr, "%s\n", __func__);
    count -= (count-start) & 1;
 
    if (start+1 >= count)
@@ -150,13 +150,13 @@ static void TAG(render_lines_verts)( GLcontext *ctx,
 }
 
 
-static void TAG(render_line_strip_verts)( GLcontext *ctx,
+static void TAG(render_line_strip_verts)( struct gl_context *ctx,
 					  GLuint start,
 					  GLuint count,
 					  GLuint flags )
 {
    LOCAL_VARS;
-   if (0) fprintf(stderr, "%s\n", __FUNCTION__);
+   if (0) fprintf(stderr, "%s\n", __func__);
 
    if (start+1 >= count)
       return;
@@ -197,14 +197,14 @@ static void TAG(render_line_strip_verts)( GLcontext *ctx,
 }
 
 
-static void TAG(render_line_loop_verts)( GLcontext *ctx,
+static void TAG(render_line_loop_verts)( struct gl_context *ctx,
 					 GLuint start,
 					 GLuint count,
 					 GLuint flags )
 {
    LOCAL_VARS;
    GLuint j, nr;
-   if (0) fprintf(stderr, "%s\n", __FUNCTION__);
+   if (0) fprintf(stderr, "%s\n", __func__);
 
    if (flags & PRIM_BEGIN) {
       j = start;
@@ -286,13 +286,13 @@ static void TAG(render_line_loop_verts)( GLcontext *ctx,
 }
 
 
-static void TAG(render_triangles_verts)( GLcontext *ctx,
+static void TAG(render_triangles_verts)( struct gl_context *ctx,
 					 GLuint start,
 					 GLuint count,
 					 GLuint flags )
 {
    LOCAL_VARS;
-   if (0) fprintf(stderr, "%s\n", __FUNCTION__);
+   if (0) fprintf(stderr, "%s\n", __func__);
 
    count -= (count-start)%3;
 
@@ -307,13 +307,13 @@ static void TAG(render_triangles_verts)( GLcontext *ctx,
 
 
 
-static void TAG(render_tri_strip_verts)( GLcontext *ctx,
+static void TAG(render_tri_strip_verts)( struct gl_context *ctx,
 					 GLuint start,
 					 GLuint count,
 					 GLuint flags )
 {
    LOCAL_VARS;
-   if (0) fprintf(stderr, "%s\n", __FUNCTION__);
+   if (0) fprintf(stderr, "%s\n", __func__);
 
    if (start + 2 >= count)
       return;
@@ -352,13 +352,13 @@ static void TAG(render_tri_strip_verts)( GLcontext *ctx,
       EMIT_PRIM( ctx, GL_TRIANGLE_STRIP, HW_TRIANGLE_STRIP_0, start, count );
 }
 
-static void TAG(render_tri_fan_verts)( GLcontext *ctx,
+static void TAG(render_tri_fan_verts)( struct gl_context *ctx,
 				       GLuint start,
 				       GLuint count,
 				       GLuint flags )
 {
    LOCAL_VARS;
-   if (0) fprintf(stderr, "%s\n", __FUNCTION__);
+   if (0) fprintf(stderr, "%s\n", __func__);
 
    if (start+2 >= count) 
       return;
@@ -395,13 +395,13 @@ static void TAG(render_tri_fan_verts)( GLcontext *ctx,
 }
 
 
-static void TAG(render_poly_verts)( GLcontext *ctx,
+static void TAG(render_poly_verts)( struct gl_context *ctx,
 				    GLuint start,
 				    GLuint count,
 				    GLuint flags )
 {
    LOCAL_VARS;
-   if (0) fprintf(stderr, "%s\n", __FUNCTION__);
+   if (0) fprintf(stderr, "%s\n", __func__);
 
    if (start+2 >= count) 
       return;
@@ -409,13 +409,13 @@ static void TAG(render_poly_verts)( GLcontext *ctx,
    EMIT_PRIM( ctx, GL_POLYGON, HW_POLYGON, start, count );
 }
 
-static void TAG(render_quad_strip_verts)( GLcontext *ctx,
+static void TAG(render_quad_strip_verts)( struct gl_context *ctx,
 					  GLuint start,
 					  GLuint count,
 					  GLuint flags )
 {
    LOCAL_VARS;
-   if (0) fprintf(stderr, "%s\n", __FUNCTION__);
+   if (0) fprintf(stderr, "%s\n", __func__);
 
    count -= (count-start) & 1;
 
@@ -460,13 +460,13 @@ static void TAG(render_quad_strip_verts)( GLcontext *ctx,
 }
 
 
-static void TAG(render_quads_verts)( GLcontext *ctx,
+static void TAG(render_quads_verts)( struct gl_context *ctx,
 				     GLuint start,
 				     GLuint count,
 				     GLuint flags )
 {
    LOCAL_VARS;
-   if (0) fprintf(stderr, "%s\n", __FUNCTION__);
+   if (0) fprintf(stderr, "%s\n", __func__);
    count -= (count-start)%4;
 
    if (start+3 >= count) 
@@ -509,7 +509,7 @@ static void TAG(render_quads_verts)( GLcontext *ctx,
    }
 }
 
-static void TAG(render_noop)( GLcontext *ctx,
+static void TAG(render_noop)( struct gl_context *ctx,
 			      GLuint start,
 			      GLuint count,
 			      GLuint flags )
@@ -539,7 +539,7 @@ static tnl_render_func TAG(render_tab_verts)[GL_POLYGON+2] =
  *                 Render elts using hardware indexed verts                 *
  ****************************************************************************/
 
-static void TAG(render_points_elts)( GLcontext *ctx,
+static void TAG(render_points_elts)( struct gl_context *ctx,
 				     GLuint start,
 				     GLuint count,
 				     GLuint flags )
@@ -563,7 +563,7 @@ static void TAG(render_points_elts)( GLcontext *ctx,
 
 
 
-static void TAG(render_lines_elts)( GLcontext *ctx,
+static void TAG(render_lines_elts)( struct gl_context *ctx,
 				    GLuint start,
 				    GLuint count,
 				    GLuint flags )
@@ -602,7 +602,7 @@ static void TAG(render_lines_elts)( GLcontext *ctx,
 }
 
 
-static void TAG(render_line_strip_elts)( GLcontext *ctx,
+static void TAG(render_line_strip_elts)( struct gl_context *ctx,
 					 GLuint start,
 					 GLuint count,
 					 GLuint flags )
@@ -631,7 +631,7 @@ static void TAG(render_line_strip_elts)( GLcontext *ctx,
 }
 
 
-static void TAG(render_line_loop_elts)( GLcontext *ctx,
+static void TAG(render_line_loop_elts)( struct gl_context *ctx,
 					GLuint start,
 					GLuint count,
 					GLuint flags )
@@ -642,7 +642,7 @@ static void TAG(render_line_loop_elts)( GLcontext *ctx,
    GLuint j, nr;
    ELT_TYPE *dest;
 
-   if (0) fprintf(stderr, "%s\n", __FUNCTION__);
+   if (0) fprintf(stderr, "%s\n", __func__);
 
    if (flags & PRIM_BEGIN)
       j = start;
@@ -683,7 +683,7 @@ static void TAG(render_line_loop_elts)( GLcontext *ctx,
 }
 
 
-static void TAG(render_triangles_elts)( GLcontext *ctx,
+static void TAG(render_triangles_elts)( struct gl_context *ctx,
 					GLuint start,
 					GLuint count,
 					GLuint flags )
@@ -716,7 +716,7 @@ static void TAG(render_triangles_elts)( GLcontext *ctx,
 
 
 
-static void TAG(render_tri_strip_elts)( GLcontext *ctx,
+static void TAG(render_tri_strip_elts)( struct gl_context *ctx,
 					GLuint start,
 					GLuint count,
 					GLuint flags )
@@ -746,7 +746,7 @@ static void TAG(render_tri_strip_elts)( GLcontext *ctx,
    }
 }
 
-static void TAG(render_tri_fan_elts)( GLcontext *ctx,
+static void TAG(render_tri_fan_elts)( struct gl_context *ctx,
 				      GLuint start,
 				      GLuint count,
 				      GLuint flags )
@@ -773,7 +773,7 @@ static void TAG(render_tri_fan_elts)( GLcontext *ctx,
 }
 
 
-static void TAG(render_poly_elts)( GLcontext *ctx,
+static void TAG(render_poly_elts)( struct gl_context *ctx,
 				   GLuint start,
 				   GLuint count,
 				   GLuint flags )
@@ -799,7 +799,7 @@ static void TAG(render_poly_elts)( GLcontext *ctx,
    }
 }
 
-static void TAG(render_quad_strip_elts)( GLcontext *ctx,
+static void TAG(render_quad_strip_elts)( struct gl_context *ctx,
 					 GLuint start,
 					 GLuint count,
 					 GLuint flags )
@@ -861,7 +861,7 @@ static void TAG(render_quad_strip_elts)( GLcontext *ctx,
 }
 
 
-static void TAG(render_quads_elts)( GLcontext *ctx,
+static void TAG(render_quads_elts)( struct gl_context *ctx,
 				    GLuint start,
 				    GLuint count,
 				    GLuint flags )

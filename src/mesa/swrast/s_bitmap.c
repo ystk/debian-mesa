@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  7.1
  *
  * Copyright (C) 1999-2008  Brian Paul   All Rights Reserved.
  *
@@ -17,9 +16,10 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 /**
@@ -30,8 +30,10 @@
 
 #include "main/glheader.h"
 #include "main/bufferobj.h"
+#include "main/condrender.h"
 #include "main/image.h"
 #include "main/macros.h"
+#include "main/pbo.h"
 
 #include "s_context.h"
 #include "s_span.h"
@@ -44,7 +46,7 @@
  * All parameter error checking will have been done before this is called.
  */
 void
-_swrast_Bitmap( GLcontext *ctx, GLint px, GLint py,
+_swrast_Bitmap( struct gl_context *ctx, GLint px, GLint py,
 		GLsizei width, GLsizei height,
 		const struct gl_pixelstore_attrib *unpack,
 		const GLubyte *bitmap )
@@ -53,7 +55,10 @@ _swrast_Bitmap( GLcontext *ctx, GLint px, GLint py,
    GLuint count = 0;
    SWspan span;
 
-   ASSERT(ctx->RenderMode == GL_RENDER);
+   assert(ctx->RenderMode == GL_RENDER);
+
+   if (!_mesa_check_conditional_render(ctx))
+      return; /* don't draw */
 
    bitmap = (const GLubyte *) _mesa_map_pbo_source(ctx, unpack, bitmap);
    if (!bitmap)
@@ -118,13 +123,10 @@ _swrast_Bitmap( GLcontext *ctx, GLint px, GLint py,
             src++;
       }
 
-      if (count + width >= MAX_WIDTH || row + 1 == height) {
+      if (count + width >= SWRAST_MAX_WIDTH || row + 1 == height) {
          /* flush the span */
          span.end = count;
-         if (ctx->Visual.rgbMode)
-            _swrast_write_rgba_span(ctx, &span);
-         else
-            _swrast_write_index_span(ctx, &span);
+         _swrast_write_rgba_span(ctx, &span);
          span.end = 0;
          count = 0;
       }
@@ -143,7 +145,7 @@ _swrast_Bitmap( GLcontext *ctx, GLint px, GLint py,
  * draw or skip.
  */
 void
-_swrast_Bitmap( GLcontext *ctx, GLint px, GLint py,
+_swrast_Bitmap( struct gl_context *ctx, GLint px, GLint py,
 		GLsizei width, GLsizei height,
 		const struct gl_pixelstore_attrib *unpack,
 		const GLubyte *bitmap )
@@ -152,8 +154,8 @@ _swrast_Bitmap( GLcontext *ctx, GLint px, GLint py,
    GLint row, col;
    SWspan span;
 
-   ASSERT(ctx->RenderMode == GL_RENDER);
-   ASSERT(bitmap);
+   assert(ctx->RenderMode == GL_RENDER);
+   assert(bitmap);
 
    swrast_render_start(ctx);
 
@@ -188,10 +190,7 @@ _swrast_Bitmap( GLcontext *ctx, GLint px, GLint py,
             }
          }
 
-         if (ctx->Visual.rgbMode)
-            _swrast_write_rgba_span(ctx, &span);
-         else
-	    _swrast_write_index_span(ctx, &span);
+         _swrast_write_rgba_span(ctx, &span);
 
          /* get ready for next row */
          if (mask != 1)
@@ -211,10 +210,7 @@ _swrast_Bitmap( GLcontext *ctx, GLint px, GLint py,
             }
          }
 
-         if (ctx->Visual.rgbMode)
-            _swrast_write_rgba_span(ctx, &span);
-         else
-            _swrast_write_index_span(ctx, &span);
+         _swrast_write_rgba_span(ctx, &span);
 
          /* get ready for next row */
          if (mask != 128)

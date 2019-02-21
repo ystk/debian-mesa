@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2008 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -79,6 +79,19 @@ emit_immediate(struct tgsi_transform_context *ctx,
 }
 
 
+static void
+emit_property(struct tgsi_transform_context *ctx,
+              const struct tgsi_full_property *prop)
+{
+   uint ti = ctx->ti;
+
+   ti += tgsi_build_full_property(prop,
+                                  ctx->tokens_out + ti,
+                                  ctx->header,
+                                  ctx->max_tokens_out - ti);
+   ctx->ti = ti;
+}
+
 
 /**
  * Apply user-defined transformations to the input shader to produce
@@ -96,6 +109,7 @@ tgsi_transform_shader(const struct tgsi_token *tokens_in,
                       struct tgsi_transform_context *ctx)
 {
    uint procType;
+   boolean first_instruction = TRUE;
 
    /* input shader */
    struct tgsi_parse_context parse;
@@ -110,6 +124,7 @@ tgsi_transform_shader(const struct tgsi_token *tokens_in,
    ctx->emit_instruction = emit_instruction;
    ctx->emit_declaration = emit_declaration;
    ctx->emit_immediate = emit_immediate;
+   ctx->emit_property = emit_property;
    ctx->tokens_out = tokens_out;
    ctx->max_tokens_out = max_tokens_out;
 
@@ -122,23 +137,21 @@ tgsi_transform_shader(const struct tgsi_token *tokens_in,
       return -1;
    }
    procType = parse.FullHeader.Processor.Processor;
-   assert(procType == TGSI_PROCESSOR_FRAGMENT ||
-          procType == TGSI_PROCESSOR_VERTEX ||
-          procType == TGSI_PROCESSOR_GEOMETRY);
+   assert(procType == PIPE_SHADER_FRAGMENT ||
+          procType == PIPE_SHADER_VERTEX ||
+          procType == PIPE_SHADER_GEOMETRY);
 
 
    /**
     **  Setup output shader
     **/
-   *(struct tgsi_version *) &tokens_out[0] = tgsi_build_version();
-
-   ctx->header = (struct tgsi_header *) (tokens_out + 1);
+   ctx->header = (struct tgsi_header *)tokens_out;
    *ctx->header = tgsi_build_header();
 
-   processor = (struct tgsi_processor *) (tokens_out + 2);
+   processor = (struct tgsi_processor *) (tokens_out + 1);
    *processor = tgsi_build_processor( procType, ctx->header );
 
-   ctx->ti = 3;
+   ctx->ti = 2;
 
 
    /**
@@ -154,10 +167,28 @@ tgsi_transform_shader(const struct tgsi_token *tokens_in,
             struct tgsi_full_instruction *fullinst
                = &parse.FullToken.FullInstruction;
 
-            if (ctx->transform_instruction)
-               ctx->transform_instruction(ctx, fullinst);
-            else
+            if (first_instruction && ctx->prolog) {
+               ctx->prolog(ctx);
+            }
+
+            /* XXX Note: we may also want to look for a main/top-level
+             * TGSI_OPCODE_RET instruction in the future.
+             */
+            if (fullinst->Instruction.Opcode == TGSI_OPCODE_END
+                && ctx->epilog) {
+               /* Emit caller's epilog */
+               ctx->epilog(ctx);
+               /* Emit END */
                ctx->emit_instruction(ctx, fullinst);
+            }
+            else {
+               if (ctx->transform_instruction)
+                  ctx->transform_instruction(ctx, fullinst);
+               else
+                  ctx->emit_instruction(ctx, fullinst);
+            }
+
+            first_instruction = FALSE;
          }
          break;
 
@@ -184,14 +215,21 @@ tgsi_transform_shader(const struct tgsi_token *tokens_in,
                ctx->emit_immediate(ctx, fullimm);
          }
          break;
+      case TGSI_TOKEN_TYPE_PROPERTY:
+         {
+            struct tgsi_full_property *fullprop
+               = &parse.FullToken.FullProperty;
+
+            if (ctx->transform_property)
+               ctx->transform_property(ctx, fullprop);
+            else
+               ctx->emit_property(ctx, fullprop);
+         }
+         break;
 
       default:
          assert( 0 );
       }
-   }
-
-   if (ctx->epilog) {
-      ctx->epilog(ctx);
    }
 
    tgsi_parse_free (&parse);
@@ -215,7 +253,7 @@ tgsi_transform_foo( struct tgsi_token *tokens_out,
                     uint max_tokens_out )
 {
    const char *text = 
-      "FRAG1.1\n"
+      "FRAG\n"
       "DCL IN[0], COLOR, CONSTANT\n"
       "DCL OUT[0], COLOR\n"
       "  0: MOV OUT[0], IN[0]\n"

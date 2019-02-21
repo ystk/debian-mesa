@@ -23,6 +23,7 @@
  *
  **********************************************************/
 
+#include "util/u_bitmask.h"
 #include "util/u_debug.h"
 #include "pipe/p_defines.h"
 #include "util/u_memory.h"
@@ -63,16 +64,20 @@ static const struct svga_tracked_state *hw_clear_state[] =
  */
 static const struct svga_tracked_state *hw_draw_state[] =
 {
-   &svga_hw_update_zero_stride,
+   &svga_need_tgsi_transform,
    &svga_hw_fs,
+   &svga_hw_gs,
    &svga_hw_vs,
    &svga_hw_rss,
-   &svga_hw_tss,
-   &svga_hw_tss_binding,
+   &svga_hw_sampler,           /* VGPU10 */
+   &svga_hw_sampler_bindings,  /* VGPU10 */
+   &svga_hw_tss,               /* pre-VGPU10 */
+   &svga_hw_tss_binding,       /* pre-VGPU10 */
    &svga_hw_clip_planes,
    &svga_hw_vdecl,
-   &svga_hw_fs_parameters,
-   &svga_hw_vs_parameters,
+   &svga_hw_fs_constants,
+   &svga_hw_gs_constants,
+   &svga_hw_vs_constants,
    NULL
 };
 
@@ -119,16 +124,21 @@ static void xor_states( unsigned *result,
 
 
 
-static int update_state( struct svga_context *svga,
-                         const struct svga_tracked_state *atoms[],
-                         unsigned *state )
+static enum pipe_error
+update_state(struct svga_context *svga,
+             const struct svga_tracked_state *atoms[],
+             unsigned *state)
 {
+#ifdef DEBUG
    boolean debug = TRUE;
-   enum pipe_error ret = 0;
+#else
+   boolean debug = FALSE;
+#endif
+   enum pipe_error ret = PIPE_OK;
    unsigned i;
 
    ret = svga_hwtnl_flush( svga->hwtnl );
-   if (ret != 0)
+   if (ret != PIPE_OK)
       return ret;
 
    if (debug) {
@@ -151,7 +161,7 @@ static int update_state( struct svga_context *svga,
 	    if (0)
                debug_printf("update: %s\n", atoms[i]->name);
 	    ret = atoms[i]->update( svga, *state );
-            if (ret != 0)
+            if (ret != PIPE_OK)
                return ret;
 	 }
 
@@ -174,23 +184,25 @@ static int update_state( struct svga_context *svga,
       for (i = 0; atoms[i] != NULL; i++) {	 
 	 if (check_state(*state, atoms[i]->dirty)) {
 	    ret = atoms[i]->update( svga, *state );
-            if (ret != 0)
+            if (ret != PIPE_OK)
                return ret;
          }
       }
    }
 
-   return 0;
+   return PIPE_OK;
 }
 
 
 
-int svga_update_state( struct svga_context *svga,
-                       unsigned max_level )
+enum pipe_error
+svga_update_state(struct svga_context *svga, unsigned max_level)
 {
    struct svga_screen *screen = svga_screen(svga->pipe.screen);
-   int ret = 0;
-   int i;
+   enum pipe_error ret = PIPE_OK;
+   unsigned i;
+
+   SVGA_STATS_TIME_PUSH(screen->sws, SVGA_STATS_TIME_UPDATESTATE);
 
    /* Check for updates to bound textures.  This can't be done in an
     * atom as there is no flag which could provoke this test, and we
@@ -208,8 +220,8 @@ int svga_update_state( struct svga_context *svga,
          ret = update_state( svga, 
                              state_levels[i], 
                              &svga->dirty );
-         if (ret != 0)
-            return ret;
+         if (ret != PIPE_OK)
+            goto done;
 
          svga->state.dirty[i] = 0;
       }
@@ -219,7 +231,12 @@ int svga_update_state( struct svga_context *svga,
       svga->state.dirty[i] |= svga->dirty;
 
    svga->dirty = 0;
-   return 0;
+
+   svga->hud.num_validations++;
+
+done:
+   SVGA_STATS_TIME_POP(screen->sws);
+   return ret;
 }
 
 
@@ -228,7 +245,7 @@ int svga_update_state( struct svga_context *svga,
 void svga_update_state_retry( struct svga_context *svga,
                               unsigned max_level )
 {
-   int ret;
+   enum pipe_error ret;
 
    ret = svga_update_state( svga, max_level );
 
@@ -237,7 +254,7 @@ void svga_update_state_retry( struct svga_context *svga,
       ret = svga_update_state( svga, max_level );
    }
 
-   assert( ret == 0 );
+   assert( ret == PIPE_OK );
 }
 
 
@@ -255,24 +272,55 @@ do {                                            \
  */
 enum pipe_error svga_emit_initial_state( struct svga_context *svga )
 {
-   SVGA3dRenderState *rs;
-   unsigned count = 0;
-   const unsigned COUNT = 2;
-   enum pipe_error ret;
+   if (svga_have_vgpu10(svga)) {
+      SVGA3dRasterizerStateId id = util_bitmask_add(svga->rast_object_id_bm);
+      enum pipe_error ret;
 
-   ret = SVGA3D_BeginSetRenderState( svga->swc, &rs, COUNT );
-   if (ret)
+      /* XXX preliminary code */
+      ret = SVGA3D_vgpu10_DefineRasterizerState(svga->swc,
+                                             id,
+                                             SVGA3D_FILLMODE_FILL,
+                                             SVGA3D_CULL_NONE,
+                                             1, /* frontCounterClockwise */
+                                             0, /* depthBias */
+                                             0.0f, /* depthBiasClamp */
+                                             0.0f, /* slopeScaledDepthBiasClamp */
+                                             0, /* depthClampEnable */
+                                             0, /* scissorEnable */
+                                             0, /* multisampleEnable */
+                                             0, /* aalineEnable */
+                                             1.0f, /* lineWidth */
+                                             0, /* lineStippleEnable */
+                                             0, /* lineStippleFactor */
+                                             0, /* lineStipplePattern */
+                                             0); /* provokingVertexLast */
+
+
+      assert(ret == PIPE_OK);
+
+      ret = SVGA3D_vgpu10_SetRasterizerState(svga->swc, id);
       return ret;
+   }
+   else {
+      SVGA3dRenderState *rs;
+      unsigned count = 0;
+      const unsigned COUNT = 2;
+      enum pipe_error ret;
 
-   /* Always use D3D style coordinate space as this is the only one
-    * which is implemented on all backends.
-    */
-   EMIT_RS(rs, count, SVGA3D_RS_COORDINATETYPE, SVGA3D_COORDINATE_LEFTHANDED );
-   EMIT_RS(rs, count, SVGA3D_RS_FRONTWINDING, SVGA3D_FRONTWINDING_CW );
-   
-   assert( COUNT == count );
-   SVGA_FIFOCommitAll( svga->swc );
+      ret = SVGA3D_BeginSetRenderState( svga->swc, &rs, COUNT );
+      if (ret != PIPE_OK)
+         return ret;
 
-   return 0;
+      /* Always use D3D style coordinate space as this is the only one
+       * which is implemented on all backends.
+       */
+      EMIT_RS(rs, count, SVGA3D_RS_COORDINATETYPE,
+              SVGA3D_COORDINATE_LEFTHANDED );
+      EMIT_RS(rs, count, SVGA3D_RS_FRONTWINDING, SVGA3D_FRONTWINDING_CW );
 
+      assert( COUNT == count );
+      SVGA_FIFOCommitAll( svga->swc );
+
+      return PIPE_OK;
+   }
 }

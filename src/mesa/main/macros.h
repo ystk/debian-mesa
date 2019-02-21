@@ -5,7 +5,6 @@
 
 /*
  * Mesa 3-D graphics library
- * Version:  6.5.2
  *
  * Copyright (C) 1999-2006  Brian Paul   All Rights Reserved.
  *
@@ -22,15 +21,19 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 
 #ifndef MACROS_H
 #define MACROS_H
 
+#include "util/macros.h"
+#include "util/u_math.h"
+#include "util/rounding.h"
 #include "imports.h"
 
 
@@ -54,12 +57,15 @@ extern GLfloat _mesa_ubyte_to_float_color_tab[256];
 #define FLOAT_TO_BYTE(X)    ( (((GLint) (255.0F * (X))) - 1) / 2 )
 
 
+/** Convert GLbyte to GLfloat while preserving zero */
+#define BYTE_TO_FLOATZ(B)   ((B) == 0 ? 0.0F : BYTE_TO_FLOAT(B))
+
+
 /** Convert GLbyte in [-128,127] to GLfloat in [-1.0,1.0], texture/fb data */
 #define BYTE_TO_FLOAT_TEX(B)    ((B) == -128 ? -1.0F : (B) * (1.0F/127.0F))
 
 /** Convert GLfloat in [-1.0,1.0] to GLbyte in [-128,127], texture/fb data */
-#define FLOAT_TO_BYTE_TEX(X)    ( (GLint) (127.0F * (X)) )
-
+#define FLOAT_TO_BYTE_TEX(X)    CLAMP( (GLint) (127.0F * (X)), -128, 127 )
 
 /** Convert GLushort in [0,65535] to GLfloat in [0.0,1.0] */
 #define USHORT_TO_FLOAT(S)  ((GLfloat) (S) * (1.0F / 65535.0F))
@@ -74,6 +80,9 @@ extern GLfloat _mesa_ubyte_to_float_color_tab[256];
 /** Convert GLfloat in [-1.0,1.0] to GLshort in [-32768,32767] */
 #define FLOAT_TO_SHORT(X)   ( (((GLint) (65535.0F * (X))) - 1) / 2 )
 
+/** Convert GLshort to GLfloat while preserving zero */
+#define SHORT_TO_FLOATZ(S)   ((S) == 0 ? 0.0F : SHORT_TO_FLOAT(S))
+
 
 /** Convert GLshort in [-32768,32767] to GLfloat in [-1.0,1.0], texture/fb data */
 #define SHORT_TO_FLOAT_TEX(S)    ((S) == -32768 ? -1.0F : (S) * (1.0F/32767.0F))
@@ -83,14 +92,14 @@ extern GLfloat _mesa_ubyte_to_float_color_tab[256];
 
 
 /** Convert GLuint in [0,4294967295] to GLfloat in [0.0,1.0] */
-#define UINT_TO_FLOAT(U)    ((GLfloat) (U) * (1.0F / 4294967295.0))
+#define UINT_TO_FLOAT(U)    ((GLfloat) ((U) * (1.0F / 4294967295.0)))
 
 /** Convert GLfloat in [0.0,1.0] to GLuint in [0,4294967295] */
 #define FLOAT_TO_UINT(X)    ((GLuint) ((X) * 4294967295.0))
 
 
 /** Convert GLint in [-2147483648,2147483647] to GLfloat in [-1.0,1.0] */
-#define INT_TO_FLOAT(I)     ((2.0F * (I) + 1.0F) * (1.0F/4294967294.0))
+#define INT_TO_FLOAT(I)     ((GLfloat) ((2.0F * (I) + 1.0F) * (1.0F/4294967294.0)))
 
 /** Convert GLfloat in [-1.0,1.0] to GLint in [-2147483648,2147483647] */
 /* causes overflow:
@@ -123,10 +132,90 @@ extern GLfloat _mesa_ubyte_to_float_color_tab[256];
 #define INT_TO_USHORT(i)   ((i) < 0 ? 0 : ((GLushort) ((i) >> 15)))
 #define UINT_TO_USHORT(i)  ((i) < 0 ? 0 : ((GLushort) ((i) >> 16)))
 #define UNCLAMPED_FLOAT_TO_USHORT(us, f)  \
-        us = ( (GLushort) IROUND( CLAMP((f), 0.0F, 1.0F) * 65535.0F) )
+        us = ( (GLushort) _mesa_lroundevenf( CLAMP((f), 0.0F, 1.0F) * 65535.0F) )
 #define CLAMPED_FLOAT_TO_USHORT(us, f)  \
-        us = ( (GLushort) IROUND( (f) * 65535.0F) )
+        us = ( (GLushort) _mesa_lroundevenf( (f) * 65535.0F) )
 
+#define UNCLAMPED_FLOAT_TO_SHORT(s, f)  \
+        s = ( (GLshort) _mesa_lroundevenf( CLAMP((f), -1.0F, 1.0F) * 32767.0F) )
+
+/***
+ *** UNCLAMPED_FLOAT_TO_UBYTE: clamp float to [0,1] and map to ubyte in [0,255]
+ *** CLAMPED_FLOAT_TO_UBYTE: map float known to be in [0,1] to ubyte in [0,255]
+ ***/
+#ifndef DEBUG
+/* This function/macro is sensitive to precision.  Test very carefully
+ * if you change it!
+ */
+#define UNCLAMPED_FLOAT_TO_UBYTE(UB, FLT)				\
+        do {								\
+           fi_type __tmp;						\
+           __tmp.f = (FLT);						\
+           if (__tmp.i < 0)						\
+              UB = (GLubyte) 0;						\
+           else if (__tmp.i >= IEEE_ONE)				\
+              UB = (GLubyte) 255;					\
+           else {							\
+              __tmp.f = __tmp.f * (255.0F/256.0F) + 32768.0F;		\
+              UB = (GLubyte) __tmp.i;					\
+           }								\
+        } while (0)
+#define CLAMPED_FLOAT_TO_UBYTE(UB, FLT)					\
+        do {								\
+           fi_type __tmp;						\
+           __tmp.f = (FLT) * (255.0F/256.0F) + 32768.0F;		\
+           UB = (GLubyte) __tmp.i;					\
+        } while (0)
+#else
+#define UNCLAMPED_FLOAT_TO_UBYTE(ub, f) \
+	ub = ((GLubyte) _mesa_lroundevenf(CLAMP((f), 0.0F, 1.0F) * 255.0F))
+#define CLAMPED_FLOAT_TO_UBYTE(ub, f) \
+	ub = ((GLubyte) _mesa_lroundevenf((f) * 255.0F))
+#endif
+
+static fi_type UINT_AS_UNION(GLuint u)
+{
+   fi_type tmp;
+   tmp.u = u;
+   return tmp;
+}
+
+static inline fi_type INT_AS_UNION(GLint i)
+{
+   fi_type tmp;
+   tmp.i = i;
+   return tmp;
+}
+
+static inline fi_type FLOAT_AS_UNION(GLfloat f)
+{
+   fi_type tmp;
+   tmp.f = f;
+   return tmp;
+}
+
+/**
+ * Convert a floating point value to an unsigned fixed point value.
+ *
+ * \param frac_bits   The number of bits used to store the fractional part.
+ */
+static inline uint32_t
+U_FIXED(float value, uint32_t frac_bits)
+{
+   value *= (1 << frac_bits);
+   return value < 0.0f ? 0 : (uint32_t) value;
+}
+
+/**
+ * Convert a floating point value to an signed fixed point value.
+ *
+ * \param frac_bits   The number of bits used to store the fractional part.
+ */
+static inline int32_t
+S_FIXED(float value, uint32_t frac_bits)
+{
+   return (int32_t) (value * (1 << frac_bits));
+}
 /*@}*/
 
 
@@ -138,10 +227,6 @@ extern GLfloat _mesa_ubyte_to_float_color_tab[256];
 #define STRIDE_4UB(p, i)  (p = (GLubyte (*)[4])((GLubyte *)p + i))
 /** Stepping a GLfloat[4] pointer by a byte stride */
 #define STRIDE_4F(p, i)  (p = (GLfloat (*)[4])((GLubyte *)p + i))
-/** Stepping a GLchan[4] pointer by a byte stride */
-#define STRIDE_4CHAN(p, i)  (p = (GLchan (*)[4])((GLubyte *)p + i))
-/** Stepping a GLchan pointer by a byte stride */
-#define STRIDE_CHAN(p, i)  (p = (GLchan *)((GLubyte *)p + i))
 /** Stepping a \p t pointer by a byte stride */
 #define STRIDE_T(p, t, i)  (p = (t)((GLubyte *)p + i))
 
@@ -160,11 +245,16 @@ extern GLfloat _mesa_ubyte_to_float_color_tab[256];
               (a)[3] == (b)[3])
 
 /** Test for equality (unsigned bytes) */
+static inline GLboolean
+TEST_EQ_4UBV(const GLubyte a[4], const GLubyte b[4])
+{
 #if defined(__i386__)
-#define TEST_EQ_4UBV(DST, SRC) *((GLuint*)(DST)) == *((GLuint*)(SRC))
+   return *((const GLuint *) a) == *((const GLuint *) b);
 #else
-#define TEST_EQ_4UBV(DST, SRC) TEST_EQ_4V(DST, SRC)
+   return TEST_EQ_4V(a, b);
 #endif
+}
+
 
 /** Copy a 4-element vector */
 #define COPY_4V( DST, SRC )         \
@@ -175,45 +265,17 @@ do {                                \
    (DST)[3] = (SRC)[3];             \
 } while (0)
 
-/** Copy a 4-element vector with cast */
-#define COPY_4V_CAST( DST, SRC, CAST )  \
-do {                                    \
-   (DST)[0] = (CAST)(SRC)[0];           \
-   (DST)[1] = (CAST)(SRC)[1];           \
-   (DST)[2] = (CAST)(SRC)[2];           \
-   (DST)[3] = (CAST)(SRC)[3];           \
-} while (0)
-
 /** Copy a 4-element unsigned byte vector */
+static inline void
+COPY_4UBV(GLubyte dst[4], const GLubyte src[4])
+{
 #if defined(__i386__)
-#define COPY_4UBV(DST, SRC)                 \
-do {                                        \
-   *((GLuint*)(DST)) = *((GLuint*)(SRC));   \
-} while (0)
+   *((GLuint *) dst) = *((GLuint *) src);
 #else
-/* The GLuint cast might fail if DST or SRC are not dword-aligned (RISC) */
-#define COPY_4UBV(DST, SRC)         \
-do {                                \
-   (DST)[0] = (SRC)[0];             \
-   (DST)[1] = (SRC)[1];             \
-   (DST)[2] = (SRC)[2];             \
-   (DST)[3] = (SRC)[3];             \
-} while (0)
+   /* The GLuint cast might fail if DST or SRC are not dword-aligned (RISC) */
+   COPY_4V(dst, src);
 #endif
-
-/**
- * Copy a 4-element float vector (avoid using FPU registers)
- * XXX Could use two 64-bit moves on 64-bit systems
- */
-#define COPY_4FV( DST, SRC )                  \
-do {                                          \
-   const GLuint *_s = (const GLuint *) (SRC); \
-   GLuint *_d = (GLuint *) (DST);             \
-   _d[0] = _s[0];                             \
-   _d[1] = _s[1];                             \
-   _d[2] = _s[2];                             \
-   _d[3] = _s[3];                             \
-} while (0)
+}
 
 /** Copy \p SZ elements into a 4-element vector */
 #define COPY_SZ_4V(DST, SZ, SRC)  \
@@ -305,15 +367,6 @@ do {                                   \
       (DST)[2] *= S;                   \
       (DST)[3] *= S;                   \
 } while (0)
-
-/** Assignment */
-#define ASSIGN_4V( V, V0, V1, V2, V3 )  \
-do {                                    \
-    V[0] = V0;                          \
-    V[1] = V1;                          \
-    V[2] = V2;                          \
-    V[3] = V3;                          \
-} while(0)
 
 /*@}*/
 
@@ -548,141 +601,201 @@ do {				\
 
 /*@}*/
 
+/** Copy \p sz elements into a homegeneous (4-element) vector, giving
+ * default values to the remaining components.
+ * The default values are chosen based on \p type.
+ */
+static inline void
+COPY_CLEAN_4V_TYPE_AS_UNION(fi_type dst[4], int sz, const fi_type src[4],
+                            GLenum type)
+{
+   switch (type) {
+   case GL_FLOAT:
+      ASSIGN_4V(dst, FLOAT_AS_UNION(0), FLOAT_AS_UNION(0),
+                FLOAT_AS_UNION(0), FLOAT_AS_UNION(1));
+      break;
+   case GL_INT:
+      ASSIGN_4V(dst, INT_AS_UNION(0), INT_AS_UNION(0),
+                INT_AS_UNION(0), INT_AS_UNION(1));
+      break;
+   case GL_UNSIGNED_INT:
+      ASSIGN_4V(dst, UINT_AS_UNION(0), UINT_AS_UNION(0),
+                UINT_AS_UNION(0), UINT_AS_UNION(1));
+      break;
+   default:
+      ASSIGN_4V(dst, FLOAT_AS_UNION(0), FLOAT_AS_UNION(0),
+                FLOAT_AS_UNION(0), FLOAT_AS_UNION(1)); /* silence warnings */
+      assert(!"Unexpected type in COPY_CLEAN_4V_TYPE_AS_UNION macro");
+   }
+   COPY_SZ_4V(dst, sz, src);
+}
 
-/** \name Linear interpolation macros */
+/** \name Linear interpolation functions */
 /*@{*/
 
-/**
- * Linear interpolation
- *
- * \note \p OUT argument is evaluated twice!
- * \note Be wary of using *coord++ as an argument to any of these macros!
- */
-#define LINTERP(T, OUT, IN) ((OUT) + (T) * ((IN) - (OUT)))
+static inline GLfloat
+LINTERP(GLfloat t, GLfloat out, GLfloat in)
+{
+   return out + t * (in - out);
+}
 
-/* Can do better with integer math
- */
-#define INTERP_UB( t, dstub, outub, inub )  \
-do {                        \
-   GLfloat inf = UBYTE_TO_FLOAT( inub );    \
-   GLfloat outf = UBYTE_TO_FLOAT( outub );  \
-   GLfloat dstf = LINTERP( t, outf, inf );  \
-   UNCLAMPED_FLOAT_TO_UBYTE( dstub, dstf ); \
-} while (0)
+static inline void
+INTERP_3F(GLfloat t, GLfloat dst[3], const GLfloat out[3], const GLfloat in[3])
+{
+   dst[0] = LINTERP( t, out[0], in[0] );
+   dst[1] = LINTERP( t, out[1], in[1] );
+   dst[2] = LINTERP( t, out[2], in[2] );
+}
 
-#define INTERP_CHAN( t, dstc, outc, inc )   \
-do {                        \
-   GLfloat inf = CHAN_TO_FLOAT( inc );      \
-   GLfloat outf = CHAN_TO_FLOAT( outc );    \
-   GLfloat dstf = LINTERP( t, outf, inf );  \
-   UNCLAMPED_FLOAT_TO_CHAN( dstc, dstf );   \
-} while (0)
-
-#define INTERP_UI( t, dstui, outui, inui )  \
-   dstui = (GLuint) (GLint) LINTERP( (t), (GLfloat) (outui), (GLfloat) (inui) )
-
-#define INTERP_F( t, dstf, outf, inf )      \
-   dstf = LINTERP( t, outf, inf )
-
-#define INTERP_4F( t, dst, out, in )        \
-do {                        \
-   dst[0] = LINTERP( (t), (out)[0], (in)[0] );  \
-   dst[1] = LINTERP( (t), (out)[1], (in)[1] );  \
-   dst[2] = LINTERP( (t), (out)[2], (in)[2] );  \
-   dst[3] = LINTERP( (t), (out)[3], (in)[3] );  \
-} while (0)
-
-#define INTERP_3F( t, dst, out, in )        \
-do {                        \
-   dst[0] = LINTERP( (t), (out)[0], (in)[0] );  \
-   dst[1] = LINTERP( (t), (out)[1], (in)[1] );  \
-   dst[2] = LINTERP( (t), (out)[2], (in)[2] );  \
-} while (0)
-
-#define INTERP_4CHAN( t, dst, out, in )         \
-do {                            \
-   INTERP_CHAN( (t), (dst)[0], (out)[0], (in)[0] ); \
-   INTERP_CHAN( (t), (dst)[1], (out)[1], (in)[1] ); \
-   INTERP_CHAN( (t), (dst)[2], (out)[2], (in)[2] ); \
-   INTERP_CHAN( (t), (dst)[3], (out)[3], (in)[3] ); \
-} while (0)
-
-#define INTERP_3CHAN( t, dst, out, in )         \
-do {                            \
-   INTERP_CHAN( (t), (dst)[0], (out)[0], (in)[0] ); \
-   INTERP_CHAN( (t), (dst)[1], (out)[1], (in)[1] ); \
-   INTERP_CHAN( (t), (dst)[2], (out)[2], (in)[2] ); \
-} while (0)
-
-#define INTERP_SZ( t, vec, to, out, in, sz )                \
-do {                                    \
-   switch (sz) {                            \
-   case 4: vec[to][3] = LINTERP( (t), (vec)[out][3], (vec)[in][3] );    \
-   case 3: vec[to][2] = LINTERP( (t), (vec)[out][2], (vec)[in][2] );    \
-   case 2: vec[to][1] = LINTERP( (t), (vec)[out][1], (vec)[in][1] );    \
-   case 1: vec[to][0] = LINTERP( (t), (vec)[out][0], (vec)[in][0] );    \
-   }                                    \
-} while(0)
+static inline void
+INTERP_4F(GLfloat t, GLfloat dst[4], const GLfloat out[4], const GLfloat in[4])
+{
+   dst[0] = LINTERP( t, out[0], in[0] );
+   dst[1] = LINTERP( t, out[1], in[1] );
+   dst[2] = LINTERP( t, out[2], in[2] );
+   dst[3] = LINTERP( t, out[3], in[3] );
+}
 
 /*@}*/
 
 
 
-/** Clamp X to [MIN,MAX] */
-#define CLAMP( X, MIN, MAX )  ( (X)<(MIN) ? (MIN) : ((X)>(MAX) ? (MAX) : (X)) )
+static inline unsigned
+minify(unsigned value, unsigned levels)
+{
+    return MAX2(1, value >> levels);
+}
 
-/** Assign X to CLAMP(X, MIN, MAX) */
-#define CLAMP_SELF(x, mn, mx)  \
-   ( (x)<(mn) ? ((x) = (mn)) : ((x)>(mx) ? ((x)=(mx)) : (x)) )
+/**
+ * Align a value up to an alignment value
+ *
+ * If \c value is not already aligned to the requested alignment value, it
+ * will be rounded up.
+ *
+ * \param value  Value to be rounded
+ * \param alignment  Alignment value to be used.  This must be a power of two.
+ *
+ * \sa ROUND_DOWN_TO()
+ */
+static inline uintptr_t
+ALIGN(uintptr_t value, int32_t alignment)
+{
+   assert((alignment > 0) && _mesa_is_pow_two(alignment));
+   return (((value) + (alignment) - 1) & ~((alignment) - 1));
+}
 
+/**
+ * Like ALIGN(), but works with a non-power-of-two alignment.
+ */
+static inline uintptr_t
+ALIGN_NPOT(uintptr_t value, int32_t alignment)
+{
+   assert(alignment > 0);
+   return (value + alignment - 1) / alignment * alignment;
+}
 
-
-/** Minimum of two values: */
-#define MIN2( A, B )   ( (A)<(B) ? (A) : (B) )
-
-/** Maximum of two values: */
-#define MAX2( A, B )   ( (A)>(B) ? (A) : (B) )
-
-/** Dot product of two 2-element vectors */
-#define DOT2( a, b )  ( (a)[0]*(b)[0] + (a)[1]*(b)[1] )
-
-/** Dot product of two 3-element vectors */
-#define DOT3( a, b )  ( (a)[0]*(b)[0] + (a)[1]*(b)[1] + (a)[2]*(b)[2] )
-
-/** Dot product of two 4-element vectors */
-#define DOT4( a, b )  ( (a)[0]*(b)[0] + (a)[1]*(b)[1] + \
-            (a)[2]*(b)[2] + (a)[3]*(b)[3] )
-
-/** Dot product of two 4-element vectors */
-#define DOT4V(v,a,b,c,d) (v[0]*(a) + v[1]*(b) + v[2]*(c) + v[3]*(d))
+/**
+ * Align a value down to an alignment value
+ *
+ * If \c value is not already aligned to the requested alignment value, it
+ * will be rounded down.
+ *
+ * \param value  Value to be rounded
+ * \param alignment  Alignment value to be used.  This must be a power of two.
+ *
+ * \sa ALIGN()
+ */
+static inline uintptr_t
+ROUND_DOWN_TO(uintptr_t value, int32_t alignment)
+{
+   assert((alignment > 0) && _mesa_is_pow_two(alignment));
+   return ((value) & ~(alignment - 1));
+}
 
 
 /** Cross product of two 3-element vectors */
-#define CROSS3(n, u, v)             \
-do {                        \
-   (n)[0] = (u)[1]*(v)[2] - (u)[2]*(v)[1];  \
-   (n)[1] = (u)[2]*(v)[0] - (u)[0]*(v)[2];  \
-   (n)[2] = (u)[0]*(v)[1] - (u)[1]*(v)[0];  \
-} while (0)
+static inline void
+CROSS3(GLfloat n[3], const GLfloat u[3], const GLfloat v[3])
+{
+   n[0] = u[1] * v[2] - u[2] * v[1];
+   n[1] = u[2] * v[0] - u[0] * v[2];
+   n[2] = u[0] * v[1] - u[1] * v[0];
+}
+
+
+/** Dot product of two 2-element vectors */
+static inline GLfloat
+DOT2(const GLfloat a[2], const GLfloat b[2])
+{
+   return a[0] * b[0] + a[1] * b[1];
+}
+
+static inline GLfloat
+DOT3(const GLfloat a[3], const GLfloat b[3])
+{
+   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+static inline GLfloat
+DOT4(const GLfloat a[4], const GLfloat b[4])
+{
+   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+}
+
+
+static inline GLfloat
+LEN_SQUARED_3FV(const GLfloat v[3])
+{
+   return DOT3(v, v);
+}
+
+static inline GLfloat
+LEN_SQUARED_2FV(const GLfloat v[2])
+{
+   return DOT2(v, v);
+}
+
+
+static inline GLfloat
+LEN_3FV(const GLfloat v[3])
+{
+   return sqrtf(LEN_SQUARED_3FV(v));
+}
+
+static inline GLfloat
+LEN_2FV(const GLfloat v[2])
+{
+   return sqrtf(LEN_SQUARED_2FV(v));
+}
 
 
 /* Normalize a 3-element vector to unit length. */
-#define NORMALIZE_3FV( V )          \
-do {                        \
-   GLfloat len = (GLfloat) LEN_SQUARED_3FV(V);  \
-   if (len) {                   \
-      len = INV_SQRTF(len);         \
-      (V)[0] = (GLfloat) ((V)[0] * len);    \
-      (V)[1] = (GLfloat) ((V)[1] * len);    \
-      (V)[2] = (GLfloat) ((V)[2] * len);    \
-   }                        \
-} while(0)
+static inline void
+NORMALIZE_3FV(GLfloat v[3])
+{
+   GLfloat len = (GLfloat) LEN_SQUARED_3FV(v);
+   if (len) {
+      len = 1.0f / sqrtf(len);
+      v[0] *= len;
+      v[1] *= len;
+      v[2] *= len;
+   }
+}
 
-#define LEN_3FV( V ) (SQRTF((V)[0]*(V)[0]+(V)[1]*(V)[1]+(V)[2]*(V)[2]))
-#define LEN_2FV( V ) (SQRTF((V)[0]*(V)[0]+(V)[1]*(V)[1]))
 
-#define LEN_SQUARED_3FV( V ) ((V)[0]*(V)[0]+(V)[1]*(V)[1]+(V)[2]*(V)[2])
-#define LEN_SQUARED_2FV( V ) ((V)[0]*(V)[0]+(V)[1]*(V)[1])
+/** Test two floats have opposite signs */
+static inline GLboolean
+DIFFERENT_SIGNS(GLfloat x, GLfloat y)
+{
+#ifdef _MSC_VER
+#pragma warning( push )
+#pragma warning( disable : 6334 ) /* sizeof operator applied to an expression with an operator may yield unexpected results */
+#endif
+   return signbit(x) != signbit(y);
+#ifdef _MSC_VER
+#pragma warning( pop )
+#endif
+}
 
 
 /** casts to silence warnings with some compilers */
@@ -691,5 +804,8 @@ do {                        \
 #define ENUM_TO_DOUBLE(E)  ((GLdouble)(GLint)(E))
 #define ENUM_TO_BOOLEAN(E) ((E) ? GL_TRUE : GL_FALSE)
 
+
+/* Stringify */
+#define STRINGIFY(x) #x
 
 #endif

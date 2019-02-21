@@ -1,6 +1,6 @@
 /**************************************************************************
  *
- * Copyright 2006-2008 Tungsten Graphics, Inc., Cedar Park, TX., USA
+ * Copyright 2006-2008 VMware, Inc., USA
  * All Rights Reserved.
  *
  * Permission is hereby granted, FREE of charge, to any person obtaining a
@@ -32,16 +32,16 @@
  * 
  * @sa http://en.wikipedia.org/wiki/Slab_allocation
  * 
- * @author Thomas Hellstrom <thomas-at-tungstengraphics-dot-com>
- * @author Jose Fonseca <jrfonseca@tungstengraphics.com>
+ * @author Thomas Hellstrom <thellstom-at-vmware-dot-com>
+ * @author Jose Fonseca <jfonseca@vmware.com>
  */
 
 #include "pipe/p_compiler.h"
 #include "util/u_debug.h"
-#include "pipe/p_thread.h"
+#include "os/os_thread.h"
 #include "pipe/p_defines.h"
 #include "util/u_memory.h"
-#include "util/u_double_list.h"
+#include "util/list.h"
 #include "util/u_time.h"
 
 #include "pb_buffer.h"
@@ -163,7 +163,7 @@ struct pb_slab_range_manager
 };
 
 
-static INLINE struct pb_slab_buffer *
+static inline struct pb_slab_buffer *
 pb_slab_buffer(struct pb_buffer *buf)
 {
    assert(buf);
@@ -171,7 +171,7 @@ pb_slab_buffer(struct pb_buffer *buf)
 }
 
 
-static INLINE struct pb_slab_manager *
+static inline struct pb_slab_manager *
 pb_slab_manager(struct pb_manager *mgr)
 {
    assert(mgr);
@@ -179,7 +179,7 @@ pb_slab_manager(struct pb_manager *mgr)
 }
 
 
-static INLINE struct pb_slab_range_manager *
+static inline struct pb_slab_range_manager *
 pb_slab_range_manager(struct pb_manager *mgr)
 {
    assert(mgr);
@@ -201,7 +201,7 @@ pb_slab_buffer_destroy(struct pb_buffer *_buf)
 
    pipe_mutex_lock(mgr->mutex);
    
-   assert(!pipe_is_referenced(&buf->base.base.reference));
+   assert(!pipe_is_referenced(&buf->base.reference));
    
    buf->mapCount = 0;
 
@@ -227,9 +227,12 @@ pb_slab_buffer_destroy(struct pb_buffer *_buf)
 
 static void *
 pb_slab_buffer_map(struct pb_buffer *_buf, 
-                   unsigned flags)
+                   unsigned flags,
+                   void *flush_ctx)
 {
    struct pb_slab_buffer *buf = pb_slab_buffer(_buf);
+
+   /* XXX: it will be necessary to remap here to propagate flush_ctx */
 
    ++buf->mapCount;
    return (void *) ((uint8_t *) buf->slab->virtual + buf->start);
@@ -315,15 +318,15 @@ pb_slab_create(struct pb_slab_manager *mgr)
    /* Note down the slab virtual address. All mappings are accessed directly 
     * through this address so it is required that the buffer is pinned. */
    slab->virtual = pb_map(slab->bo, 
-                          PIPE_BUFFER_USAGE_CPU_READ |
-                          PIPE_BUFFER_USAGE_CPU_WRITE);
+                          PB_USAGE_CPU_READ |
+                          PB_USAGE_CPU_WRITE, NULL);
    if(!slab->virtual) {
       ret = PIPE_ERROR_OUT_OF_MEMORY;
       goto out_err1;
    }
    pb_unmap(slab->bo);
 
-   numBuffers = slab->bo->base.size / mgr->bufSize;
+   numBuffers = slab->bo->size / mgr->bufSize;
 
    slab->buffers = CALLOC(numBuffers, sizeof(*slab->buffers));
    if (!slab->buffers) {
@@ -339,10 +342,10 @@ pb_slab_create(struct pb_slab_manager *mgr)
 
    buf = slab->buffers;
    for (i=0; i < numBuffers; ++i) {
-      pipe_reference_init(&buf->base.base.reference, 0);
-      buf->base.base.size = mgr->bufSize;
-      buf->base.base.alignment = 0;
-      buf->base.base.usage = 0;
+      pipe_reference_init(&buf->base.reference, 0);
+      buf->base.size = mgr->bufSize;
+      buf->base.alignment = 0;
+      buf->base.usage = 0;
       buf->base.vtbl = &pb_slab_buffer_vtbl;
       buf->slab = slab;
       buf->start = i* mgr->bufSize;
@@ -418,9 +421,9 @@ pb_slab_manager_create_buffer(struct pb_manager *_mgr,
    pipe_mutex_unlock(mgr->mutex);
    buf = LIST_ENTRY(struct pb_slab_buffer, list, head);
    
-   pipe_reference_init(&buf->base.base.reference, 1);
-   buf->base.base.alignment = desc->alignment;
-   buf->base.base.usage = desc->usage;
+   pipe_reference_init(&buf->base.reference, 1);
+   buf->base.alignment = desc->alignment;
+   buf->base.usage = desc->usage;
    
    return &buf->base;
 }
@@ -483,11 +486,15 @@ pb_slab_range_manager_create_buffer(struct pb_manager *_mgr,
 {
    struct pb_slab_range_manager *mgr = pb_slab_range_manager(_mgr);
    pb_size bufSize;
+   pb_size reqSize = size;
    unsigned i;
+
+   if(desc->alignment > reqSize)
+	   reqSize = desc->alignment;
 
    bufSize = mgr->minBufSize;
    for (i = 0; i < mgr->numBuckets; ++i) {
-      if(bufSize >= size)
+      if(bufSize >= reqSize)
 	 return mgr->buckets[i]->create_buffer(mgr->buckets[i], size, desc);
       bufSize *= 2;
    }
@@ -535,7 +542,7 @@ pb_slab_range_manager_create(struct pb_manager *provider,
    pb_size bufSize;
    unsigned i;
 
-   if(!provider)
+   if (!provider)
       return NULL;
    
    mgr = CALLOC_STRUCT(pb_slab_range_manager);

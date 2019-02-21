@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,27 +18,31 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  * 
  **************************************************************************/
 
-/* Authors:  Keith Whitwell <keith@tungstengraphics.com>
+/* Authors:  Keith Whitwell <keithw@vmware.com>
  */
 
 
 #include "draw/draw_context.h"
-#include "pipe/p_inlines.h"
+#include "util/u_helpers.h"
+#include "util/u_inlines.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
+#include "util/u_transfer.h"
 #include "tgsi/tgsi_parse.h"
 
 #include "i915_context.h"
 #include "i915_reg.h"
 #include "i915_state_inlines.h"
 #include "i915_fpc.h"
+#include "i915_resource.h"
+#include "i915_state.h"
 
 /* The i915 (and related graphics cores) do not support GL_CLAMP.  The
  * Intel drivers for "other operating systems" implement GL_CLAMP as
@@ -56,10 +60,8 @@ translate_wrap_mode(unsigned wrap)
       return TEXCOORDMODE_CLAMP_EDGE;
    case PIPE_TEX_WRAP_CLAMP_TO_BORDER:
       return TEXCOORDMODE_CLAMP_BORDER;
-   /*         
-   case PIPE_TEX_WRAP_MIRRORED_REPEAT:
+   case PIPE_TEX_WRAP_MIRROR_REPEAT:
       return TEXCOORDMODE_MIRROR;
-    */
    default:
       return TEXCOORDMODE_WRAP;
    }
@@ -72,8 +74,6 @@ static unsigned translate_img_filter( unsigned filter )
       return FILTER_NEAREST;
    case PIPE_TEX_FILTER_LINEAR:
       return FILTER_LINEAR;
-   case PIPE_TEX_FILTER_ANISO:
-      return FILTER_ANISOTROPIC;
    default:
       assert(0);
       return FILTER_NEAREST;
@@ -95,7 +95,6 @@ static unsigned translate_mip_filter( unsigned filter )
    }
 }
 
-
 /* None of this state is actually used for anything yet.
  */
 static void *
@@ -105,23 +104,23 @@ i915_create_blend_state(struct pipe_context *pipe,
    struct i915_blend_state *cso_data = CALLOC_STRUCT( i915_blend_state );
 
    {
-      unsigned eqRGB  = blend->rgb_func;
-      unsigned srcRGB = blend->rgb_src_factor;
-      unsigned dstRGB = blend->rgb_dst_factor;
+      unsigned eqRGB  = blend->rt[0].rgb_func;
+      unsigned srcRGB = blend->rt[0].rgb_src_factor;
+      unsigned dstRGB = blend->rt[0].rgb_dst_factor;
 
-      unsigned eqA    = blend->alpha_func;
-      unsigned srcA   = blend->alpha_src_factor;
-      unsigned dstA   = blend->alpha_dst_factor;
+      unsigned eqA    = blend->rt[0].alpha_func;
+      unsigned srcA   = blend->rt[0].alpha_src_factor;
+      unsigned dstA   = blend->rt[0].alpha_dst_factor;
 
       /* Special handling for MIN/MAX filter modes handled at
        * state_tracker level.
        */
 
       if (srcA != srcRGB ||
-	  dstA != dstRGB ||
-	  eqA != eqRGB) {
+          dstA != dstRGB ||
+          eqA != eqRGB) {
 
-	 cso_data->iab = (_3DSTATE_INDEPENDENT_ALPHA_BLEND_CMD |
+         cso_data->iab = (_3DSTATE_INDEPENDENT_ALPHA_BLEND_CMD |
                           IAB_MODIFY_ENABLE |
                           IAB_ENABLE |
                           IAB_MODIFY_FUNC |
@@ -132,7 +131,7 @@ i915_create_blend_state(struct pipe_context *pipe,
                           (i915_translate_blend_func(eqA) << IAB_FUNC_SHIFT));
       }
       else {
-	 cso_data->iab = (_3DSTATE_INDEPENDENT_ALPHA_BLEND_CMD |
+         cso_data->iab = (_3DSTATE_INDEPENDENT_ALPHA_BLEND_CMD |
                           IAB_MODIFY_ENABLE |
                           0);
       }
@@ -148,22 +147,23 @@ i915_create_blend_state(struct pipe_context *pipe,
    if (blend->dither)
       cso_data->LIS5 |= S5_COLOR_DITHER_ENABLE;
 
-   if ((blend->colormask & PIPE_MASK_R) == 0)
+   /* We potentially do some fixup at emission for non-BGRA targets */
+   if ((blend->rt[0].colormask & PIPE_MASK_R) == 0)
       cso_data->LIS5 |= S5_WRITEDISABLE_RED;
 
-   if ((blend->colormask & PIPE_MASK_G) == 0)
+   if ((blend->rt[0].colormask & PIPE_MASK_G) == 0)
       cso_data->LIS5 |= S5_WRITEDISABLE_GREEN;
 
-   if ((blend->colormask & PIPE_MASK_B) == 0)
+   if ((blend->rt[0].colormask & PIPE_MASK_B) == 0)
       cso_data->LIS5 |= S5_WRITEDISABLE_BLUE;
 
-   if ((blend->colormask & PIPE_MASK_A) == 0)
+   if ((blend->rt[0].colormask & PIPE_MASK_A) == 0)
       cso_data->LIS5 |= S5_WRITEDISABLE_ALPHA;
 
-   if (blend->blend_enable) {
-      unsigned funcRGB = blend->rgb_func;
-      unsigned srcRGB  = blend->rgb_src_factor;
-      unsigned dstRGB  = blend->rgb_dst_factor;
+   if (blend->rt[0].blend_enable) {
+      unsigned funcRGB = blend->rt[0].rgb_func;
+      unsigned srcRGB  = blend->rt[0].rgb_src_factor;
+      unsigned dstRGB  = blend->rt[0].rgb_dst_factor;
 
       cso_data->LIS6 |= (S6_CBUF_BLEND_ENABLE |
                          SRC_BLND_FACT(i915_translate_blend_factor(srcRGB)) |
@@ -178,7 +178,9 @@ static void i915_bind_blend_state(struct pipe_context *pipe,
                                   void *blend)
 {
    struct i915_context *i915 = i915_context(pipe);
-   draw_flush(i915->draw);
+
+   if (i915->blend == blend)
+      return;
 
    i915->blend = (struct i915_blend_state*)blend;
 
@@ -192,14 +194,26 @@ static void i915_delete_blend_state(struct pipe_context *pipe, void *blend)
 }
 
 static void i915_set_blend_color( struct pipe_context *pipe,
-			     const struct pipe_blend_color *blend_color )
+                                  const struct pipe_blend_color *blend_color )
 {
    struct i915_context *i915 = i915_context(pipe);
-   draw_flush(i915->draw);
+
+   if (!blend_color)
+      return;
 
    i915->blend_color = *blend_color;
 
    i915->dirty |= I915_NEW_BLEND;
+}
+
+static void i915_set_stencil_ref( struct pipe_context *pipe,
+                                  const struct pipe_stencil_ref *stencil_ref )
+{
+   struct i915_context *i915 = i915_context(pipe);
+
+   i915->stencil_ref = *stencil_ref;
+
+   i915->dirty |= I915_NEW_DEPTH_STENCIL;
 }
 
 static void *
@@ -213,13 +227,16 @@ i915_create_sampler_state(struct pipe_context *pipe,
    unsigned minFilt, magFilt;
    unsigned mipFilt;
 
-   cso->templ = sampler;
+   cso->templ = *sampler;
 
    mipFilt = translate_mip_filter(sampler->min_mip_filter);
    minFilt = translate_img_filter( sampler->min_img_filter );
    magFilt = translate_img_filter( sampler->mag_img_filter );
-   
-   if (sampler->max_anisotropy > 2.0) {
+
+   if (sampler->max_anisotropy > 1)
+      minFilt = magFilt = FILTER_ANISOTROPIC;
+
+   if (sampler->max_anisotropy > 2) {
       cso->state[0] |= SS2_MAX_ANISO_4;
    }
 
@@ -231,10 +248,10 @@ i915_create_sampler_state(struct pipe_context *pipe,
 
    /* Shadow:
     */
-   if (sampler->compare_mode == PIPE_TEX_COMPARE_R_TO_TEXTURE) 
+   if (sampler->compare_mode == PIPE_TEX_COMPARE_R_TO_TEXTURE)
    {
       cso->state[0] |= (SS2_SHADOW_ENABLE |
-                        i915_translate_compare_func(sampler->compare_func));
+                        i915_translate_shadow_compare_func(sampler->compare_func));
 
       minFilt = FILTER_4X4_FLAT;
       magFilt = FILTER_4X4_FLAT;
@@ -259,52 +276,182 @@ i915_create_sampler_state(struct pipe_context *pipe,
       maxlod = CLAMP(maxlod, 0, 16 * 11);
 
       if (minlod > maxlod)
-	 maxlod = minlod;
+         maxlod = minlod;
 
       cso->minlod = minlod;
       cso->maxlod = maxlod;
    }
 
    {
-      ubyte r = float_to_ubyte(sampler->border_color[0]);
-      ubyte g = float_to_ubyte(sampler->border_color[1]);
-      ubyte b = float_to_ubyte(sampler->border_color[2]);
-      ubyte a = float_to_ubyte(sampler->border_color[3]);
+      ubyte r = float_to_ubyte(sampler->border_color.f[0]);
+      ubyte g = float_to_ubyte(sampler->border_color.f[1]);
+      ubyte b = float_to_ubyte(sampler->border_color.f[2]);
+      ubyte a = float_to_ubyte(sampler->border_color.f[3]);
       cso->state[2] = I915PACKCOLOR8888(r, g, b, a);
    }
    return cso;
 }
 
-static void i915_bind_sampler_states(struct pipe_context *pipe,
-                                     unsigned num, void **sampler)
+static void
+i915_bind_vertex_sampler_states(struct pipe_context *pipe,
+                                unsigned start,
+                                unsigned num,
+                                void **samplers)
 {
    struct i915_context *i915 = i915_context(pipe);
    unsigned i;
 
-   assert(num <= PIPE_MAX_SAMPLERS);
+   assert(start + num <= ARRAY_SIZE(i915->vertex_samplers));
+
+   /* Check for no-op */
+   if (num == i915->num_vertex_samplers &&
+       !memcmp(i915->vertex_samplers + start, samplers,
+	       num * sizeof(void *)))
+      return;
+
+   for (i = 0; i < num; ++i)
+      i915->vertex_samplers[i + start] = samplers[i];
+
+   /* find highest non-null samplers[] entry */
+   {
+      unsigned j = MAX2(i915->num_vertex_samplers, start + num);
+      while (j > 0 && i915->vertex_samplers[j - 1] == NULL)
+         j--;
+      i915->num_vertex_samplers = j;
+   }
+
+   draw_set_samplers(i915->draw,
+                     PIPE_SHADER_VERTEX,
+                     i915->vertex_samplers,
+                     i915->num_vertex_samplers);
+}
+
+
+
+static void i915_bind_fragment_sampler_states(struct pipe_context *pipe,
+                                              unsigned start,
+                                              unsigned num,
+                                              void **samplers)
+{
+   struct i915_context *i915 = i915_context(pipe);
+   unsigned i;
 
    /* Check for no-op */
    if (num == i915->num_samplers &&
-       !memcmp(i915->sampler, sampler, num * sizeof(void *)))
+       !memcmp(i915->fragment_sampler + start, samplers,
+               num * sizeof(void *)))
       return;
 
-   draw_flush(i915->draw);
-
    for (i = 0; i < num; ++i)
-      i915->sampler[i] = sampler[i];
-   for (i = num; i < PIPE_MAX_SAMPLERS; ++i)
-      i915->sampler[i] = NULL;
+      i915->fragment_sampler[i + start] = samplers[i];
 
-   i915->num_samplers = num;
+   /* find highest non-null samplers[] entry */
+   {
+      unsigned j = MAX2(i915->num_samplers, start + num);
+      while (j > 0 && i915->fragment_sampler[j - 1] == NULL)
+         j--;
+      i915->num_samplers = j;
+   }
 
    i915->dirty |= I915_NEW_SAMPLER;
 }
+
+
+static void
+i915_bind_sampler_states(struct pipe_context *pipe,
+                         enum pipe_shader_type shader,
+                         unsigned start, unsigned num_samplers,
+                         void **samplers)
+{
+   switch (shader) {
+   case PIPE_SHADER_VERTEX:
+      i915_bind_vertex_sampler_states(pipe, start, num_samplers, samplers);
+      break;
+   case PIPE_SHADER_FRAGMENT:
+      i915_bind_fragment_sampler_states(pipe, start, num_samplers, samplers);
+      break;
+   default:
+      ;
+   }
+}
+
 
 static void i915_delete_sampler_state(struct pipe_context *pipe,
                                       void *sampler)
 {
    FREE(sampler);
 }
+
+
+/**
+ * Called before drawing VBO to map vertex samplers and hand them to draw
+ */
+void
+i915_prepare_vertex_sampling(struct i915_context *i915)
+{
+   struct i915_winsys *iws = i915->iws;
+   unsigned i,j;
+   uint32_t row_stride[PIPE_MAX_TEXTURE_LEVELS];
+   uint32_t img_stride[PIPE_MAX_TEXTURE_LEVELS];
+   uint32_t mip_offsets[PIPE_MAX_TEXTURE_LEVELS];
+   unsigned num = i915->num_vertex_sampler_views;
+   struct pipe_sampler_view **views = i915->vertex_sampler_views;
+
+   assert(num <= PIPE_MAX_SAMPLERS);
+   if (!num)
+      return;
+
+   for (i = 0; i < PIPE_MAX_SAMPLERS; i++) {
+      struct pipe_sampler_view *view = i < num ? views[i] : NULL;
+
+      if (view) {
+         struct pipe_resource *tex = view->texture;
+         struct i915_texture *i915_tex = i915_texture(tex);
+         ubyte *addr;
+
+         /* We're referencing the texture's internal data, so save a
+          * reference to it.
+          */
+         pipe_resource_reference(&i915->mapped_vs_tex[i], tex);
+
+         i915->mapped_vs_tex_buffer[i] = i915_tex->buffer;
+         addr = iws->buffer_map(iws,
+                                i915_tex->buffer,
+                                FALSE /* read only */);
+
+         /* Setup array of mipmap level pointers */
+         /* FIXME: handle 3D textures? */
+         for (j = view->u.tex.first_level; j <= tex->last_level; j++) {
+            mip_offsets[j] = i915_texture_offset(i915_tex, j , 0 /* FIXME depth */);
+            row_stride[j] = i915_tex->stride;
+            img_stride[j] = 0; /* FIXME */
+         }
+
+         draw_set_mapped_texture(i915->draw,
+                                 PIPE_SHADER_VERTEX,
+                                 i,
+                                 tex->width0, tex->height0, tex->depth0,
+                                 view->u.tex.first_level, tex->last_level,
+                                 addr,
+                                 row_stride, img_stride, mip_offsets);
+      } else
+         i915->mapped_vs_tex[i] = NULL;
+   }
+}
+
+void
+i915_cleanup_vertex_sampling(struct i915_context *i915)
+{
+   struct i915_winsys *iws = i915->iws;
+   unsigned i;
+   for (i = 0; i < ARRAY_SIZE(i915->mapped_vs_tex); i++) {
+      if (i915->mapped_vs_tex_buffer[i]) { 
+         iws->buffer_unmap(iws, i915->mapped_vs_tex_buffer[i]);
+         pipe_resource_reference(&i915->mapped_vs_tex[i], NULL);
+      }
+   }
+}
+
 
 
 /** XXX move someday?  Or consolidate all these simple state setters
@@ -333,11 +480,9 @@ i915_create_depth_stencil_state(struct pipe_context *pipe,
       int fop  = i915_translate_stencil_op(depth_stencil->stencil[0].fail_op);
       int dfop = i915_translate_stencil_op(depth_stencil->stencil[0].zfail_op);
       int dpop = i915_translate_stencil_op(depth_stencil->stencil[0].zpass_op);
-      int ref  = depth_stencil->stencil[0].ref_value & 0xff;
 
       cso->stencil_LIS5 |= (S5_STENCIL_TEST_ENABLE |
                             S5_STENCIL_WRITE_ENABLE |
-                            (ref  << S5_STENCIL_REF_SHIFT) |
                             (test << S5_STENCIL_TEST_FUNC_SHIFT) |
                             (fop  << S5_STENCIL_FAIL_SHIFT) |
                             (dfop << S5_STENCIL_PASS_Z_FAIL_SHIFT) |
@@ -349,7 +494,6 @@ i915_create_depth_stencil_state(struct pipe_context *pipe,
       int fop   = i915_translate_stencil_op(depth_stencil->stencil[1].fail_op);
       int dfop  = i915_translate_stencil_op(depth_stencil->stencil[1].zfail_op);
       int dpop  = i915_translate_stencil_op(depth_stencil->stencil[1].zpass_op);
-      int ref   = depth_stencil->stencil[1].ref_value & 0xff;
       int tmask = depth_stencil->stencil[1].valuemask & 0xff;
       int wmask = depth_stencil->stencil[1].writemask & 0xff;
 
@@ -358,7 +502,6 @@ i915_create_depth_stencil_state(struct pipe_context *pipe,
                      BFO_ENABLE_STENCIL_TWO_SIDE |
                      BFO_ENABLE_STENCIL_REF |
                      BFO_STENCIL_TWO_SIDE |
-                     (ref  << BFO_STENCIL_REF_SHIFT) |
                      (test << BFO_STENCIL_TEST_SHIFT) |
                      (fop  << BFO_STENCIL_FAIL_SHIFT) |
                      (dfop << BFO_STENCIL_PASS_Z_FAIL_SHIFT) |
@@ -389,7 +532,7 @@ i915_create_depth_stencil_state(struct pipe_context *pipe,
                           (func << S6_DEPTH_TEST_FUNC_SHIFT));
 
       if (depth_stencil->depth.writemask)
-	 cso->depth_LIS6 |= S6_DEPTH_WRITE_ENABLE;
+         cso->depth_LIS6 |= S6_DEPTH_WRITE_ENABLE;
    }
 
    if (depth_stencil->alpha.enabled) {
@@ -408,7 +551,9 @@ static void i915_bind_depth_stencil_state(struct pipe_context *pipe,
                                           void *depth_stencil)
 {
    struct i915_context *i915 = i915_context(pipe);
-   draw_flush(i915->draw);
+
+   if (i915->depth_stencil == depth_stencil)
+      return;
 
    i915->depth_stencil = (const struct i915_depth_stencil_state *)depth_stencil;
 
@@ -422,11 +567,12 @@ static void i915_delete_depth_stencil_state(struct pipe_context *pipe,
 }
 
 
-static void i915_set_scissor_state( struct pipe_context *pipe,
+static void i915_set_scissor_states( struct pipe_context *pipe,
+                                     unsigned start_slot,
+                                     unsigned num_scissors,
                                  const struct pipe_scissor_state *scissor )
 {
    struct i915_context *i915 = i915_context(pipe);
-   draw_flush(i915->draw);
 
    memcpy( &i915->scissor, scissor, sizeof(*scissor) );
    i915->dirty |= I915_NEW_SCISSOR;
@@ -449,6 +595,7 @@ i915_create_fs_state(struct pipe_context *pipe,
    if (!ifs)
       return NULL;
 
+   ifs->draw_data = draw_create_fragment_shader(i915->draw, templ);
    ifs->state.tokens = tgsi_dup_tokens(templ->tokens);
 
    tgsi_scan_shader(templ->tokens, &ifs->info);
@@ -463,9 +610,13 @@ static void
 i915_bind_fs_state(struct pipe_context *pipe, void *shader)
 {
    struct i915_context *i915 = i915_context(pipe);
-   draw_flush(i915->draw);
+
+   if (i915->fs == shader)
+      return;
 
    i915->fs = (struct i915_fragment_shader*) shader;
+
+   draw_bind_fragment_shader(i915->draw,  (i915->fs ? i915->fs->draw_data : NULL));
 
    i915->dirty |= I915_NEW_FS;
 }
@@ -475,11 +626,16 @@ void i915_delete_fs_state(struct pipe_context *pipe, void *shader)
 {
    struct i915_fragment_shader *ifs = (struct i915_fragment_shader *) shader;
 
-   if (ifs->program)
-      FREE(ifs->program);
-   ifs->program_len = 0;
+   FREE(ifs->decl);
+   ifs->decl = NULL;
 
+   FREE(ifs->program);
+   ifs->program = NULL;
    FREE((struct tgsi_token *)ifs->state.tokens);
+   ifs->state.tokens = NULL;
+
+   ifs->program_len = 0;
+   ifs->decl_len = 0;
 
    FREE(ifs);
 }
@@ -499,6 +655,11 @@ static void i915_bind_vs_state(struct pipe_context *pipe, void *shader)
 {
    struct i915_context *i915 = i915_context(pipe);
 
+   if (i915->vs == shader)
+      return;
+
+   i915->vs = shader;
+
    /* just pass-through to draw module */
    draw_bind_vertex_shader(i915->draw, (struct draw_vertex_shader *) shader);
 
@@ -515,46 +676,63 @@ static void i915_delete_vs_state(struct pipe_context *pipe, void *shader)
 
 static void i915_set_constant_buffer(struct pipe_context *pipe,
                                      uint shader, uint index,
-                                     const struct pipe_constant_buffer *buf)
+                                     const struct pipe_constant_buffer *cb)
 {
    struct i915_context *i915 = i915_context(pipe);
-   struct pipe_screen *screen = pipe->screen;
-   draw_flush(i915->draw);
+   struct pipe_resource *buf = cb ? cb->buffer : NULL;
+   unsigned new_num = 0;
+   boolean diff = TRUE;
 
-   assert(shader < PIPE_SHADER_TYPES);
-   assert(index == 0);
+   /* XXX don't support geom shaders now */
+   if (shader == PIPE_SHADER_GEOMETRY)
+      return;
 
-   /* Make a copy of shader constants.
-    * During fragment program translation we may add additional
-    * constants to the array.
-    *
-    * We want to consider the situation where some user constants
-    * (ex: a material color) may change frequently but the shader program
-    * stays the same.  In that case we should only be updating the first
-    * N constants, leaving any extras from shader translation alone.
-    */
-   if (buf) {
-      void *mapped;
-      if (buf->buffer && buf->buffer->size &&
-          (mapped = pipe_buffer_map(screen, buf->buffer,
-                                    PIPE_BUFFER_USAGE_CPU_READ))) {
-         memcpy(i915->current.constants[shader], mapped, buf->buffer->size);
-         pipe_buffer_unmap(screen, buf->buffer);
-         i915->current.num_user_constants[shader]
-            = buf->buffer->size / (4 * sizeof(float));
-      }
-      else {
-         i915->current.num_user_constants[shader] = 0;
-      }
+   if (cb && cb->user_buffer) {
+      buf = i915_user_buffer_create(pipe->screen, (void *) cb->user_buffer,
+                                    cb->buffer_size,
+                                    PIPE_BIND_CONSTANT_BUFFER);
    }
 
-   i915->dirty |= I915_NEW_CONSTANTS;
+   /* if we have a new buffer compare it with the old one */
+   if (buf) {
+      struct i915_buffer *ibuf = i915_buffer(buf);
+      struct pipe_resource *old_buf = i915->constants[shader];
+      struct i915_buffer *old = old_buf ? i915_buffer(old_buf) : NULL;
+      unsigned old_num = i915->current.num_user_constants[shader];
+
+      new_num = ibuf->b.b.width0 / 4 * sizeof(float);
+
+      if (old_num == new_num) {
+         if (old_num == 0)
+            diff = FALSE;
+#if 0
+         /* XXX no point in running this code since st/mesa only uses user buffers */
+         /* Can't compare the buffer data since they are userbuffers */
+         else if (old && old->free_on_destroy)
+            diff = memcmp(old->data, ibuf->data, ibuf->b.b.width0);
+#else
+         (void)old;
+#endif
+      }
+   } else {
+      diff = i915->current.num_user_constants[shader] != 0;
+   }
+
+   pipe_resource_reference(&i915->constants[shader], buf);
+   i915->current.num_user_constants[shader] = new_num;
+
+   if (diff)
+      i915->dirty |= shader == PIPE_SHADER_VERTEX ? I915_NEW_VS_CONSTANTS : I915_NEW_FS_CONSTANTS;
+
+   if (cb && cb->user_buffer) {
+      pipe_resource_reference(&buf, NULL);
+   }
 }
 
 
-static void i915_set_sampler_textures(struct pipe_context *pipe,
-                                      unsigned num,
-                                      struct pipe_texture **texture)
+static void i915_set_fragment_sampler_views(struct pipe_context *pipe,
+                                            unsigned num,
+                                            struct pipe_sampler_view **views)
 {
    struct i915_context *i915 = i915_context(pipe);
    uint i;
@@ -562,26 +740,124 @@ static void i915_set_sampler_textures(struct pipe_context *pipe,
    assert(num <= PIPE_MAX_SAMPLERS);
 
    /* Check for no-op */
-   if (num == i915->num_textures &&
-       !memcmp(i915->texture, texture, num * sizeof(struct pipe_texture *)))
+   if (num == i915->num_fragment_sampler_views &&
+       !memcmp(i915->fragment_sampler_views, views, num * sizeof(struct pipe_sampler_view *)))
       return;
 
-   /* Fixes wrong texture in texobj with VBUF */
-   draw_flush(i915->draw);
+   for (i = 0; i < num; i++) {
+      /* Note: we're using pipe_sampler_view_release() here to work around
+       * a possible crash when the old view belongs to another context that
+       * was already destroyed.
+       */
+      pipe_sampler_view_release(pipe, &i915->fragment_sampler_views[i]);
+      pipe_sampler_view_reference(&i915->fragment_sampler_views[i],
+                                  views[i]);
+   }
 
-   for (i = 0; i < num; i++)
-      pipe_texture_reference((struct pipe_texture **) &i915->texture[i],
-                             texture[i]);
+   for (i = num; i < i915->num_fragment_sampler_views; i++)
+      pipe_sampler_view_release(pipe, &i915->fragment_sampler_views[i]);
 
-   for (i = num; i < i915->num_textures; i++)
-      pipe_texture_reference((struct pipe_texture **) &i915->texture[i],
-                             NULL);
+   i915->num_fragment_sampler_views = num;
 
-   i915->num_textures = num;
-
-   i915->dirty |= I915_NEW_TEXTURE;
+   i915->dirty |= I915_NEW_SAMPLER_VIEW;
 }
 
+static void
+i915_set_vertex_sampler_views(struct pipe_context *pipe,
+                              unsigned num,
+                              struct pipe_sampler_view **views)
+{
+   struct i915_context *i915 = i915_context(pipe);
+   uint i;
+
+   assert(num <= ARRAY_SIZE(i915->vertex_sampler_views));
+
+   /* Check for no-op */
+   if (num == i915->num_vertex_sampler_views &&
+       !memcmp(i915->vertex_sampler_views, views, num * sizeof(struct pipe_sampler_view *))) {
+      return;
+   }
+
+   for (i = 0; i < ARRAY_SIZE(i915->vertex_sampler_views); i++) {
+      struct pipe_sampler_view *view = i < num ? views[i] : NULL;
+
+      pipe_sampler_view_reference(&i915->vertex_sampler_views[i], view);
+   }
+
+   i915->num_vertex_sampler_views = num;
+
+   draw_set_sampler_views(i915->draw,
+                          PIPE_SHADER_VERTEX,
+                          i915->vertex_sampler_views,
+                          i915->num_vertex_sampler_views);
+}
+
+
+static void
+i915_set_sampler_views(struct pipe_context *pipe, enum pipe_shader_type shader,
+                       unsigned start, unsigned num,
+                       struct pipe_sampler_view **views)
+{
+   assert(start == 0);
+   switch (shader) {
+   case PIPE_SHADER_FRAGMENT:
+      i915_set_fragment_sampler_views(pipe, num, views);
+      break;
+   case PIPE_SHADER_VERTEX:
+      i915_set_vertex_sampler_views(pipe, num, views);
+      break;
+   default:
+      ;
+   }
+}
+
+
+struct pipe_sampler_view *
+i915_create_sampler_view_custom(struct pipe_context *pipe,
+                                struct pipe_resource *texture,
+                                const struct pipe_sampler_view *templ,
+                                unsigned width0,
+                                unsigned height0)
+{
+   struct pipe_sampler_view *view = CALLOC_STRUCT(pipe_sampler_view);
+
+   if (view) {
+      *view = *templ;
+      view->reference.count = 1;
+      view->texture = NULL;
+      pipe_resource_reference(&view->texture, texture);
+      view->context = pipe;
+   }
+
+   return view;
+}
+
+static struct pipe_sampler_view *
+i915_create_sampler_view(struct pipe_context *pipe,
+                         struct pipe_resource *texture,
+                         const struct pipe_sampler_view *templ)
+{
+   struct pipe_sampler_view *view = CALLOC_STRUCT(pipe_sampler_view);
+
+   if (view) {
+      *view = *templ;
+      view->reference.count = 1;
+      view->texture = NULL;
+      pipe_resource_reference(&view->texture, texture);
+      view->context = pipe;
+   }
+
+   return view;
+}
+
+
+static void
+i915_sampler_view_destroy(struct pipe_context *pipe,
+                          struct pipe_sampler_view *view)
+{
+   pipe_resource_reference(&view->texture, NULL);
+   FREE(view);
+}
 
 
 static void i915_set_framebuffer_state(struct pipe_context *pipe,
@@ -590,13 +866,12 @@ static void i915_set_framebuffer_state(struct pipe_context *pipe,
    struct i915_context *i915 = i915_context(pipe);
    int i;
 
-   draw_flush(i915->draw);
-
    i915->framebuffer.width = fb->width;
    i915->framebuffer.height = fb->height;
    i915->framebuffer.nr_cbufs = fb->nr_cbufs;
    for (i = 0; i < PIPE_MAX_COLOR_BUFS; i++) {
-      pipe_surface_reference(&i915->framebuffer.cbufs[i], fb->cbufs[i]);
+      pipe_surface_reference(&i915->framebuffer.cbufs[i],
+                             i < fb->nr_cbufs ? fb->cbufs[i] : NULL);
    }
    pipe_surface_reference(&i915->framebuffer.zsbuf, fb->zsbuf);
 
@@ -609,7 +884,8 @@ static void i915_set_clip_state( struct pipe_context *pipe,
 			     const struct pipe_clip_state *clip )
 {
    struct i915_context *i915 = i915_context(pipe);
-   draw_flush(i915->draw);
+
+   i915->clip = *clip;
 
    draw_set_clip_state(i915->draw, clip);
 
@@ -621,7 +897,9 @@ static void i915_set_clip_state( struct pipe_context *pipe,
 /* Called when driver state tracker notices changes to the viewport
  * matrix:
  */
-static void i915_set_viewport_state( struct pipe_context *pipe,
+static void i915_set_viewport_states( struct pipe_context *pipe,
+                                      unsigned start_slot,
+                                      unsigned num_viewports,
 				     const struct pipe_viewport_state *viewport )
 {
    struct i915_context *i915 = i915_context(pipe);
@@ -629,7 +907,8 @@ static void i915_set_viewport_state( struct pipe_context *pipe,
    i915->viewport = *viewport; /* struct copy */
 
    /* pass the viewport info to the draw module */
-   draw_set_viewport_state(i915->draw, &i915->viewport);
+   draw_set_viewport_states(i915->draw, start_slot, num_viewports,
+                            &i915->viewport);
 
    i915->dirty |= I915_NEW_VIEWPORT;
 }
@@ -641,8 +920,7 @@ i915_create_rasterizer_state(struct pipe_context *pipe,
 {
    struct i915_rasterizer_state *cso = CALLOC_STRUCT( i915_rasterizer_state );
 
-   cso->templ = rasterizer;
-   cso->color_interp = rasterizer->flatshade ? INTERP_CONSTANT : INTERP_LINEAR;
+   cso->templ = *rasterizer;
    cso->light_twoside = rasterizer->light_twoside;
    cso->ds[0].u = _3DSTATE_DEPTH_OFFSET_SCALE;
    cso->ds[1].f = rasterizer->offset_scale;
@@ -655,17 +933,23 @@ i915_create_rasterizer_state(struct pipe_context *pipe,
    else
       cso->sc[0] = _3DSTATE_SCISSOR_ENABLE_CMD | DISABLE_SCISSOR_RECT;
 
-   switch (rasterizer->cull_mode) {
-   case PIPE_WINDING_NONE:
+   switch (rasterizer->cull_face) {
+   case PIPE_FACE_NONE:
       cso->LIS4 |= S4_CULLMODE_NONE;
       break;
-   case PIPE_WINDING_CW:
-      cso->LIS4 |= S4_CULLMODE_CW;
+   case PIPE_FACE_FRONT:
+      if (rasterizer->front_ccw)
+         cso->LIS4 |= S4_CULLMODE_CCW;
+      else 
+         cso->LIS4 |= S4_CULLMODE_CW;
       break;
-   case PIPE_WINDING_CCW:
-      cso->LIS4 |= S4_CULLMODE_CCW;
+   case PIPE_FACE_BACK:
+      if (rasterizer->front_ccw)
+         cso->LIS4 |= S4_CULLMODE_CW;
+      else 
+         cso->LIS4 |= S4_CULLMODE_CCW;
       break;
-   case PIPE_WINDING_BOTH:
+   case PIPE_FACE_FRONT_AND_BACK:
       cso->LIS4 |= S4_CULLMODE_BOTH;
       break;
    }
@@ -702,11 +986,15 @@ static void i915_bind_rasterizer_state( struct pipe_context *pipe,
 {
    struct i915_context *i915 = i915_context(pipe);
 
+   if (i915->rasterizer == raster)
+      return;
+
    i915->rasterizer = (struct i915_rasterizer_state *)raster;
 
    /* pass-through to draw module */
    draw_set_rasterizer_state(i915->draw,
-                          (i915->rasterizer ? i915->rasterizer->templ : NULL));
+                           (i915->rasterizer ? &(i915->rasterizer->templ) : NULL),
+                           raster);
 
    i915->dirty |= I915_NEW_RASTERIZER;
 }
@@ -718,48 +1006,80 @@ static void i915_delete_rasterizer_state(struct pipe_context *pipe,
 }
 
 static void i915_set_vertex_buffers(struct pipe_context *pipe,
-                                    unsigned count,
+                                    unsigned start_slot, unsigned count,
                                     const struct pipe_vertex_buffer *buffers)
 {
    struct i915_context *i915 = i915_context(pipe);
-   /* Because we change state before the draw_set_vertex_buffers call
-    * we need a flush here, just to be sure.
-    */
-   draw_flush(i915->draw);
+   struct draw_context *draw = i915->draw;
 
-   memcpy(i915->vertex_buffer, buffers, count * sizeof(buffers[0]));
-   i915->num_vertex_buffers = count;
+   util_set_vertex_buffers_count(i915->vertex_buffers,
+                                 &i915->nr_vertex_buffers,
+                                 buffers, start_slot, count);
 
    /* pass-through to draw module */
-   draw_set_vertex_buffers(i915->draw, count, buffers);
+   draw_set_vertex_buffers(draw, start_slot, count, buffers);
 }
 
-static void i915_set_vertex_elements(struct pipe_context *pipe,
-                                     unsigned count,
-                                     const struct pipe_vertex_element *elements)
+static void *
+i915_create_vertex_elements_state(struct pipe_context *pipe,
+                                  unsigned count,
+                                  const struct pipe_vertex_element *attribs)
+{
+   struct i915_velems_state *velems;
+   assert(count <= PIPE_MAX_ATTRIBS);
+   velems = (struct i915_velems_state *) MALLOC(sizeof(struct i915_velems_state));
+   if (velems) {
+      velems->count = count;
+      memcpy(velems->velem, attribs, sizeof(*attribs) * count);
+   }
+   return velems;
+}
+
+static void
+i915_bind_vertex_elements_state(struct pipe_context *pipe,
+                                void *velems)
 {
    struct i915_context *i915 = i915_context(pipe);
-   /* Because we change state before the draw_set_vertex_buffers call
-    * we need a flush here, just to be sure.
-    */
-   draw_flush(i915->draw);
+   struct i915_velems_state *i915_velems = (struct i915_velems_state *) velems;
 
-   i915->num_vertex_elements = count;
+   if (i915->velems == velems)
+      return;
+
+   i915->velems = velems;
+
    /* pass-through to draw module */
-   draw_set_vertex_elements(i915->draw, count, elements);
+   if (i915_velems) {
+      draw_set_vertex_elements(i915->draw,
+            i915_velems->count, i915_velems->velem);
+   }
 }
 
-
-static void i915_set_edgeflags(struct pipe_context *pipe,
-                               const unsigned *bitfield)
+static void
+i915_delete_vertex_elements_state(struct pipe_context *pipe, void *velems)
 {
-   /* TODO do something here */
+   FREE( velems );
+}
+
+static void i915_set_index_buffer(struct pipe_context *pipe,
+                                  const struct pipe_index_buffer *ib)
+{
+   struct i915_context *i915 = i915_context(pipe);
+
+   if (ib)
+      memcpy(&i915->index_buffer, ib, sizeof(i915->index_buffer));
+   else
+      memset(&i915->index_buffer, 0, sizeof(i915->index_buffer));
+}
+
+static void
+i915_set_sample_mask(struct pipe_context *pipe,
+                     unsigned sample_mask)
+{
 }
 
 void
 i915_init_state_functions( struct i915_context *i915 )
 {
-   i915->base.set_edgeflags = i915_set_edgeflags;
    i915->base.create_blend_state = i915_create_blend_state;
    i915->base.bind_blend_state = i915_bind_blend_state;
    i915->base.delete_blend_state = i915_delete_blend_state;
@@ -781,16 +1101,23 @@ i915_init_state_functions( struct i915_context *i915 )
    i915->base.create_vs_state = i915_create_vs_state;
    i915->base.bind_vs_state = i915_bind_vs_state;
    i915->base.delete_vs_state = i915_delete_vs_state;
+   i915->base.create_vertex_elements_state = i915_create_vertex_elements_state;
+   i915->base.bind_vertex_elements_state = i915_bind_vertex_elements_state;
+   i915->base.delete_vertex_elements_state = i915_delete_vertex_elements_state;
 
    i915->base.set_blend_color = i915_set_blend_color;
+   i915->base.set_stencil_ref = i915_set_stencil_ref;
    i915->base.set_clip_state = i915_set_clip_state;
+   i915->base.set_sample_mask = i915_set_sample_mask;
    i915->base.set_constant_buffer = i915_set_constant_buffer;
    i915->base.set_framebuffer_state = i915_set_framebuffer_state;
 
    i915->base.set_polygon_stipple = i915_set_polygon_stipple;
-   i915->base.set_scissor_state = i915_set_scissor_state;
-   i915->base.set_sampler_textures = i915_set_sampler_textures;
-   i915->base.set_viewport_state = i915_set_viewport_state;
+   i915->base.set_scissor_states = i915_set_scissor_states;
+   i915->base.set_sampler_views = i915_set_sampler_views;
+   i915->base.create_sampler_view = i915_create_sampler_view;
+   i915->base.sampler_view_destroy = i915_sampler_view_destroy;
+   i915->base.set_viewport_states = i915_set_viewport_states;
    i915->base.set_vertex_buffers = i915_set_vertex_buffers;
-   i915->base.set_vertex_elements = i915_set_vertex_elements;
+   i915->base.set_index_buffer = i915_set_index_buffer;
 }

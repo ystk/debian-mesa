@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -27,65 +27,79 @@
 
  /*
   * Authors:
-  *   Keith Whitwell <keith@tungstengraphics.com>
+  *   Keith Whitwell <keithw@vmware.com>
   *   Brian Paul
   */
  
+#include <limits.h>
+
 #include "st_context.h"
 #include "st_atom.h"
+#include "st_cb_bitmap.h"
 #include "st_cb_fbo.h"
-#include "st_public.h"
 #include "st_texture.h"
 #include "pipe/p_context.h"
 #include "cso_cache/cso_context.h"
-#include "util/u_rect.h"
-
+#include "util/u_math.h"
+#include "util/u_inlines.h"
+#include "util/u_format.h"
+#include "main/framebuffer.h"
 
 
 /**
- * When doing GL render to texture, we have to be sure that finalize_texture()
- * didn't yank out the pipe_texture that we earlier created a surface for.
- * Check for that here and create a new surface if needed.
+ * Update framebuffer size.
+ *
+ * We need to derive pipe_framebuffer size from the bound pipe_surfaces here
+ * instead of copying gl_framebuffer size because for certain target types
+ * (like PIPE_TEXTURE_1D_ARRAY) gl_framebuffer::Height has the number of layers
+ * instead of 1.
  */
 static void
-update_renderbuffer_surface(struct st_context *st,
-                            struct st_renderbuffer *strb)
+update_framebuffer_size(struct pipe_framebuffer_state *framebuffer,
+                        struct pipe_surface *surface)
 {
-   struct pipe_screen *screen = st->pipe->screen;
-   struct pipe_texture *texture = strb->rtt->pt;
-   int rtt_width = strb->Base.Width;
-   int rtt_height = strb->Base.Height;
-
-   if (!strb->surface ||
-       strb->surface->texture != texture ||
-       strb->surface->width != rtt_width ||
-       strb->surface->height != rtt_height) {
-      GLuint level;
-      /* find matching mipmap level size */
-      for (level = 0; level <= texture->last_level; level++) {
-         if (texture->width[level] == rtt_width &&
-             texture->height[level] == rtt_height) {
-
-            pipe_surface_reference(&strb->surface, NULL);
-
-            strb->surface = screen->get_tex_surface(screen,
-                                              texture,
-                                              strb->rtt_face,
-                                              level,
-                                              strb->rtt_slice,
-                                              PIPE_BUFFER_USAGE_GPU_READ |
-                                              PIPE_BUFFER_USAGE_GPU_WRITE);
-#if 0
-            printf("-- alloc new surface %d x %d into tex %p\n",
-                   strb->surface->width, strb->surface->height,
-                   texture);
-#endif
-            break;
-         }
-      }
-   }
+   assert(surface);
+   assert(surface->width  < UINT_MAX);
+   assert(surface->height < UINT_MAX);
+   framebuffer->width  = MIN2(framebuffer->width,  surface->width);
+   framebuffer->height = MIN2(framebuffer->height, surface->height);
 }
 
+/**
+ * Round up the requested multisample count to the next supported sample size.
+ */
+static unsigned
+framebuffer_quantize_num_samples(struct st_context *st, unsigned num_samples)
+{
+   struct pipe_screen *screen = st->pipe->screen;
+   int quantized_samples = 0;
+   unsigned msaa_mode;
+
+   if (!num_samples)
+      return 0;
+
+   /* Assumes the highest supported MSAA is a power of 2 */
+   msaa_mode = util_next_power_of_two(st->ctx->Const.MaxFramebufferSamples);
+   assert(!(num_samples > msaa_mode)); /* be safe from infinite loops */
+
+   /**
+    * Check if the MSAA mode that is higher than the requested
+    * num_samples is supported, and if so returning it.
+    */
+   for (; msaa_mode >= num_samples; msaa_mode = msaa_mode / 2) {
+      /**
+       * For ARB_framebuffer_no_attachment, A format of
+       * PIPE_FORMAT_NONE implies what number of samples is
+       * supported for a framebuffer with no attachment. Thus the
+       * drivers callback must be adjusted for this.
+       */
+      if (screen->is_format_supported(screen, PIPE_FORMAT_NONE,
+                                      PIPE_TEXTURE_2D, msaa_mode,
+                                      PIPE_BIND_RENDER_TARGET))
+         quantized_samples = msaa_mode;
+   }
+   return quantized_samples;
+}
 
 /**
  * Update framebuffer state (color, depth, stencil, etc. buffers)
@@ -98,35 +112,60 @@ update_framebuffer_state( struct st_context *st )
    struct st_renderbuffer *strb;
    GLuint i;
 
-   framebuffer->width = fb->Width;
-   framebuffer->height = fb->Height;
+   st_flush_bitmap_cache(st);
+   st_invalidate_readpix_cache(st);
 
-   /*printf("------ fb size %d x %d\n", fb->Width, fb->Height);*/
+   st->state.fb_orientation = st_fb_orientation(fb);
+
+   /**
+    * Quantize the derived default number of samples:
+    *
+    * A query to the driver of supported MSAA values the
+    * hardware supports is done as to legalize the number
+    * of application requested samples, NumSamples.
+    * See commit eb9cf3c for more information.
+    */
+   fb->DefaultGeometry._NumSamples =
+      framebuffer_quantize_num_samples(st, fb->DefaultGeometry.NumSamples);
+
+   framebuffer->width  = _mesa_geometric_width(fb);
+   framebuffer->height = _mesa_geometric_height(fb);
+   framebuffer->samples = _mesa_geometric_samples(fb);
+   framebuffer->layers = _mesa_geometric_layers(fb);
 
    /* Examine Mesa's ctx->DrawBuffer->_ColorDrawBuffers state
     * to determine which surfaces to draw to
     */
-   framebuffer->nr_cbufs = 0;
+   framebuffer->nr_cbufs = fb->_NumColorDrawBuffers;
+
    for (i = 0; i < fb->_NumColorDrawBuffers; i++) {
+      pipe_surface_reference(&framebuffer->cbufs[i], NULL);
+
       strb = st_renderbuffer(fb->_ColorDrawBuffers[i]);
 
       if (strb) {
-         /*printf("--------- framebuffer surface rtt %p\n", strb->rtt);*/
-         if (strb->rtt) {
+         if (strb->is_rtt || (strb->texture &&
+             _mesa_get_format_color_encoding(strb->Base.Format) == GL_SRGB)) {
             /* rendering to a GL texture, may have to update surface */
-            update_renderbuffer_surface(st, strb);
+            st_update_renderbuffer_surface(st, strb);
          }
 
          if (strb->surface) {
-            pipe_surface_reference(&framebuffer->cbufs[framebuffer->nr_cbufs],
-                                   strb->surface);
-            framebuffer->nr_cbufs++;
+            pipe_surface_reference(&framebuffer->cbufs[i], strb->surface);
+            update_framebuffer_size(framebuffer, strb->surface);
          }
          strb->defined = GL_TRUE; /* we'll be drawing something */
       }
    }
+
    for (i = framebuffer->nr_cbufs; i < PIPE_MAX_COLOR_BUFS; i++) {
       pipe_surface_reference(&framebuffer->cbufs[i], NULL);
+   }
+
+   /* Remove trailing GL_NONE draw buffers. */
+   while (framebuffer->nr_cbufs &&
+          !framebuffer->cbufs[framebuffer->nr_cbufs-1]) {
+      framebuffer->nr_cbufs--;
    }
 
    /*
@@ -134,58 +173,48 @@ update_framebuffer_state( struct st_context *st )
     */
    strb = st_renderbuffer(fb->Attachment[BUFFER_DEPTH].Renderbuffer);
    if (strb) {
-      strb = st_renderbuffer(strb->Base.Wrapped);
-      if (strb->rtt) {
+      if (strb->is_rtt) {
          /* rendering to a GL texture, may have to update surface */
-         update_renderbuffer_surface(st, strb);
+         st_update_renderbuffer_surface(st, strb);
       }
       pipe_surface_reference(&framebuffer->zsbuf, strb->surface);
+      update_framebuffer_size(framebuffer, strb->surface);
    }
    else {
       strb = st_renderbuffer(fb->Attachment[BUFFER_STENCIL].Renderbuffer);
       if (strb) {
-         strb = st_renderbuffer(strb->Base.Wrapped);
-         assert(strb->surface);
+         if (strb->is_rtt) {
+            /* rendering to a GL texture, may have to update surface */
+            st_update_renderbuffer_surface(st, strb);
+         }
          pipe_surface_reference(&framebuffer->zsbuf, strb->surface);
+         update_framebuffer_size(framebuffer, strb->surface);
       }
       else
          pipe_surface_reference(&framebuffer->zsbuf, NULL);
    }
 
-   cso_set_framebuffer(st->cso_context, framebuffer);
-
-   if (fb->_ColorDrawBufferIndexes[0] == BUFFER_FRONT_LEFT) {
-      if (st->frontbuffer_status == FRONT_STATUS_COPY_OF_BACK) {
-         /* copy back color buffer to front color buffer */
-         struct st_framebuffer *stfb = (struct st_framebuffer *) fb;
-	 struct pipe_surface *surf_front, *surf_back;
-         (void) st_get_framebuffer_surface(stfb, ST_SURFACE_FRONT_LEFT, &surf_front);
-         (void) st_get_framebuffer_surface(stfb, ST_SURFACE_BACK_LEFT, &surf_back);
-
-         if (st->pipe->surface_copy) {
-            st->pipe->surface_copy(st->pipe,
-                                   surf_front, 0, 0,  /* dest */
-                                   surf_back, 0, 0,   /* src */
-                                   fb->Width, fb->Height);
-         } else {
-            util_surface_copy(st->pipe, FALSE,
-                              surf_front, 0, 0,
-                              surf_back, 0, 0,
-                              fb->Width, fb->Height);
-         }
-      }
-      /* we're assuming we'll really draw to the front buffer */
-      st->frontbuffer_status = FRONT_STATUS_DIRTY;
+#ifdef DEBUG
+   /* Make sure the resource binding flags were set properly */
+   for (i = 0; i < framebuffer->nr_cbufs; i++) {
+      assert(!framebuffer->cbufs[i] ||
+             framebuffer->cbufs[i]->texture->bind & PIPE_BIND_RENDER_TARGET);
    }
+   if (framebuffer->zsbuf) {
+      assert(framebuffer->zsbuf->texture->bind & PIPE_BIND_DEPTH_STENCIL);
+   }
+#endif
+
+   if (framebuffer->width == UINT_MAX)
+      framebuffer->width = 0;
+   if (framebuffer->height == UINT_MAX)
+      framebuffer->height = 0;
+
+   cso_set_framebuffer(st->cso_context, framebuffer);
 }
 
 
 const struct st_tracked_state st_update_framebuffer = {
-   "st_update_framebuffer",				/* name */
-   {							/* dirty */
-      _NEW_BUFFERS,					/* mesa */
-      ST_NEW_FRAMEBUFFER,				/* st */
-   },
    update_framebuffer_state				/* update */
 };
 

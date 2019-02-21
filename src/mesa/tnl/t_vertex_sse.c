@@ -1,5 +1,5 @@
 /*
- * Copyright 2003 Tungsten Graphics, inc.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -16,20 +16,22 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.  IN NO EVENT SHALL
- * TUNGSTEN GRAPHICS AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
+ * VMWARE AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
  * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
  * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
  *
  * Authors:
- *    Keith Whitwell <keithw@tungstengraphics.com>
+ *    Keith Whitwell <keithw@vmware.com>
  */
+
+#include <stdio.h>
 
 #include "main/glheader.h"
 #include "main/context.h"
-#include "main/colormac.h"
-#include "main/simple_list.h"
+#include "util/simple_list.h"
 #include "main/enums.h"
+#include "swrast/s_chan.h"
 #include "t_context.h"
 #include "t_vertex.h"
 
@@ -54,7 +56,7 @@
 struct x86_program {
    struct x86_function func;
 
-   GLcontext *ctx;
+   struct gl_context *ctx;
    GLboolean inputs_safe;
    GLboolean outputs_safe;
    GLboolean have_sse2;
@@ -342,7 +344,7 @@ static void update_src_ptr( struct x86_program *p,
  */
 static GLboolean build_vertex_emit( struct x86_program *p )
 {
-   GLcontext *ctx = p->ctx;
+   struct gl_context *ctx = p->ctx;
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    struct tnl_clipspace *vtx = GET_VERTEX_STATE(ctx);
    GLuint j = 0;
@@ -496,7 +498,7 @@ static GLboolean build_vertex_emit( struct x86_program *p )
 	    update_src_ptr(p, srcECX, vtxESI, a);
 	 }
 	 else {
-	    _mesa_printf("Can't emit 1ub %x %x %d\n", a->vertoffset, a[-1].vertoffset, a[-1].vertattrsize );
+	    printf("Can't emit 1ub %x %x %d\n", a->vertoffset, a[-1].vertoffset, a[-1].vertattrsize );
 	    return GL_FALSE;
 	 }
 	 break;
@@ -542,7 +544,7 @@ static GLboolean build_vertex_emit( struct x86_program *p )
 	    j++;		/* NOTE: two attrs consumed */
 	 }
 	 else {
-	    _mesa_printf("Can't emit 3ub\n");
+	    printf("Can't emit 3ub\n");
 	    return GL_FALSE;	/* add this later */
 	 }
 	 break;
@@ -590,12 +592,12 @@ static GLboolean build_vertex_emit( struct x86_program *p )
 	    break;
 	 case GL_UNSIGNED_SHORT:
 	 default:
-	    _mesa_printf("unknown CHAN_TYPE %s\n", _mesa_lookup_enum_by_nr(CHAN_TYPE));
+	    printf("unknown CHAN_TYPE %s\n", _mesa_enum_to_string(CHAN_TYPE));
 	    return GL_FALSE;
 	 }
 	 break;
       default:
-	 _mesa_printf("unknown a[%d].format %d\n", j, a->format);
+	 printf("unknown a[%d].format %d\n", j, a->format);
 	 return GL_FALSE;	/* catch any new opcodes */
       }
       
@@ -638,7 +640,7 @@ static GLboolean build_vertex_emit( struct x86_program *p )
 
 
 
-void _tnl_generate_sse_emit( GLcontext *ctx )
+void _tnl_generate_sse_emit( struct gl_context *ctx )
 {
    struct tnl_clipspace *vtx = GET_VERTEX_STATE(ctx);
    struct x86_program p;   
@@ -648,7 +650,7 @@ void _tnl_generate_sse_emit( GLcontext *ctx )
       return;
    }
 
-   _mesa_memset(&p, 0, sizeof(p));
+   memset(&p, 0, sizeof(p));
 
    p.ctx = ctx;
    p.inputs_safe = 0;		/* for now */
@@ -676,7 +678,7 @@ void _tnl_generate_sse_emit( GLcontext *ctx )
 
 #else
 
-void _tnl_generate_sse_emit( GLcontext *ctx )
+void _tnl_generate_sse_emit( struct gl_context *ctx )
 {
    /* Dummy version for when USE_SSE_ASM not defined */
 }

@@ -41,59 +41,99 @@
 #define LP_BLD_INTERP_H
 
 
-#include <llvm-c/Core.h>
+#include "gallivm/lp_bld.h"
+#include "gallivm/lp_bld_type.h"
 
 #include "tgsi/tgsi_exec.h"
 
-#include "lp_bld_type.h"
+/**
+ * Describes how to compute the interpolation coefficients (a0, dadx, dady)
+ * from the vertices passed into our triangle/line/point functions by the
+ * draw module.
+ *
+ * Vertices are treated as an array of float[4] values, indexed by
+ * src_index.
+ *
+ * LP_INTERP_COLOR is translated to either LP_INTERP_CONSTANT or
+ * PERSPECTIVE depending on flatshade state.
+ */
+enum lp_interp {
+   LP_INTERP_CONSTANT,
+   LP_INTERP_COLOR,
+   LP_INTERP_LINEAR,
+   LP_INTERP_PERSPECTIVE,
+   LP_INTERP_POSITION,
+   LP_INTERP_FACING
+};
 
-
-struct tgsi_token;
+struct lp_shader_input {
+   uint interp:4;       /* enum lp_interp */
+   uint usage_mask:4;   /* bitmask of TGSI_WRITEMASK_x flags */
+   uint src_index:8;    /* where to find values in incoming vertices */
+   uint cyl_wrap:4;     /* TGSI_CYLINDRICAL_WRAP_x flags */
+   uint padding:12;
+};
 
 
 struct lp_build_interp_soa_context
 {
-   struct lp_build_context base;
+   /* TGSI_QUAD_SIZE x float */
+   struct lp_build_context coeff_bld;
+   struct lp_build_context setup_bld;
 
    unsigned num_attribs;
-   unsigned mask[1 + PIPE_MAX_SHADER_INPUTS];
-   unsigned mode[1 + PIPE_MAX_SHADER_INPUTS];
+   unsigned mask[1 + PIPE_MAX_SHADER_INPUTS]; /**< TGSI_WRITE_MASK_x */
+   enum lp_interp interp[1 + PIPE_MAX_SHADER_INPUTS];
+   boolean simple_interp;
+   boolean depth_clamp;
 
-   LLVMValueRef a0  [1 + PIPE_MAX_SHADER_INPUTS][NUM_CHANNELS];
-   LLVMValueRef dadx[1 + PIPE_MAX_SHADER_INPUTS][NUM_CHANNELS];
-   LLVMValueRef dady[1 + PIPE_MAX_SHADER_INPUTS][NUM_CHANNELS];
+   double pos_offset;
 
-   int xstep;
-   int ystep;
+   LLVMValueRef x;
+   LLVMValueRef y;
 
-   /* Attribute values before perspective divide */
-   LLVMValueRef attribs_pre[1 + PIPE_MAX_SHADER_INPUTS][NUM_CHANNELS];
+   LLVMValueRef a[1 + PIPE_MAX_SHADER_INPUTS][TGSI_NUM_CHANNELS];
+   LLVMValueRef dadq[1 + PIPE_MAX_SHADER_INPUTS][TGSI_NUM_CHANNELS];
+   LLVMValueRef a0aos[1 + PIPE_MAX_SHADER_INPUTS];
+   LLVMValueRef dadxaos[1 + PIPE_MAX_SHADER_INPUTS];
+   LLVMValueRef dadyaos[1 + PIPE_MAX_SHADER_INPUTS];
 
-   LLVMValueRef attribs[1 + PIPE_MAX_SHADER_INPUTS][NUM_CHANNELS];
+   LLVMValueRef attribs[1 + PIPE_MAX_SHADER_INPUTS][TGSI_NUM_CHANNELS];
+
+   LLVMValueRef xoffset_store;
+   LLVMValueRef yoffset_store;
 
    /*
     * Convenience pointers. Callers may access this one.
     */
    const LLVMValueRef *pos;
-   const LLVMValueRef (*inputs)[NUM_CHANNELS];
+   const LLVMValueRef (*inputs)[TGSI_NUM_CHANNELS];
 };
 
 
 void
 lp_build_interp_soa_init(struct lp_build_interp_soa_context *bld,
-                         const struct tgsi_token *tokens,
+                         struct gallivm_state *gallivm,
+                         unsigned num_inputs,
+                         const struct lp_shader_input *inputs,
+                         boolean pixel_center_integer,
+                         boolean depth_clamp,
                          LLVMBuilderRef builder,
                          struct lp_type type,
                          LLVMValueRef a0_ptr,
                          LLVMValueRef dadx_ptr,
                          LLVMValueRef dady_ptr,
-                         LLVMValueRef x0,
-                         LLVMValueRef y0,
-                         int xstep,
-                         int ystep);
+                         LLVMValueRef x,
+                         LLVMValueRef y);
 
 void
-lp_build_interp_soa_update(struct lp_build_interp_soa_context *bld);
+lp_build_interp_soa_update_inputs_dyn(struct lp_build_interp_soa_context *bld,
+                                      struct gallivm_state *gallivm,
+                                      LLVMValueRef quad_start_index);
 
+void
+lp_build_interp_soa_update_pos_dyn(struct lp_build_interp_soa_context *bld,
+                                   struct gallivm_state *gallivm,
+                                   LLVMValueRef quad_start_index);
 
 #endif /* LP_BLD_INTERP_H */

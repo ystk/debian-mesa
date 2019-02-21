@@ -22,8 +22,8 @@
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "rbug/rbug.h"
-#include "rbug/rbug_internal.h"
+#include "rbug.h"
+#include "rbug_internal.h"
 
 #include "util/u_network.h"
 
@@ -152,7 +152,7 @@ rbug_connection_write(struct rbug_connection *c, void *to, uint32_t size)
 /**
  * Internal function used by rbug_send_* functions.
  *
- * Finish writeing data to the socket.
+ * Finish writing data to the socket.
  * Ups the send_serial and sets the serial argument if supplied.
  */
 int rbug_connection_send_finish(struct rbug_connection *c, uint32_t *serial)

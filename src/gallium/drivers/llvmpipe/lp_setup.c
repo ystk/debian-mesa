@@ -1,6 +1,6 @@
 /**************************************************************************
  *
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -26,1477 +26,1474 @@
  **************************************************************************/
 
 /**
- * \brief  Primitive rasterization/rendering (points, lines, triangles)
+ * Tiling engine.
  *
- * \author  Keith Whitwell <keith@tungstengraphics.com>
- * \author  Brian Paul
+ * Builds per-tile display lists and executes them on calls to
+ * lp_setup_flush().
  */
 
-#include "lp_context.h"
-#include "lp_quad.h"
-#include "lp_setup.h"
-#include "lp_state.h"
-#include "draw/draw_context.h"
-#include "draw/draw_private.h"
-#include "draw/draw_vertex.h"
-#include "pipe/p_shader_tokens.h"
-#include "util/u_math.h"
+#include <limits.h>
+
+#include "pipe/p_defines.h"
+#include "util/u_framebuffer.h"
+#include "util/u_inlines.h"
 #include "util/u_memory.h"
-#include "lp_bld_debug.h"
-#include "lp_tile_cache.h"
-#include "lp_tile_soa.h"
+#include "util/u_pack_color.h"
+#include "util/u_viewport.h"
+#include "draw/draw_pipe.h"
+#include "os/os_time.h"
+#include "lp_context.h"
+#include "lp_memory.h"
+#include "lp_scene.h"
+#include "lp_texture.h"
+#include "lp_debug.h"
+#include "lp_fence.h"
+#include "lp_query.h"
+#include "lp_rast.h"
+#include "lp_setup_context.h"
+#include "lp_screen.h"
+#include "lp_state.h"
+#include "state_tracker/sw_winsys.h"
+
+#include "draw/draw_context.h"
+#include "draw/draw_vbuf.h"
 
 
-#define DEBUG_VERTS 0
-#define DEBUG_FRAGS 0
-
-/**
- * Triangle edge info
- */
-struct edge {
-   float dx;		/**< X(v1) - X(v0), used only during setup */
-   float dy;		/**< Y(v1) - Y(v0), used only during setup */
-   float dxdy;		/**< dx/dy */
-   float sx, sy;	/**< first sample point coord */
-   int lines;		/**< number of lines on this edge */
-};
+static boolean set_scene_state( struct lp_setup_context *, enum setup_state,
+                             const char *reason);
+static boolean try_update_scene_state( struct lp_setup_context *setup );
 
 
-#define MAX_QUADS 16
-
-
-/**
- * Triangle setup info (derived from draw_stage).
- * Also used for line drawing (taking some liberties).
- */
-struct setup_context {
-   struct llvmpipe_context *llvmpipe;
-
-   /* Vertices are just an array of floats making up each attribute in
-    * turn.  Currently fixed at 4 floats, but should change in time.
-    * Codegen will help cope with this.
-    */
-   const float (*vmax)[4];
-   const float (*vmid)[4];
-   const float (*vmin)[4];
-   const float (*vprovoke)[4];
-
-   struct edge ebot;
-   struct edge etop;
-   struct edge emaj;
-
-   float oneoverarea;
-   int facing;
-
-   float pixel_offset;
-
-   struct quad_header quad[MAX_QUADS];
-   struct quad_header *quad_ptrs[MAX_QUADS];
-   unsigned count;
-
-   struct quad_interp_coef coef;
-
-   struct {
-      int left[2];   /**< [0] = row0, [1] = row1 */
-      int right[2];
-      int y;
-   } span;
-
-#if DEBUG_FRAGS
-   uint numFragsEmitted;  /**< per primitive */
-   uint numFragsWritten;  /**< per primitive */
-#endif
-
-   unsigned winding;		/* which winding to cull */
-};
-
-
-
-/**
- * Execute fragment shader for the four fragments in the quad.
- */
-ALIGN_STACK
 static void
-shade_quads(struct llvmpipe_context *llvmpipe,
-            struct quad_header *quads[],
-            unsigned nr)
+lp_setup_get_empty_scene(struct lp_setup_context *setup)
 {
-   struct lp_fragment_shader *fs = llvmpipe->fs;
-   struct quad_header *quad = quads[0];
-   const unsigned x = quad->input.x0;
-   const unsigned y = quad->input.y0;
-   uint8_t *tile;
-   uint8_t *color;
-   void *depth;
-   uint32_t ALIGN16_ATTRIB mask[4][NUM_CHANNELS];
-   unsigned chan_index;
-   unsigned q;
+   assert(setup->scene == NULL);
 
-   assert(fs->current);
-   if(!fs->current)
-      return;
+   setup->scene_idx++;
+   setup->scene_idx %= ARRAY_SIZE(setup->scenes);
 
-   /* Sanity checks */
-   assert(nr * QUAD_SIZE == TILE_VECTOR_HEIGHT * TILE_VECTOR_WIDTH);
-   assert(x % TILE_VECTOR_WIDTH == 0);
-   assert(y % TILE_VECTOR_HEIGHT == 0);
-   for (q = 0; q < nr; ++q) {
-      assert(quads[q]->input.x0 == x + q*2);
-      assert(quads[q]->input.y0 == y);
+   setup->scene = setup->scenes[setup->scene_idx];
+
+   if (setup->scene->fence) {
+      if (LP_DEBUG & DEBUG_SETUP)
+         debug_printf("%s: wait for scene %d\n",
+                      __FUNCTION__, setup->scene->fence->id);
+
+      lp_fence_wait(setup->scene->fence);
    }
 
-   /* mask */
-   for (q = 0; q < 4; ++q)
-      for (chan_index = 0; chan_index < NUM_CHANNELS; ++chan_index)
-         mask[q][chan_index] = quads[q]->inout.mask & (1 << chan_index) ? ~0 : 0;
+   lp_scene_begin_binning(setup->scene, &setup->fb, setup->rasterizer_discard);
 
-   /* color buffer */
-   if(llvmpipe->framebuffer.nr_cbufs >= 1 &&
-      llvmpipe->framebuffer.cbufs[0]) {
-      tile = lp_get_cached_tile(llvmpipe->cbuf_cache[0], x, y);
-      color = &TILE_PIXEL(tile, x & (TILE_SIZE-1), y & (TILE_SIZE-1), 0);
+}
+
+
+static void
+first_triangle( struct lp_setup_context *setup,
+                const float (*v0)[4],
+                const float (*v1)[4],
+                const float (*v2)[4])
+{
+   assert(setup->state == SETUP_ACTIVE);
+   lp_setup_choose_triangle( setup );
+   setup->triangle( setup, v0, v1, v2 );
+}
+
+static void
+first_line( struct lp_setup_context *setup,
+	    const float (*v0)[4],
+	    const float (*v1)[4])
+{
+   assert(setup->state == SETUP_ACTIVE);
+   lp_setup_choose_line( setup );
+   setup->line( setup, v0, v1 );
+}
+
+static void
+first_point( struct lp_setup_context *setup,
+	     const float (*v0)[4])
+{
+   assert(setup->state == SETUP_ACTIVE);
+   lp_setup_choose_point( setup );
+   setup->point( setup, v0 );
+}
+
+void lp_setup_reset( struct lp_setup_context *setup )
+{
+   unsigned i;
+
+   LP_DBG(DEBUG_SETUP, "%s\n", __FUNCTION__);
+
+   /* Reset derived state */
+   for (i = 0; i < ARRAY_SIZE(setup->constants); ++i) {
+      setup->constants[i].stored_size = 0;
+      setup->constants[i].stored_data = NULL;
    }
-   else
-      color = NULL;
+   setup->fs.stored = NULL;
+   setup->dirty = ~0;
 
-   /* depth buffer */
-   if(llvmpipe->zsbuf_map) {
-      assert((x % 2) == 0);
-      assert((y % 2) == 0);
-      depth = llvmpipe->zsbuf_map +
-              y*llvmpipe->zsbuf_transfer->stride +
-              2*x*llvmpipe->zsbuf_transfer->block.size;
-   }
-   else
-      depth = NULL;
+   /* no current bin */
+   setup->scene = NULL;
 
-   /* XXX: This will most likely fail on 32bit x86 without -mstackrealign */
-   assert(lp_check_alignment(mask, 16));
+   /* Reset some state:
+    */
+   memset(&setup->clear, 0, sizeof setup->clear);
 
-   assert(lp_check_alignment(depth, 16));
-   assert(lp_check_alignment(color, 16));
-   assert(lp_check_alignment(llvmpipe->jit_context.blend_color, 16));
+   /* Have an explicit "start-binning" call and get rid of this
+    * pointer twiddling?
+    */
+   setup->line = first_line;
+   setup->point = first_point;
+   setup->triangle = first_triangle;
+}
 
-   /* run shader */
-   fs->current->jit_function( &llvmpipe->jit_context,
-                              x, y,
-                              quad->coef->a0,
-                              quad->coef->dadx,
-                              quad->coef->dady,
-                              &mask[0][0],
-                              color,
-                              depth);
+
+/** Rasterize all scene's bins */
+static void
+lp_setup_rasterize_scene( struct lp_setup_context *setup )
+{
+   struct lp_scene *scene = setup->scene;
+   struct llvmpipe_screen *screen = llvmpipe_screen(scene->pipe->screen);
+
+   scene->num_active_queries = setup->active_binned_queries;
+   memcpy(scene->active_queries, setup->active_queries,
+          scene->num_active_queries * sizeof(scene->active_queries[0]));
+
+   lp_scene_end_binning(scene);
+
+   lp_fence_reference(&setup->last_fence, scene->fence);
+
+   if (setup->last_fence)
+      setup->last_fence->issued = TRUE;
+
+   pipe_mutex_lock(screen->rast_mutex);
+
+   /* FIXME: We enqueue the scene then wait on the rasterizer to finish.
+    * This means we never actually run any vertex stuff in parallel to
+    * rasterization (not in the same context at least) which is what the
+    * multiple scenes per setup is about - when we get a new empty scene
+    * any old one is already empty again because we waited here for
+    * raster tasks to be finished. Ideally, we shouldn't need to wait here
+    * and rely on fences elsewhere when waiting is necessary.
+    * Certainly, lp_scene_end_rasterization() would need to be deferred too
+    * and there's probably other bits why this doesn't actually work.
+    */
+   lp_rast_queue_scene(screen->rast, scene);
+   lp_rast_finish(screen->rast);
+   pipe_mutex_unlock(screen->rast_mutex);
+
+   lp_scene_end_rasterization(setup->scene);
+   lp_setup_reset( setup );
+
+   LP_DBG(DEBUG_SETUP, "%s done \n", __FUNCTION__);
 }
 
 
 
-
-/**
- * Do triangle cull test using tri determinant (sign indicates orientation)
- * \return true if triangle is to be culled.
- */
-static INLINE boolean
-cull_tri(const struct setup_context *setup, float det)
+static boolean
+begin_binning( struct lp_setup_context *setup )
 {
-   if (det != 0) {   
-      /* if (det < 0 then Z points toward camera and triangle is 
-       * counter-clockwise winding.
-       */
-      unsigned winding = (det < 0) ? PIPE_WINDING_CCW : PIPE_WINDING_CW;
+   struct lp_scene *scene = setup->scene;
+   boolean need_zsload = FALSE;
+   boolean ok;
 
-      if ((winding & setup->winding) == 0)
-	 return FALSE;
+   assert(scene);
+   assert(scene->fence == NULL);
+
+   /* Always create a fence:
+    */
+   scene->fence = lp_fence_create(MAX2(1, setup->num_threads));
+   if (!scene->fence)
+      return FALSE;
+
+   ok = try_update_scene_state(setup);
+   if (!ok)
+      return FALSE;
+
+   if (setup->fb.zsbuf &&
+       ((setup->clear.flags & PIPE_CLEAR_DEPTHSTENCIL) != PIPE_CLEAR_DEPTHSTENCIL) &&
+        util_format_is_depth_and_stencil(setup->fb.zsbuf->format))
+      need_zsload = TRUE;
+
+   LP_DBG(DEBUG_SETUP, "%s color clear bufs: %x depth: %s\n", __FUNCTION__,
+          setup->clear.flags >> 2,
+          need_zsload ? "clear": "load");
+
+   if (setup->clear.flags & PIPE_CLEAR_COLOR) {
+      unsigned cbuf;
+      for (cbuf = 0; cbuf < setup->fb.nr_cbufs; cbuf++) {
+         assert(PIPE_CLEAR_COLOR0 == 1 << 2);
+         if (setup->clear.flags & (1 << (2 + cbuf))) {
+            union lp_rast_cmd_arg clearrb_arg;
+            struct lp_rast_clear_rb *cc_scene =
+               (struct lp_rast_clear_rb *)
+                  lp_scene_alloc(scene, sizeof(struct lp_rast_clear_rb));
+
+            if (!cc_scene) {
+               return FALSE;
+            }
+
+            cc_scene->cbuf = cbuf;
+            cc_scene->color_val = setup->clear.color_val[cbuf];
+            clearrb_arg.clear_rb = cc_scene;
+
+            if (!lp_scene_bin_everywhere(scene,
+                                         LP_RAST_OP_CLEAR_COLOR,
+                                         clearrb_arg))
+               return FALSE;
+         }
+      }
    }
 
-   /* Culled:
-    */
+   if (setup->fb.zsbuf) {
+      if (setup->clear.flags & PIPE_CLEAR_DEPTHSTENCIL) {
+         ok = lp_scene_bin_everywhere( scene,
+                                       LP_RAST_OP_CLEAR_ZSTENCIL,
+                                       lp_rast_arg_clearzs(
+                                          setup->clear.zsvalue,
+                                          setup->clear.zsmask));
+         if (!ok)
+            return FALSE;
+      }
+   }
+
+   setup->clear.flags = 0;
+   setup->clear.zsmask = 0;
+   setup->clear.zsvalue = 0;
+
+   scene->had_queries = !!setup->active_binned_queries;
+
+   LP_DBG(DEBUG_SETUP, "%s done\n", __FUNCTION__);
    return TRUE;
 }
 
 
-
-/**
- * Clip setup->quad against the scissor/surface bounds.
+/* This basically bins and then flushes any outstanding full-screen
+ * clears.  
+ *
+ * TODO: fast path for fullscreen clears and no triangles.
  */
-static INLINE void
-quad_clip( struct setup_context *setup, struct quad_header *quad )
+static boolean
+execute_clears( struct lp_setup_context *setup )
 {
-   const struct pipe_scissor_state *cliprect = &setup->llvmpipe->cliprect;
-   const int minx = (int) cliprect->minx;
-   const int maxx = (int) cliprect->maxx;
-   const int miny = (int) cliprect->miny;
-   const int maxy = (int) cliprect->maxy;
+   LP_DBG(DEBUG_SETUP, "%s\n", __FUNCTION__);
 
-   if (quad->input.x0 >= maxx ||
-       quad->input.y0 >= maxy ||
-       quad->input.x0 + 1 < minx ||
-       quad->input.y0 + 1 < miny) {
-      /* totally clipped */
-      quad->inout.mask = 0x0;
-      return;
-   }
-   if (quad->input.x0 < minx)
-      quad->inout.mask &= (MASK_BOTTOM_RIGHT | MASK_TOP_RIGHT);
-   if (quad->input.y0 < miny)
-      quad->inout.mask &= (MASK_BOTTOM_LEFT | MASK_BOTTOM_RIGHT);
-   if (quad->input.x0 == maxx - 1)
-      quad->inout.mask &= (MASK_BOTTOM_LEFT | MASK_TOP_LEFT);
-   if (quad->input.y0 == maxy - 1)
-      quad->inout.mask &= (MASK_TOP_LEFT | MASK_TOP_RIGHT);
+   return begin_binning( setup );
 }
 
+const char *states[] = {
+   "FLUSHED",
+   "CLEARED",
+   "ACTIVE "
+};
 
 
-/**
- * Given an X or Y coordinate, return the block/quad coordinate that it
- * belongs to.
- */
-static INLINE int block( int x )
+static boolean
+set_scene_state( struct lp_setup_context *setup,
+                 enum setup_state new_state,
+                 const char *reason)
 {
-   return x & ~(2-1);
-}
+   unsigned old_state = setup->state;
 
-static INLINE int block_x( int x )
-{
-   return x & ~(TILE_VECTOR_WIDTH - 1);
-}
+   if (old_state == new_state)
+      return TRUE;
+   
+   if (LP_DEBUG & DEBUG_SCENE) {
+      debug_printf("%s old %s new %s%s%s\n",
+                   __FUNCTION__,
+                   states[old_state],
+                   states[new_state],
+                   (new_state == SETUP_FLUSHED) ? ": " : "",
+                   (new_state == SETUP_FLUSHED) ? reason : "");
 
-
-/**
- * Emit a quad (pass to next stage) with clipping.
- */
-static INLINE void
-clip_emit_quad( struct setup_context *setup, struct quad_header *quad )
-{
-   quad_clip( setup, quad );
-
-   if (quad->inout.mask) {
-      struct llvmpipe_context *lp = setup->llvmpipe;
-
-#if 1
-      /* XXX: The blender expects 4 quads. This is far from efficient, but
-       * until we codegenerate single-quad variants of the fragment pipeline
-       * we need this hack. */
-      const unsigned nr_quads = TILE_VECTOR_HEIGHT*TILE_VECTOR_WIDTH/QUAD_SIZE;
-      struct quad_header quads[4];
-      struct quad_header *quad_ptrs[4];
-      int x0 = block_x(quad->input.x0);
-      unsigned i;
-
-      assert(nr_quads == 4);
-
-      for(i = 0; i < nr_quads; ++i) {
-         int x = x0 + 2*i;
-         if(x == quad->input.x0)
-            memcpy(&quads[i], quad, sizeof quads[i]);
-         else {
-            memset(&quads[i], 0, sizeof quads[i]);
-            quads[i].input.x0 = x;
-            quads[i].input.y0 = quad->input.y0;
-            quads[i].coef = quad->coef;
-         }
-         quad_ptrs[i] = &quads[i];
-      }
-
-      shade_quads( lp, quad_ptrs, nr_quads );
-#else
-      shade_quads( lp, &quad, 1 );
-#endif
-   }
-}
-
-
-/**
- * Render a horizontal span of quads
- */
-static void flush_spans( struct setup_context *setup )
-{
-   const int step = TILE_VECTOR_WIDTH;
-   const int xleft0 = setup->span.left[0];
-   const int xleft1 = setup->span.left[1];
-   const int xright0 = setup->span.right[0];
-   const int xright1 = setup->span.right[1];
-
-
-   int minleft = block_x(MIN2(xleft0, xleft1));
-   int maxright = MAX2(xright0, xright1);
-   int x;
-
-   for (x = minleft; x < maxright; x += step) {
-      unsigned skip_left0 = CLAMP(xleft0 - x, 0, step);
-      unsigned skip_left1 = CLAMP(xleft1 - x, 0, step);
-      unsigned skip_right0 = CLAMP(x + step - xright0, 0, step);
-      unsigned skip_right1 = CLAMP(x + step - xright1, 0, step);
-      unsigned lx = x;
-      const unsigned nr_quads = TILE_VECTOR_HEIGHT*TILE_VECTOR_WIDTH/QUAD_SIZE;
-      unsigned q = 0;
-
-      unsigned skipmask_left0 = (1U << skip_left0) - 1U;
-      unsigned skipmask_left1 = (1U << skip_left1) - 1U;
-
-      /* These calculations fail when step == 32 and skip_right == 0.
-       */
-      unsigned skipmask_right0 = ~0U << (unsigned)(step - skip_right0);
-      unsigned skipmask_right1 = ~0U << (unsigned)(step - skip_right1);
-
-      unsigned mask0 = ~skipmask_left0 & ~skipmask_right0;
-      unsigned mask1 = ~skipmask_left1 & ~skipmask_right1;
-
-      if (mask0 | mask1) {
-         for(q = 0; q < nr_quads; ++q) {
-            unsigned quadmask = (mask0 & 3) | ((mask1 & 3) << 2);
-            setup->quad[q].input.x0 = lx;
-            setup->quad[q].input.y0 = setup->span.y;
-            setup->quad[q].inout.mask = quadmask;
-            setup->quad_ptrs[q] = &setup->quad[q];
-            mask0 >>= 2;
-            mask1 >>= 2;
-            lx += 2;
-         }
-         assert(!(mask0 | mask1));
-
-         shade_quads(setup->llvmpipe, setup->quad_ptrs, nr_quads );
-      }
+      if (new_state == SETUP_FLUSHED && setup->scene)
+         lp_debug_draw_bins_by_cmd_length(setup->scene);
    }
 
+   /* wait for a free/empty scene
+    */
+   if (old_state == SETUP_FLUSHED) 
+      lp_setup_get_empty_scene(setup);
 
-   setup->span.y = 0;
-   setup->span.right[0] = 0;
-   setup->span.right[1] = 0;
-   setup->span.left[0] = 1000000;     /* greater than right[0] */
-   setup->span.left[1] = 1000000;     /* greater than right[1] */
+   switch (new_state) {
+   case SETUP_CLEARED:
+      break;
+
+   case SETUP_ACTIVE:
+      if (!begin_binning( setup ))
+         goto fail;
+      break;
+
+   case SETUP_FLUSHED:
+      if (old_state == SETUP_CLEARED)
+         if (!execute_clears( setup ))
+            goto fail;
+
+      lp_setup_rasterize_scene( setup );
+      assert(setup->scene == NULL);
+      break;
+
+   default:
+      assert(0 && "invalid setup state mode");
+      goto fail;
+   }
+
+   setup->state = new_state;
+   return TRUE;
+
+fail:
+   if (setup->scene) {
+      lp_scene_end_rasterization(setup->scene);
+      setup->scene = NULL;
+   }
+
+   setup->state = SETUP_FLUSHED;
+   lp_setup_reset( setup );
+   return FALSE;
 }
 
 
-#if DEBUG_VERTS
-static void print_vertex(const struct setup_context *setup,
-                         const float (*v)[4])
+void
+lp_setup_flush( struct lp_setup_context *setup,
+                struct pipe_fence_handle **fence,
+                const char *reason)
 {
-   int i;
-   debug_printf("   Vertex: (%p)\n", v);
-   for (i = 0; i < setup->quad[0].nr_attrs; i++) {
-      debug_printf("     %d: %f %f %f %f\n",  i,
-              v[i][0], v[i][1], v[i][2], v[i][3]);
-      if (util_is_inf_or_nan(v[i][0])) {
-         debug_printf("   NaN!\n");
-      }
+   set_scene_state( setup, SETUP_FLUSHED, reason );
+
+   if (fence) {
+      lp_fence_reference((struct lp_fence **)fence, setup->last_fence);
    }
 }
-#endif
 
-/**
- * Sort the vertices from top to bottom order, setting up the triangle
- * edge fields (ebot, emaj, etop).
- * \return FALSE if coords are inf/nan (cull the tri), TRUE otherwise
- */
-static boolean setup_sort_vertices( struct setup_context *setup,
-                                    float det,
-                                    const float (*v0)[4],
-                                    const float (*v1)[4],
-                                    const float (*v2)[4] )
+
+void
+lp_setup_bind_framebuffer( struct lp_setup_context *setup,
+                           const struct pipe_framebuffer_state *fb )
 {
-   setup->vprovoke = v2;
+   LP_DBG(DEBUG_SETUP, "%s\n", __FUNCTION__);
 
-   /* determine bottom to top order of vertices */
-   {
-      float y0 = v0[0][1];
-      float y1 = v1[0][1];
-      float y2 = v2[0][1];
-      if (y0 <= y1) {
-	 if (y1 <= y2) {
-	    /* y0<=y1<=y2 */
-	    setup->vmin = v0;
-	    setup->vmid = v1;
-	    setup->vmax = v2;
-	 }
-	 else if (y2 <= y0) {
-	    /* y2<=y0<=y1 */
-	    setup->vmin = v2;
-	    setup->vmid = v0;
-	    setup->vmax = v1;
-	 }
-	 else {
-	    /* y0<=y2<=y1 */
-	    setup->vmin = v0;
-	    setup->vmid = v2;
-	    setup->vmax = v1;
-	 }
-      }
-      else {
-	 if (y0 <= y2) {
-	    /* y1<=y0<=y2 */
-	    setup->vmin = v1;
-	    setup->vmid = v0;
-	    setup->vmax = v2;
-	 }
-	 else if (y2 <= y1) {
-	    /* y2<=y1<=y0 */
-	    setup->vmin = v2;
-	    setup->vmid = v1;
-	    setup->vmax = v0;
-	 }
-	 else {
-	    /* y1<=y2<=y0 */
-	    setup->vmin = v1;
-	    setup->vmid = v2;
-	    setup->vmax = v0;
-	 }
-      }
-   }
-
-   setup->ebot.dx = setup->vmid[0][0] - setup->vmin[0][0];
-   setup->ebot.dy = setup->vmid[0][1] - setup->vmin[0][1];
-   setup->emaj.dx = setup->vmax[0][0] - setup->vmin[0][0];
-   setup->emaj.dy = setup->vmax[0][1] - setup->vmin[0][1];
-   setup->etop.dx = setup->vmax[0][0] - setup->vmid[0][0];
-   setup->etop.dy = setup->vmax[0][1] - setup->vmid[0][1];
+   /* Flush any old scene.
+    */
+   set_scene_state( setup, SETUP_FLUSHED, __FUNCTION__ );
 
    /*
-    * Compute triangle's area.  Use 1/area to compute partial
-    * derivatives of attributes later.
+    * Ensure the old scene is not reused.
+    */
+   assert(!setup->scene);
+
+   /* Set new state.  This will be picked up later when we next need a
+    * scene.
+    */
+   util_copy_framebuffer_state(&setup->fb, fb);
+   setup->framebuffer.x0 = 0;
+   setup->framebuffer.y0 = 0;
+   setup->framebuffer.x1 = fb->width-1;
+   setup->framebuffer.y1 = fb->height-1;
+   setup->dirty |= LP_SETUP_NEW_SCISSOR;
+}
+
+
+/*
+ * Try to clear one color buffer of the attached fb, either by binning a clear
+ * command or queuing up the clear for later (when binning is started).
+ */
+static boolean
+lp_setup_try_clear_color_buffer(struct lp_setup_context *setup,
+                                const union pipe_color_union *color,
+                                unsigned cbuf)
+{
+   union lp_rast_cmd_arg clearrb_arg;
+   union util_color uc;
+   enum pipe_format format = setup->fb.cbufs[cbuf]->format;
+
+   LP_DBG(DEBUG_SETUP, "%s state %d\n", __FUNCTION__, setup->state);
+
+   if (util_format_is_pure_integer(format)) {
+      /*
+       * We expect int/uint clear values here, though some APIs
+       * might disagree (but in any case util_pack_color()
+       * couldn't handle it)...
+       */
+      if (util_format_is_pure_sint(format)) {
+         util_format_write_4i(format, color->i, 0, &uc, 0, 0, 0, 1, 1);
+      }
+      else {
+         assert(util_format_is_pure_uint(format));
+         util_format_write_4ui(format, color->ui, 0, &uc, 0, 0, 0, 1, 1);
+      }
+   }
+   else {
+      util_pack_color(color->f, format, &uc);
+   }
+
+   if (setup->state == SETUP_ACTIVE) {
+      struct lp_scene *scene = setup->scene;
+
+      /* Add the clear to existing scene.  In the unusual case where
+       * both color and depth-stencil are being cleared when there's
+       * already been some rendering, we could discard the currently
+       * binned scene and start again, but I don't see that as being
+       * a common usage.
+       */
+      struct lp_rast_clear_rb *cc_scene =
+         (struct lp_rast_clear_rb *)
+            lp_scene_alloc_aligned(scene, sizeof(struct lp_rast_clear_rb), 8);
+
+      if (!cc_scene) {
+         return FALSE;
+      }
+
+      cc_scene->cbuf = cbuf;
+      cc_scene->color_val = uc;
+      clearrb_arg.clear_rb = cc_scene;
+
+      if (!lp_scene_bin_everywhere(scene,
+                                   LP_RAST_OP_CLEAR_COLOR,
+                                   clearrb_arg))
+         return FALSE;
+   }
+   else {
+      /* Put ourselves into the 'pre-clear' state, specifically to try
+       * and accumulate multiple clears to color and depth_stencil
+       * buffers which the app or state-tracker might issue
+       * separately.
+       */
+      set_scene_state( setup, SETUP_CLEARED, __FUNCTION__ );
+
+      assert(PIPE_CLEAR_COLOR0 == (1 << 2));
+      setup->clear.flags |= 1 << (cbuf + 2);
+      setup->clear.color_val[cbuf] = uc;
+   }
+
+   return TRUE;
+}
+
+static boolean
+lp_setup_try_clear_zs(struct lp_setup_context *setup,
+                      double depth,
+                      unsigned stencil,
+                      unsigned flags)
+{
+   uint64_t zsmask = 0;
+   uint64_t zsvalue = 0;
+   uint32_t zmask32;
+   uint8_t smask8;
+   enum pipe_format format = setup->fb.zsbuf->format;
+
+   LP_DBG(DEBUG_SETUP, "%s state %d\n", __FUNCTION__, setup->state);
+
+   zmask32 = (flags & PIPE_CLEAR_DEPTH) ? ~0 : 0;
+   smask8 = (flags & PIPE_CLEAR_STENCIL) ? ~0 : 0;
+
+   zsvalue = util_pack64_z_stencil(format, depth, stencil);
+
+   zsmask = util_pack64_mask_z_stencil(format, zmask32, smask8);
+
+   zsvalue &= zsmask;
+
+   if (format == PIPE_FORMAT_Z24X8_UNORM ||
+       format == PIPE_FORMAT_X8Z24_UNORM) {
+      /*
+       * Make full mask if there's "X" bits so we can do full
+       * clear (without rmw).
+       */
+      uint32_t zsmask_full = 0;
+      zsmask_full = util_pack_mask_z_stencil(format, ~0, ~0);
+      zsmask |= ~zsmask_full;
+   }
+
+   if (setup->state == SETUP_ACTIVE) {
+      struct lp_scene *scene = setup->scene;
+
+      /* Add the clear to existing scene.  In the unusual case where
+       * both color and depth-stencil are being cleared when there's
+       * already been some rendering, we could discard the currently
+       * binned scene and start again, but I don't see that as being
+       * a common usage.
+       */
+      if (!lp_scene_bin_everywhere(scene,
+                                   LP_RAST_OP_CLEAR_ZSTENCIL,
+                                   lp_rast_arg_clearzs(zsvalue, zsmask)))
+         return FALSE;
+   }
+   else {
+      /* Put ourselves into the 'pre-clear' state, specifically to try
+       * and accumulate multiple clears to color and depth_stencil
+       * buffers which the app or state-tracker might issue
+       * separately.
+       */
+      set_scene_state( setup, SETUP_CLEARED, __FUNCTION__ );
+
+      setup->clear.flags |= flags;
+
+      setup->clear.zsmask |= zsmask;
+      setup->clear.zsvalue =
+         (setup->clear.zsvalue & ~zsmask) | (zsvalue & zsmask);
+   }
+
+   return TRUE;
+}
+
+void
+lp_setup_clear( struct lp_setup_context *setup,
+                const union pipe_color_union *color,
+                double depth,
+                unsigned stencil,
+                unsigned flags )
+{
+   unsigned i;
+
+   /*
+    * Note any of these (max 9) clears could fail (but at most there should
+    * be just one failure!). This avoids doing the previous succeeded
+    * clears again (we still clear tiles twice if a clear command succeeded
+    * partially for one buffer).
+    */
+   if (flags & PIPE_CLEAR_DEPTHSTENCIL) {
+      unsigned flagszs = flags & PIPE_CLEAR_DEPTHSTENCIL;
+      if (!lp_setup_try_clear_zs(setup, depth, stencil, flagszs)) {
+         lp_setup_flush(setup, NULL, __FUNCTION__);
+
+         if (!lp_setup_try_clear_zs(setup, depth, stencil, flagszs))
+            assert(0);
+      }
+   }
+
+   if (flags & PIPE_CLEAR_COLOR) {
+      assert(PIPE_CLEAR_COLOR0 == (1 << 2));
+      for (i = 0; i < setup->fb.nr_cbufs; i++) {
+         if ((flags & (1 << (2 + i))) && setup->fb.cbufs[i]) {
+            if (!lp_setup_try_clear_color_buffer(setup, color, i)) {
+               lp_setup_flush(setup, NULL, __FUNCTION__);
+
+               if (!lp_setup_try_clear_color_buffer(setup, color, i))
+                  assert(0);
+            }
+         }
+      }
+   }
+}
+
+
+
+void 
+lp_setup_set_triangle_state( struct lp_setup_context *setup,
+                             unsigned cull_mode,
+                             boolean ccw_is_frontface,
+                             boolean scissor,
+                             boolean half_pixel_center,
+                             boolean bottom_edge_rule)
+{
+   LP_DBG(DEBUG_SETUP, "%s\n", __FUNCTION__);
+
+   setup->ccw_is_frontface = ccw_is_frontface;
+   setup->cullmode = cull_mode;
+   setup->triangle = first_triangle;
+   setup->pixel_offset = half_pixel_center ? 0.5f : 0.0f;
+   setup->bottom_edge_rule = bottom_edge_rule;
+
+   if (setup->scissor_test != scissor) {
+      setup->dirty |= LP_SETUP_NEW_SCISSOR;
+      setup->scissor_test = scissor;
+   }
+}
+
+void 
+lp_setup_set_line_state( struct lp_setup_context *setup,
+			 float line_width)
+{
+   LP_DBG(DEBUG_SETUP, "%s\n", __FUNCTION__);
+
+   setup->line_width = line_width;
+}
+
+void 
+lp_setup_set_point_state( struct lp_setup_context *setup,
+                          float point_size,
+                          boolean point_size_per_vertex,
+                          uint sprite_coord_enable,
+                          uint sprite_coord_origin)
+{
+   LP_DBG(DEBUG_SETUP, "%s\n", __FUNCTION__);
+
+   setup->point_size = point_size;
+   setup->sprite_coord_enable = sprite_coord_enable;
+   setup->sprite_coord_origin = sprite_coord_origin;
+   setup->point_size_per_vertex = point_size_per_vertex;
+}
+
+void
+lp_setup_set_setup_variant( struct lp_setup_context *setup,
+			    const struct lp_setup_variant *variant)
+{
+   LP_DBG(DEBUG_SETUP, "%s\n", __FUNCTION__);
+   
+   setup->setup.variant = variant;
+}
+
+void
+lp_setup_set_fs_variant( struct lp_setup_context *setup,
+                         struct lp_fragment_shader_variant *variant)
+{
+   LP_DBG(DEBUG_SETUP, "%s %p\n", __FUNCTION__,
+          variant);
+   /* FIXME: reference count */
+
+   setup->fs.current.variant = variant;
+   setup->dirty |= LP_SETUP_NEW_FS;
+}
+
+void
+lp_setup_set_fs_constants(struct lp_setup_context *setup,
+                          unsigned num,
+                          struct pipe_constant_buffer *buffers)
+{
+   unsigned i;
+
+   LP_DBG(DEBUG_SETUP, "%s %p\n", __FUNCTION__, (void *) buffers);
+
+   assert(num <= ARRAY_SIZE(setup->constants));
+
+   for (i = 0; i < num; ++i) {
+      util_copy_constant_buffer(&setup->constants[i].current, &buffers[i]);
+   }
+   for (; i < ARRAY_SIZE(setup->constants); i++) {
+      util_copy_constant_buffer(&setup->constants[i].current, NULL);
+   }
+   setup->dirty |= LP_SETUP_NEW_CONSTANTS;
+}
+
+
+void
+lp_setup_set_alpha_ref_value( struct lp_setup_context *setup,
+                              float alpha_ref_value )
+{
+   LP_DBG(DEBUG_SETUP, "%s %f\n", __FUNCTION__, alpha_ref_value);
+
+   if(setup->fs.current.jit_context.alpha_ref_value != alpha_ref_value) {
+      setup->fs.current.jit_context.alpha_ref_value = alpha_ref_value;
+      setup->dirty |= LP_SETUP_NEW_FS;
+   }
+}
+
+void
+lp_setup_set_stencil_ref_values( struct lp_setup_context *setup,
+                                 const ubyte refs[2] )
+{
+   LP_DBG(DEBUG_SETUP, "%s %d %d\n", __FUNCTION__, refs[0], refs[1]);
+
+   if (setup->fs.current.jit_context.stencil_ref_front != refs[0] ||
+       setup->fs.current.jit_context.stencil_ref_back != refs[1]) {
+      setup->fs.current.jit_context.stencil_ref_front = refs[0];
+      setup->fs.current.jit_context.stencil_ref_back = refs[1];
+      setup->dirty |= LP_SETUP_NEW_FS;
+   }
+}
+
+void
+lp_setup_set_blend_color( struct lp_setup_context *setup,
+                          const struct pipe_blend_color *blend_color )
+{
+   LP_DBG(DEBUG_SETUP, "%s\n", __FUNCTION__);
+
+   assert(blend_color);
+
+   if(memcmp(&setup->blend_color.current, blend_color, sizeof *blend_color) != 0) {
+      memcpy(&setup->blend_color.current, blend_color, sizeof *blend_color);
+      setup->dirty |= LP_SETUP_NEW_BLEND_COLOR;
+   }
+}
+
+
+void
+lp_setup_set_scissors( struct lp_setup_context *setup,
+                       const struct pipe_scissor_state *scissors )
+{
+   unsigned i;
+   LP_DBG(DEBUG_SETUP, "%s\n", __FUNCTION__);
+
+   assert(scissors);
+
+   for (i = 0; i < PIPE_MAX_VIEWPORTS; ++i) {
+      setup->scissors[i].x0 = scissors[i].minx;
+      setup->scissors[i].x1 = scissors[i].maxx-1;
+      setup->scissors[i].y0 = scissors[i].miny;
+      setup->scissors[i].y1 = scissors[i].maxy-1;
+   }
+   setup->dirty |= LP_SETUP_NEW_SCISSOR;
+}
+
+
+void 
+lp_setup_set_flatshade_first( struct lp_setup_context *setup,
+                              boolean flatshade_first )
+{
+   setup->flatshade_first = flatshade_first;
+}
+
+void
+lp_setup_set_rasterizer_discard( struct lp_setup_context *setup,
+                                 boolean rasterizer_discard )
+{
+   if (setup->rasterizer_discard != rasterizer_discard) {
+      setup->rasterizer_discard = rasterizer_discard;
+      set_scene_state( setup, SETUP_FLUSHED, __FUNCTION__ );
+   }
+}
+
+void 
+lp_setup_set_vertex_info( struct lp_setup_context *setup,
+                          struct vertex_info *vertex_info )
+{
+   /* XXX: just silently holding onto the pointer:
+    */
+   setup->vertex_info = vertex_info;
+}
+
+
+/**
+ * Called during state validation when LP_NEW_VIEWPORT is set.
+ */
+void
+lp_setup_set_viewports(struct lp_setup_context *setup,
+                       unsigned num_viewports,
+                       const struct pipe_viewport_state *viewports)
+{
+   struct llvmpipe_context *lp = llvmpipe_context(setup->pipe);
+   unsigned i;
+
+   LP_DBG(DEBUG_SETUP, "%s\n", __FUNCTION__);
+
+   assert(num_viewports <= PIPE_MAX_VIEWPORTS);
+   assert(viewports);
+
+   /*
+    * For use in lp_state_fs.c, propagate the viewport values for all viewports.
+    */
+   for (i = 0; i < num_viewports; i++) {
+      float min_depth;
+      float max_depth;
+      util_viewport_zmin_zmax(&viewports[i], lp->rasterizer->clip_halfz,
+                              &min_depth, &max_depth);
+
+      if (setup->viewports[i].min_depth != min_depth ||
+          setup->viewports[i].max_depth != max_depth) {
+          setup->viewports[i].min_depth = min_depth;
+          setup->viewports[i].max_depth = max_depth;
+          setup->dirty |= LP_SETUP_NEW_VIEWPORTS;
+      }
+   }
+}
+
+
+/**
+ * Called during state validation when LP_NEW_SAMPLER_VIEW is set.
+ */
+void
+lp_setup_set_fragment_sampler_views(struct lp_setup_context *setup,
+                                    unsigned num,
+                                    struct pipe_sampler_view **views)
+{
+   unsigned i, max_tex_num;
+
+   LP_DBG(DEBUG_SETUP, "%s\n", __FUNCTION__);
+
+   assert(num <= PIPE_MAX_SHADER_SAMPLER_VIEWS);
+
+   max_tex_num = MAX2(num, setup->fs.current_tex_num);
+
+   for (i = 0; i < max_tex_num; i++) {
+      struct pipe_sampler_view *view = i < num ? views[i] : NULL;
+
+      if (view) {
+         struct pipe_resource *res = view->texture;
+         struct llvmpipe_resource *lp_tex = llvmpipe_resource(res);
+         struct lp_jit_texture *jit_tex;
+         jit_tex = &setup->fs.current.jit_context.textures[i];
+
+         /* We're referencing the texture's internal data, so save a
+          * reference to it.
+          */
+         pipe_resource_reference(&setup->fs.current_tex[i], res);
+
+         if (!lp_tex->dt) {
+            /* regular texture - setup array of mipmap level offsets */
+            int j;
+            unsigned first_level = 0;
+            unsigned last_level = 0;
+
+            if (llvmpipe_resource_is_texture(res)) {
+               first_level = view->u.tex.first_level;
+               last_level = view->u.tex.last_level;
+               assert(first_level <= last_level);
+               assert(last_level <= res->last_level);
+               jit_tex->base = lp_tex->tex_data;
+            }
+            else {
+              jit_tex->base = lp_tex->data;
+            }
+
+            if (LP_PERF & PERF_TEX_MEM) {
+               /* use dummy tile memory */
+               jit_tex->base = lp_dummy_tile;
+               jit_tex->width = TILE_SIZE/8;
+               jit_tex->height = TILE_SIZE/8;
+               jit_tex->depth = 1;
+               jit_tex->first_level = 0;
+               jit_tex->last_level = 0;
+               jit_tex->mip_offsets[0] = 0;
+               jit_tex->row_stride[0] = 0;
+               jit_tex->img_stride[0] = 0;
+            }
+            else {
+               jit_tex->width = res->width0;
+               jit_tex->height = res->height0;
+               jit_tex->depth = res->depth0;
+               jit_tex->first_level = first_level;
+               jit_tex->last_level = last_level;
+
+               if (llvmpipe_resource_is_texture(res)) {
+                  for (j = first_level; j <= last_level; j++) {
+                     jit_tex->mip_offsets[j] = lp_tex->mip_offsets[j];
+                     jit_tex->row_stride[j] = lp_tex->row_stride[j];
+                     jit_tex->img_stride[j] = lp_tex->img_stride[j];
+                  }
+
+                  if (res->target == PIPE_TEXTURE_1D_ARRAY ||
+                      res->target == PIPE_TEXTURE_2D_ARRAY ||
+                      res->target == PIPE_TEXTURE_CUBE ||
+                      res->target == PIPE_TEXTURE_CUBE_ARRAY) {
+                     /*
+                      * For array textures, we don't have first_layer, instead
+                      * adjust last_layer (stored as depth) plus the mip level offsets
+                      * (as we have mip-first layout can't just adjust base ptr).
+                      * XXX For mip levels, could do something similar.
+                      */
+                     jit_tex->depth = view->u.tex.last_layer - view->u.tex.first_layer + 1;
+                     for (j = first_level; j <= last_level; j++) {
+                        jit_tex->mip_offsets[j] += view->u.tex.first_layer *
+                                                   lp_tex->img_stride[j];
+                     }
+                     if (view->target == PIPE_TEXTURE_CUBE ||
+                         view->target == PIPE_TEXTURE_CUBE_ARRAY) {
+                        assert(jit_tex->depth % 6 == 0);
+                     }
+                     assert(view->u.tex.first_layer <= view->u.tex.last_layer);
+                     assert(view->u.tex.last_layer < res->array_size);
+                  }
+               }
+               else {
+                  /*
+                   * For buffers, we don't have "offset", instead adjust
+                   * the size (stored as width) plus the base pointer.
+                   */
+                  unsigned view_blocksize = util_format_get_blocksize(view->format);
+                  /* probably don't really need to fill that out */
+                  jit_tex->mip_offsets[0] = 0;
+                  jit_tex->row_stride[0] = 0;
+                  jit_tex->img_stride[0] = 0;
+
+                  /* everything specified in number of elements here. */
+                  jit_tex->width = view->u.buf.size / view_blocksize;
+                  jit_tex->base = (uint8_t *)jit_tex->base + view->u.buf.offset;
+                  /* XXX Unsure if we need to sanitize parameters? */
+                  assert(view->u.buf.offset + view->u.buf.size <= res->width0);
+               }
+            }
+         }
+         else {
+            /* display target texture/surface */
+            /*
+             * XXX: Where should this be unmapped?
+             */
+            struct llvmpipe_screen *screen = llvmpipe_screen(res->screen);
+            struct sw_winsys *winsys = screen->winsys;
+            jit_tex->base = winsys->displaytarget_map(winsys, lp_tex->dt,
+                                                         PIPE_TRANSFER_READ);
+            jit_tex->row_stride[0] = lp_tex->row_stride[0];
+            jit_tex->img_stride[0] = lp_tex->img_stride[0];
+            jit_tex->mip_offsets[0] = 0;
+            jit_tex->width = res->width0;
+            jit_tex->height = res->height0;
+            jit_tex->depth = res->depth0;
+            jit_tex->first_level = jit_tex->last_level = 0;
+            assert(jit_tex->base);
+         }
+      }
+      else {
+         pipe_resource_reference(&setup->fs.current_tex[i], NULL);
+      }
+   }
+   setup->fs.current_tex_num = num;
+
+   setup->dirty |= LP_SETUP_NEW_FS;
+}
+
+
+/**
+ * Called during state validation when LP_NEW_SAMPLER is set.
+ */
+void
+lp_setup_set_fragment_sampler_state(struct lp_setup_context *setup,
+                                    unsigned num,
+                                    struct pipe_sampler_state **samplers)
+{
+   unsigned i;
+
+   LP_DBG(DEBUG_SETUP, "%s\n", __FUNCTION__);
+
+   assert(num <= PIPE_MAX_SAMPLERS);
+
+   for (i = 0; i < PIPE_MAX_SAMPLERS; i++) {
+      const struct pipe_sampler_state *sampler = i < num ? samplers[i] : NULL;
+
+      if (sampler) {
+         struct lp_jit_sampler *jit_sam;
+         jit_sam = &setup->fs.current.jit_context.samplers[i];
+
+         jit_sam->min_lod = sampler->min_lod;
+         jit_sam->max_lod = sampler->max_lod;
+         jit_sam->lod_bias = sampler->lod_bias;
+         COPY_4V(jit_sam->border_color, sampler->border_color.f);
+      }
+   }
+
+   setup->dirty |= LP_SETUP_NEW_FS;
+}
+
+
+/**
+ * Is the given texture referenced by any scene?
+ * Note: we have to check all scenes including any scenes currently
+ * being rendered and the current scene being built.
+ */
+unsigned
+lp_setup_is_resource_referenced( const struct lp_setup_context *setup,
+                                const struct pipe_resource *texture )
+{
+   unsigned i;
+
+   /* check the render targets */
+   for (i = 0; i < setup->fb.nr_cbufs; i++) {
+      if (setup->fb.cbufs[i] && setup->fb.cbufs[i]->texture == texture)
+         return LP_REFERENCED_FOR_READ | LP_REFERENCED_FOR_WRITE;
+   }
+   if (setup->fb.zsbuf && setup->fb.zsbuf->texture == texture) {
+      return LP_REFERENCED_FOR_READ | LP_REFERENCED_FOR_WRITE;
+   }
+
+   /* check textures referenced by the scene */
+   for (i = 0; i < ARRAY_SIZE(setup->scenes); i++) {
+      if (lp_scene_is_resource_referenced(setup->scenes[i], texture)) {
+         return LP_REFERENCED_FOR_READ;
+      }
+   }
+
+   return LP_UNREFERENCED;
+}
+
+
+/**
+ * Called by vbuf code when we're about to draw something.
+ *
+ * This function stores all dirty state in the current scene's display list
+ * memory, via lp_scene_alloc().  We can not pass pointers of mutable state to
+ * the JIT functions, as the JIT functions will be called later on, most likely
+ * on a different thread.
+ *
+ * When processing dirty state it is imperative that we don't refer to any
+ * pointers previously allocated with lp_scene_alloc() in this function (or any
+ * function) as they may belong to a scene freed since then.
+ */
+static boolean
+try_update_scene_state( struct lp_setup_context *setup )
+{
+   static const float fake_const_buf[4];
+   boolean new_scene = (setup->fs.stored == NULL);
+   struct lp_scene *scene = setup->scene;
+   unsigned i;
+
+   assert(scene);
+
+   if (setup->dirty & LP_SETUP_NEW_VIEWPORTS) {
+      /*
+       * Record new depth range state for changes due to viewport updates.
+       *
+       * TODO: Collapse the existing viewport and depth range information
+       *       into one structure, for access by JIT.
+       */
+      struct lp_jit_viewport *stored;
+
+      stored = (struct lp_jit_viewport *)
+         lp_scene_alloc(scene, sizeof setup->viewports);
+
+      if (!stored) {
+         assert(!new_scene);
+         return FALSE;
+      }
+
+      memcpy(stored, setup->viewports, sizeof setup->viewports);
+
+      setup->fs.current.jit_context.viewports = stored;
+      setup->dirty |= LP_SETUP_NEW_FS;
+   }
+
+   if(setup->dirty & LP_SETUP_NEW_BLEND_COLOR) {
+      uint8_t *stored;
+      float* fstored;
+      unsigned i, j;
+      unsigned size;
+
+      /* Alloc u8_blend_color (16 x i8) and f_blend_color (4 or 8 x f32) */
+      size  = 4 * 16 * sizeof(uint8_t);
+      size += (LP_MAX_VECTOR_LENGTH / 4) * sizeof(float);
+      stored = lp_scene_alloc_aligned(scene, size, LP_MIN_VECTOR_ALIGN);
+
+      if (!stored) {
+         assert(!new_scene);
+         return FALSE;
+      }
+
+      /* Store floating point colour */
+      fstored = (float*)(stored + 4*16);
+      for (i = 0; i < (LP_MAX_VECTOR_LENGTH / 4); ++i) {
+         fstored[i] = setup->blend_color.current.color[i % 4];
+      }
+
+      /* smear each blend color component across 16 ubyte elements */
+      for (i = 0; i < 4; ++i) {
+         uint8_t c = float_to_ubyte(setup->blend_color.current.color[i]);
+         for (j = 0; j < 16; ++j)
+            stored[i*16 + j] = c;
+      }
+
+      setup->blend_color.stored = stored;
+      setup->fs.current.jit_context.u8_blend_color = stored;
+      setup->fs.current.jit_context.f_blend_color = fstored;
+      setup->dirty |= LP_SETUP_NEW_FS;
+   }
+
+   if (setup->dirty & LP_SETUP_NEW_CONSTANTS) {
+      for (i = 0; i < ARRAY_SIZE(setup->constants); ++i) {
+         struct pipe_resource *buffer = setup->constants[i].current.buffer;
+         const unsigned current_size = MIN2(setup->constants[i].current.buffer_size,
+                                            LP_MAX_TGSI_CONST_BUFFER_SIZE);
+         const ubyte *current_data = NULL;
+         int num_constants;
+
+         STATIC_ASSERT(DATA_BLOCK_SIZE >= LP_MAX_TGSI_CONST_BUFFER_SIZE);
+
+         if (buffer) {
+            /* resource buffer */
+            current_data = (ubyte *) llvmpipe_resource_data(buffer);
+         }
+         else if (setup->constants[i].current.user_buffer) {
+            /* user-space buffer */
+            current_data = (ubyte *) setup->constants[i].current.user_buffer;
+         }
+
+         if (current_data) {
+            current_data += setup->constants[i].current.buffer_offset;
+
+            /* TODO: copy only the actually used constants? */
+
+            if (setup->constants[i].stored_size != current_size ||
+               !setup->constants[i].stored_data ||
+               memcmp(setup->constants[i].stored_data,
+                      current_data,
+                      current_size) != 0) {
+               void *stored;
+
+               stored = lp_scene_alloc(scene, current_size);
+               if (!stored) {
+                  assert(!new_scene);
+                  return FALSE;
+               }
+
+               memcpy(stored,
+                      current_data,
+                      current_size);
+               setup->constants[i].stored_size = current_size;
+               setup->constants[i].stored_data = stored;
+            }
+            setup->fs.current.jit_context.constants[i] =
+               setup->constants[i].stored_data;
+         }
+         else {
+            setup->constants[i].stored_size = 0;
+            setup->constants[i].stored_data = NULL;
+            setup->fs.current.jit_context.constants[i] = fake_const_buf;
+         }
+
+         num_constants =
+            setup->constants[i].stored_size / (sizeof(float) * 4);
+         setup->fs.current.jit_context.num_constants[i] = num_constants;
+         setup->dirty |= LP_SETUP_NEW_FS;
+      }
+   }
+
+
+   if (setup->dirty & LP_SETUP_NEW_FS) {
+      if (!setup->fs.stored ||
+          memcmp(setup->fs.stored,
+                 &setup->fs.current,
+                 sizeof setup->fs.current) != 0)
+      {
+         struct lp_rast_state *stored;
+         
+         /* The fs state that's been stored in the scene is different from
+          * the new, current state.  So allocate a new lp_rast_state object
+          * and append it to the bin's setup data buffer.
+          */
+         stored = (struct lp_rast_state *) lp_scene_alloc(scene, sizeof *stored);
+         if (!stored) {
+            assert(!new_scene);
+            return FALSE;
+         }
+
+         memcpy(stored,
+                &setup->fs.current,
+                sizeof setup->fs.current);
+         setup->fs.stored = stored;
+         
+         /* The scene now references the textures in the rasterization
+          * state record.  Note that now.
+          */
+         for (i = 0; i < ARRAY_SIZE(setup->fs.current_tex); i++) {
+            if (setup->fs.current_tex[i]) {
+               if (!lp_scene_add_resource_reference(scene,
+                                                    setup->fs.current_tex[i],
+                                                    new_scene)) {
+                  assert(!new_scene);
+                  return FALSE;
+               }
+            }
+         }
+      }
+   }
+
+   if (setup->dirty & LP_SETUP_NEW_SCISSOR) {
+      unsigned i;
+      for (i = 0; i < PIPE_MAX_VIEWPORTS; ++i) {
+         setup->draw_regions[i] = setup->framebuffer;
+         if (setup->scissor_test) {
+            u_rect_possible_intersection(&setup->scissors[i],
+                                         &setup->draw_regions[i]);
+         }
+      }
+   }
+
+   setup->dirty = 0;
+
+   assert(setup->fs.stored);
+   return TRUE;
+}
+
+boolean
+lp_setup_update_state( struct lp_setup_context *setup,
+                       boolean update_scene )
+{
+   /* Some of the 'draw' pipeline stages may have changed some driver state.
+    * Make sure we've processed those state changes before anything else.
     *
-    * The area will be the same as prim->det, but the sign may be
-    * different depending on how the vertices get sorted above.
-    *
-    * To determine whether the primitive is front or back facing we
-    * use the prim->det value because its sign is correct.
+    * XXX this is the only place where llvmpipe_context is used in the
+    * setup code.  This may get refactored/changed...
     */
    {
-      const float area = (setup->emaj.dx * setup->ebot.dy -
-			    setup->ebot.dx * setup->emaj.dy);
+      struct llvmpipe_context *lp = llvmpipe_context(setup->pipe);
+      if (lp->dirty) {
+         llvmpipe_update_derived(lp);
+      }
 
-      setup->oneoverarea = 1.0f / area;
+      if (lp->setup->dirty) {
+         llvmpipe_update_setup(lp);
+      }
 
-      /*
-      debug_printf("%s one-over-area %f  area %f  det %f\n",
-                   __FUNCTION__, setup->oneoverarea, area, det );
-      */
-      if (util_is_inf_or_nan(setup->oneoverarea))
+      assert(setup->setup.variant);
+
+      /* Will probably need to move this somewhere else, just need  
+       * to know about vertex shader point size attribute.
+       */
+      setup->psize_slot = lp->psize_slot;
+      setup->viewport_index_slot = lp->viewport_index_slot;
+      setup->layer_slot = lp->layer_slot;
+      setup->face_slot = lp->face_slot;
+
+      assert(lp->dirty == 0);
+
+      assert(lp->setup_variant.key.size == 
+	     setup->setup.variant->key.size);
+
+      assert(memcmp(&lp->setup_variant.key,
+		    &setup->setup.variant->key,
+		    setup->setup.variant->key.size) == 0);
+   }
+
+   if (update_scene && setup->state != SETUP_ACTIVE) {
+      if (!set_scene_state( setup, SETUP_ACTIVE, __FUNCTION__ ))
          return FALSE;
    }
 
-   /* We need to know if this is a front or back-facing triangle for:
-    *  - the GLSL gl_FrontFacing fragment attribute (bool)
-    *  - two-sided stencil test
+   /* Only call into update_scene_state() if we already have a
+    * scene:
     */
-   setup->facing = 
-      ((det > 0.0) ^ 
-       (setup->llvmpipe->rasterizer->front_winding == PIPE_WINDING_CW));
+   if (update_scene && setup->scene) {
+      assert(setup->state == SETUP_ACTIVE);
 
-   /* Prepare pixel offset for rasterisation:
-    *  - pixel center (0.5, 0.5) for GL, or
-    *  - assume (0.0, 0.0) for other APIs.
-    */
-   if (setup->llvmpipe->rasterizer->gl_rasterization_rules) {
-      setup->pixel_offset = 0.5f;
-   } else {
-      setup->pixel_offset = 0.0f;
+      if (try_update_scene_state(setup))
+         return TRUE;
+
+      /* Update failed, try to restart the scene.
+       *
+       * Cannot call lp_setup_flush_and_restart() directly here
+       * because of potential recursion.
+       */
+      if (!set_scene_state(setup, SETUP_FLUSHED, __FUNCTION__))
+         return FALSE;
+
+      if (!set_scene_state(setup, SETUP_ACTIVE, __FUNCTION__))
+         return FALSE;
+
+      if (!setup->scene)
+         return FALSE;
+
+      return try_update_scene_state(setup);
    }
 
    return TRUE;
 }
 
 
-/**
- * Compute a0, dadx and dady for a linearly interpolated coefficient,
- * for a triangle.
+
+/* Only caller is lp_setup_vbuf_destroy()
  */
-static void tri_pos_coeff( struct setup_context *setup,
-                           uint vertSlot, unsigned i)
+void 
+lp_setup_destroy( struct lp_setup_context *setup )
 {
-   float botda = setup->vmid[vertSlot][i] - setup->vmin[vertSlot][i];
-   float majda = setup->vmax[vertSlot][i] - setup->vmin[vertSlot][i];
-   float a = setup->ebot.dy * majda - botda * setup->emaj.dy;
-   float b = setup->emaj.dx * botda - majda * setup->ebot.dx;
-   float dadx = a * setup->oneoverarea;
-   float dady = b * setup->oneoverarea;
+   uint i;
 
-   assert(i <= 3);
+   lp_setup_reset( setup );
 
-   setup->coef.dadx[0][i] = dadx;
-   setup->coef.dady[0][i] = dady;
+   util_unreference_framebuffer_state(&setup->fb);
 
-   /* calculate a0 as the value which would be sampled for the
-    * fragment at (0,0), taking into account that we want to sample at
-    * pixel centers, in other words (pixel_offset, pixel_offset).
-    *
-    * this is neat but unfortunately not a good way to do things for
-    * triangles with very large values of dadx or dady as it will
-    * result in the subtraction and re-addition from a0 of a very
-    * large number, which means we'll end up loosing a lot of the
-    * fractional bits and precision from a0.  the way to fix this is
-    * to define a0 as the sample at a pixel center somewhere near vmin
-    * instead - i'll switch to this later.
-    */
-   setup->coef.a0[0][i] = (setup->vmin[vertSlot][i] -
-                           (dadx * (setup->vmin[0][0] - setup->pixel_offset) +
-                            dady * (setup->vmin[0][1] - setup->pixel_offset)));
+   for (i = 0; i < ARRAY_SIZE(setup->fs.current_tex); i++) {
+      pipe_resource_reference(&setup->fs.current_tex[i], NULL);
+   }
 
-   /*
-   debug_printf("attr[%d].%c: %f dx:%f dy:%f\n",
-                slot, "xyzw"[i],
-                setup->coef[slot].a0[i],
-                setup->coef[slot].dadx[i],
-                setup->coef[slot].dady[i]);
-   */
+   for (i = 0; i < ARRAY_SIZE(setup->constants); i++) {
+      pipe_resource_reference(&setup->constants[i].current.buffer, NULL);
+   }
+
+   /* free the scenes in the 'empty' queue */
+   for (i = 0; i < ARRAY_SIZE(setup->scenes); i++) {
+      struct lp_scene *scene = setup->scenes[i];
+
+      if (scene->fence)
+         lp_fence_wait(scene->fence);
+
+      lp_scene_destroy(scene);
+   }
+
+   lp_fence_reference(&setup->last_fence, NULL);
+
+   FREE( setup );
 }
 
 
 /**
- * Compute a0 for a constant-valued coefficient (GL_FLAT shading).
- * The value value comes from vertex[slot][i].
- * The result will be put into setup->coef[slot].a0[i].
- * \param slot  which attribute slot
- * \param i  which component of the slot (0..3)
+ * Create a new primitive tiling engine.  Plug it into the backend of
+ * the draw module.  Currently also creates a rasterizer to use with
+ * it.
  */
-static void const_pos_coeff( struct setup_context *setup,
-                             uint vertSlot, unsigned i)
+struct lp_setup_context *
+lp_setup_create( struct pipe_context *pipe,
+                 struct draw_context *draw )
 {
-   setup->coef.dadx[0][i] = 0;
-   setup->coef.dady[0][i] = 0;
-
-   /* need provoking vertex info!
-    */
-   setup->coef.a0[0][i] = setup->vprovoke[vertSlot][i];
-}
-
-
-/**
- * Compute a0 for a constant-valued coefficient (GL_FLAT shading).
- * The value value comes from vertex[slot][i].
- * The result will be put into setup->coef[slot].a0[i].
- * \param slot  which attribute slot
- * \param i  which component of the slot (0..3)
- */
-static void const_coeff( struct setup_context *setup,
-                         unsigned attrib,
-                         uint vertSlot)
-{
+   struct llvmpipe_screen *screen = llvmpipe_screen(pipe->screen);
+   struct lp_setup_context *setup;
    unsigned i;
-   for (i = 0; i < NUM_CHANNELS; ++i) {
-      setup->coef.dadx[1 + attrib][i] = 0;
-      setup->coef.dady[1 + attrib][i] = 0;
 
-      /* need provoking vertex info!
-       */
-      setup->coef.a0[1 + attrib][i] = setup->vprovoke[vertSlot][i];
-   }
-}
-
-
-/**
- * Compute a0, dadx and dady for a linearly interpolated coefficient,
- * for a triangle.
- */
-static void tri_linear_coeff( struct setup_context *setup,
-                              unsigned attrib,
-                              uint vertSlot)
-{
-   unsigned i;
-   for (i = 0; i < NUM_CHANNELS; ++i) {
-      float botda = setup->vmid[vertSlot][i] - setup->vmin[vertSlot][i];
-      float majda = setup->vmax[vertSlot][i] - setup->vmin[vertSlot][i];
-      float a = setup->ebot.dy * majda - botda * setup->emaj.dy;
-      float b = setup->emaj.dx * botda - majda * setup->ebot.dx;
-      float dadx = a * setup->oneoverarea;
-      float dady = b * setup->oneoverarea;
-
-      assert(i <= 3);
-
-      setup->coef.dadx[1 + attrib][i] = dadx;
-      setup->coef.dady[1 + attrib][i] = dady;
-
-      /* calculate a0 as the value which would be sampled for the
-       * fragment at (0,0), taking into account that we want to sample at
-       * pixel centers, in other words (0.5, 0.5).
-       *
-       * this is neat but unfortunately not a good way to do things for
-       * triangles with very large values of dadx or dady as it will
-       * result in the subtraction and re-addition from a0 of a very
-       * large number, which means we'll end up loosing a lot of the
-       * fractional bits and precision from a0.  the way to fix this is
-       * to define a0 as the sample at a pixel center somewhere near vmin
-       * instead - i'll switch to this later.
-       */
-      setup->coef.a0[1 + attrib][i] = (setup->vmin[vertSlot][i] -
-                     (dadx * (setup->vmin[0][0] - setup->pixel_offset) +
-                      dady * (setup->vmin[0][1] - setup->pixel_offset)));
-
-      /*
-      debug_printf("attr[%d].%c: %f dx:%f dy:%f\n",
-                   slot, "xyzw"[i],
-                   setup->coef[slot].a0[i],
-                   setup->coef[slot].dadx[i],
-                   setup->coef[slot].dady[i]);
-      */
-   }
-}
-
-
-/**
- * Compute a0, dadx and dady for a perspective-corrected interpolant,
- * for a triangle.
- * We basically multiply the vertex value by 1/w before computing
- * the plane coefficients (a0, dadx, dady).
- * Later, when we compute the value at a particular fragment position we'll
- * divide the interpolated value by the interpolated W at that fragment.
- */
-static void tri_persp_coeff( struct setup_context *setup,
-                             unsigned attrib,
-                             uint vertSlot)
-{
-   unsigned i;
-   for (i = 0; i < NUM_CHANNELS; ++i) {
-      /* premultiply by 1/w  (v[0][3] is always W):
-       */
-      float mina = setup->vmin[vertSlot][i] * setup->vmin[0][3];
-      float mida = setup->vmid[vertSlot][i] * setup->vmid[0][3];
-      float maxa = setup->vmax[vertSlot][i] * setup->vmax[0][3];
-      float botda = mida - mina;
-      float majda = maxa - mina;
-      float a = setup->ebot.dy * majda - botda * setup->emaj.dy;
-      float b = setup->emaj.dx * botda - majda * setup->ebot.dx;
-      float dadx = a * setup->oneoverarea;
-      float dady = b * setup->oneoverarea;
-
-      /*
-      debug_printf("tri persp %d,%d: %f %f %f\n", vertSlot, i,
-                   setup->vmin[vertSlot][i],
-                   setup->vmid[vertSlot][i],
-                   setup->vmax[vertSlot][i]
-             );
-      */
-      assert(i <= 3);
-
-      setup->coef.dadx[1 + attrib][i] = dadx;
-      setup->coef.dady[1 + attrib][i] = dady;
-      setup->coef.a0[1 + attrib][i] = (mina -
-                     (dadx * (setup->vmin[0][0] - setup->pixel_offset) +
-                      dady * (setup->vmin[0][1] - setup->pixel_offset)));
-   }
-}
-
-
-/**
- * Special coefficient setup for gl_FragCoord.
- * X and Y are trivial, though Y has to be inverted for OpenGL.
- * Z and W are copied from posCoef which should have already been computed.
- * We could do a bit less work if we'd examine gl_FragCoord's swizzle mask.
- */
-static void
-setup_fragcoord_coeff(struct setup_context *setup, uint slot)
-{
-   /*X*/
-   setup->coef.a0[1 + slot][0] = 0;
-   setup->coef.dadx[1 + slot][0] = 1.0;
-   setup->coef.dady[1 + slot][0] = 0.0;
-   /*Y*/
-   setup->coef.a0[1 + slot][1] = 0.0;
-   setup->coef.dadx[1 + slot][1] = 0.0;
-   setup->coef.dady[1 + slot][1] = 1.0;
-   /*Z*/
-   setup->coef.a0[1 + slot][2] = setup->coef.a0[0][2];
-   setup->coef.dadx[1 + slot][2] = setup->coef.dadx[0][2];
-   setup->coef.dady[1 + slot][2] = setup->coef.dady[0][2];
-   /*W*/
-   setup->coef.a0[1 + slot][3] = setup->coef.a0[0][3];
-   setup->coef.dadx[1 + slot][3] = setup->coef.dadx[0][3];
-   setup->coef.dady[1 + slot][3] = setup->coef.dady[0][3];
-}
-
-
-
-/**
- * Compute the setup->coef[] array dadx, dady, a0 values.
- * Must be called after setup->vmin,vmid,vmax,vprovoke are initialized.
- */
-static void setup_tri_coefficients( struct setup_context *setup )
-{
-   struct llvmpipe_context *llvmpipe = setup->llvmpipe;
-   const struct lp_fragment_shader *lpfs = llvmpipe->fs;
-   const struct vertex_info *vinfo = llvmpipe_get_vertex_info(llvmpipe);
-   uint fragSlot;
-
-   /* z and w are done by linear interpolation:
-    */
-   tri_pos_coeff(setup, 0, 2);
-   tri_pos_coeff(setup, 0, 3);
-
-   /* setup interpolation for all the remaining attributes:
-    */
-   for (fragSlot = 0; fragSlot < lpfs->info.num_inputs; fragSlot++) {
-      const uint vertSlot = vinfo->attrib[fragSlot].src_index;
-
-      switch (vinfo->attrib[fragSlot].interp_mode) {
-      case INTERP_CONSTANT:
-         const_coeff(setup, fragSlot, vertSlot);
-         break;
-      case INTERP_LINEAR:
-         tri_linear_coeff(setup, fragSlot, vertSlot);
-         break;
-      case INTERP_PERSPECTIVE:
-         tri_persp_coeff(setup, fragSlot, vertSlot);
-         break;
-      case INTERP_POS:
-         setup_fragcoord_coeff(setup, fragSlot);
-         break;
-      default:
-         assert(0);
-      }
-
-      if (lpfs->info.input_semantic_name[fragSlot] == TGSI_SEMANTIC_FACE) {
-         setup->coef.a0[1 + fragSlot][0] = 1.0f - setup->facing;
-         setup->coef.dadx[1 + fragSlot][0] = 0.0;
-         setup->coef.dady[1 + fragSlot][0] = 0.0;
-      }
-   }
-}
-
-
-
-static void setup_tri_edges( struct setup_context *setup )
-{
-   float vmin_x = setup->vmin[0][0] + setup->pixel_offset;
-   float vmid_x = setup->vmid[0][0] + setup->pixel_offset;
-
-   float vmin_y = setup->vmin[0][1] - setup->pixel_offset;
-   float vmid_y = setup->vmid[0][1] - setup->pixel_offset;
-   float vmax_y = setup->vmax[0][1] - setup->pixel_offset;
-
-   setup->emaj.sy = ceilf(vmin_y);
-   setup->emaj.lines = (int) ceilf(vmax_y - setup->emaj.sy);
-   setup->emaj.dxdy = setup->emaj.dx / setup->emaj.dy;
-   setup->emaj.sx = vmin_x + (setup->emaj.sy - vmin_y) * setup->emaj.dxdy;
-
-   setup->etop.sy = ceilf(vmid_y);
-   setup->etop.lines = (int) ceilf(vmax_y - setup->etop.sy);
-   setup->etop.dxdy = setup->etop.dx / setup->etop.dy;
-   setup->etop.sx = vmid_x + (setup->etop.sy - vmid_y) * setup->etop.dxdy;
-
-   setup->ebot.sy = ceilf(vmin_y);
-   setup->ebot.lines = (int) ceilf(vmid_y - setup->ebot.sy);
-   setup->ebot.dxdy = setup->ebot.dx / setup->ebot.dy;
-   setup->ebot.sx = vmin_x + (setup->ebot.sy - vmin_y) * setup->ebot.dxdy;
-}
-
-
-/**
- * Render the upper or lower half of a triangle.
- * Scissoring/cliprect is applied here too.
- */
-static void subtriangle( struct setup_context *setup,
-			 struct edge *eleft,
-			 struct edge *eright,
-			 unsigned lines )
-{
-   const struct pipe_scissor_state *cliprect = &setup->llvmpipe->cliprect;
-   const int minx = (int) cliprect->minx;
-   const int maxx = (int) cliprect->maxx;
-   const int miny = (int) cliprect->miny;
-   const int maxy = (int) cliprect->maxy;
-   int y, start_y, finish_y;
-   int sy = (int)eleft->sy;
-
-   assert((int)eleft->sy == (int) eright->sy);
-
-   /* clip top/bottom */
-   start_y = sy;
-   if (start_y < miny)
-      start_y = miny;
-
-   finish_y = sy + lines;
-   if (finish_y > maxy)
-      finish_y = maxy;
-
-   start_y -= sy;
-   finish_y -= sy;
-
-   /*
-   debug_printf("%s %d %d\n", __FUNCTION__, start_y, finish_y);
-   */
-
-   for (y = start_y; y < finish_y; y++) {
-
-      /* avoid accumulating adds as floats don't have the precision to
-       * accurately iterate large triangle edges that way.  luckily we
-       * can just multiply these days.
-       *
-       * this is all drowned out by the attribute interpolation anyway.
-       */
-      int left = (int)(eleft->sx + y * eleft->dxdy);
-      int right = (int)(eright->sx + y * eright->dxdy);
-
-      /* clip left/right */
-      if (left < minx)
-         left = minx;
-      if (right > maxx)
-         right = maxx;
-
-      if (left < right) {
-         int _y = sy + y;
-         if (block(_y) != setup->span.y) {
-            flush_spans(setup);
-            setup->span.y = block(_y);
-         }
-
-         setup->span.left[_y&1] = left;
-         setup->span.right[_y&1] = right;
-      }
+   setup = CALLOC_STRUCT(lp_setup_context);
+   if (!setup) {
+      goto no_setup;
    }
 
-
-   /* save the values so that emaj can be restarted:
-    */
-   eleft->sx += lines * eleft->dxdy;
-   eright->sx += lines * eright->dxdy;
-   eleft->sy += lines;
-   eright->sy += lines;
-}
-
-
-/**
- * Recalculate prim's determinant.  This is needed as we don't have
- * get this information through the vbuf_render interface & we must
- * calculate it here.
- */
-static float
-calc_det( const float (*v0)[4],
-          const float (*v1)[4],
-          const float (*v2)[4] )
-{
-   /* edge vectors e = v0 - v2, f = v1 - v2 */
-   const float ex = v0[0][0] - v2[0][0];
-   const float ey = v0[0][1] - v2[0][1];
-   const float fx = v1[0][0] - v2[0][0];
-   const float fy = v1[0][1] - v2[0][1];
-
-   /* det = cross(e,f).z */
-   return ex * fy - ey * fx;
-}
-
-
-/**
- * Do setup for triangle rasterization, then render the triangle.
- */
-void llvmpipe_setup_tri( struct setup_context *setup,
-                const float (*v0)[4],
-                const float (*v1)[4],
-                const float (*v2)[4] )
-{
-   float det;
-
-#if DEBUG_VERTS
-   debug_printf("Setup triangle:\n");
-   print_vertex(setup, v0);
-   print_vertex(setup, v1);
-   print_vertex(setup, v2);
-#endif
-
-   if (setup->llvmpipe->no_rast)
-      return;
+   lp_setup_init_vbuf(setup);
    
-   det = calc_det(v0, v1, v2);
-   /*
-   debug_printf("%s\n", __FUNCTION__ );
-   */
-
-#if DEBUG_FRAGS
-   setup->numFragsEmitted = 0;
-   setup->numFragsWritten = 0;
-#endif
-
-   if (cull_tri( setup, det ))
-      return;
-
-   if (!setup_sort_vertices( setup, det, v0, v1, v2 ))
-      return;
-   setup_tri_coefficients( setup );
-   setup_tri_edges( setup );
-
-   assert(setup->llvmpipe->reduced_prim == PIPE_PRIM_TRIANGLES);
-
-   setup->span.y = 0;
-   setup->span.right[0] = 0;
-   setup->span.right[1] = 0;
-   /*   setup->span.z_mode = tri_z_mode( setup->ctx ); */
-
-   /*   init_constant_attribs( setup ); */
-
-   if (setup->oneoverarea < 0.0) {
-      /* emaj on left:
-       */
-      subtriangle( setup, &setup->emaj, &setup->ebot, setup->ebot.lines );
-      subtriangle( setup, &setup->emaj, &setup->etop, setup->etop.lines );
-   }
-   else {
-      /* emaj on right:
-       */
-      subtriangle( setup, &setup->ebot, &setup->emaj, setup->ebot.lines );
-      subtriangle( setup, &setup->etop, &setup->emaj, setup->etop.lines );
-   }
-
-   flush_spans( setup );
-
-#if DEBUG_FRAGS
-   printf("Tri: %u frags emitted, %u written\n",
-          setup->numFragsEmitted,
-          setup->numFragsWritten);
-#endif
-}
-
-
-
-/**
- * Compute a0, dadx and dady for a linearly interpolated coefficient,
- * for a line.
- */
-static void
-linear_pos_coeff(struct setup_context *setup,
-                 uint vertSlot, uint i)
-{
-   const float da = setup->vmax[vertSlot][i] - setup->vmin[vertSlot][i];
-   const float dadx = da * setup->emaj.dx * setup->oneoverarea;
-   const float dady = da * setup->emaj.dy * setup->oneoverarea;
-   setup->coef.dadx[0][i] = dadx;
-   setup->coef.dady[0][i] = dady;
-   setup->coef.a0[0][i] = (setup->vmin[vertSlot][i] -
-                           (dadx * (setup->vmin[0][0] - setup->pixel_offset) +
-                            dady * (setup->vmin[0][1] - setup->pixel_offset)));
-}
-
-
-/**
- * Compute a0, dadx and dady for a linearly interpolated coefficient,
- * for a line.
- */
-static void
-line_linear_coeff(struct setup_context *setup,
-                  unsigned attrib,
-                  uint vertSlot)
-{
-   unsigned i;
-   for (i = 0; i < NUM_CHANNELS; ++i) {
-      const float da = setup->vmax[vertSlot][i] - setup->vmin[vertSlot][i];
-      const float dadx = da * setup->emaj.dx * setup->oneoverarea;
-      const float dady = da * setup->emaj.dy * setup->oneoverarea;
-      setup->coef.dadx[1 + attrib][i] = dadx;
-      setup->coef.dady[1 + attrib][i] = dady;
-      setup->coef.a0[1 + attrib][i] = (setup->vmin[vertSlot][i] -
-                     (dadx * (setup->vmin[0][0] - setup->pixel_offset) +
-                      dady * (setup->vmin[0][1] - setup->pixel_offset)));
-   }
-}
-
-
-/**
- * Compute a0, dadx and dady for a perspective-corrected interpolant,
- * for a line.
- */
-static void
-line_persp_coeff(struct setup_context *setup,
-                 unsigned attrib,
-                 uint vertSlot)
-{
-   unsigned i;
-   for (i = 0; i < NUM_CHANNELS; ++i) {
-      /* XXX double-check/verify this arithmetic */
-      const float a0 = setup->vmin[vertSlot][i] * setup->vmin[0][3];
-      const float a1 = setup->vmax[vertSlot][i] * setup->vmax[0][3];
-      const float da = a1 - a0;
-      const float dadx = da * setup->emaj.dx * setup->oneoverarea;
-      const float dady = da * setup->emaj.dy * setup->oneoverarea;
-      setup->coef.dadx[1 + attrib][i] = dadx;
-      setup->coef.dady[1 + attrib][i] = dady;
-      setup->coef.a0[1 + attrib][i] = (setup->vmin[vertSlot][i] -
-                     (dadx * (setup->vmin[0][0] - setup->pixel_offset) +
-                      dady * (setup->vmin[0][1] - setup->pixel_offset)));
-   }
-}
-
-
-/**
- * Compute the setup->coef[] array dadx, dady, a0 values.
- * Must be called after setup->vmin,vmax are initialized.
- */
-static INLINE boolean
-setup_line_coefficients(struct setup_context *setup,
-                        const float (*v0)[4],
-                        const float (*v1)[4])
-{
-   struct llvmpipe_context *llvmpipe = setup->llvmpipe;
-   const struct lp_fragment_shader *lpfs = llvmpipe->fs;
-   const struct vertex_info *vinfo = llvmpipe_get_vertex_info(llvmpipe);
-   uint fragSlot;
-   float area;
-
-   /* use setup->vmin, vmax to point to vertices */
-   if (llvmpipe->rasterizer->flatshade_first)
-      setup->vprovoke = v0;
-   else
-      setup->vprovoke = v1;
-   setup->vmin = v0;
-   setup->vmax = v1;
-
-   setup->emaj.dx = setup->vmax[0][0] - setup->vmin[0][0];
-   setup->emaj.dy = setup->vmax[0][1] - setup->vmin[0][1];
-
-   /* NOTE: this is not really area but something proportional to it */
-   area = setup->emaj.dx * setup->emaj.dx + setup->emaj.dy * setup->emaj.dy;
-   if (area == 0.0f || util_is_inf_or_nan(area))
-      return FALSE;
-   setup->oneoverarea = 1.0f / area;
-
-   /* z and w are done by linear interpolation:
+   /* Used only in update_state():
     */
-   linear_pos_coeff(setup, 0, 2);
-   linear_pos_coeff(setup, 0, 3);
-
-   /* setup interpolation for all the remaining attributes:
-    */
-   for (fragSlot = 0; fragSlot < lpfs->info.num_inputs; fragSlot++) {
-      const uint vertSlot = vinfo->attrib[fragSlot].src_index;
-
-      switch (vinfo->attrib[fragSlot].interp_mode) {
-      case INTERP_CONSTANT:
-         const_coeff(setup, fragSlot, vertSlot);
-         break;
-      case INTERP_LINEAR:
-         line_linear_coeff(setup, fragSlot, vertSlot);
-         break;
-      case INTERP_PERSPECTIVE:
-         line_persp_coeff(setup, fragSlot, vertSlot);
-         break;
-      case INTERP_POS:
-         setup_fragcoord_coeff(setup, fragSlot);
-         break;
-      default:
-         assert(0);
-      }
-
-      if (lpfs->info.input_semantic_name[fragSlot] == TGSI_SEMANTIC_FACE) {
-         setup->coef.a0[1 + fragSlot][0] = 1.0f - setup->facing;
-         setup->coef.dadx[1 + fragSlot][0] = 0.0;
-         setup->coef.dady[1 + fragSlot][0] = 0.0;
-      }
-   }
-   return TRUE;
-}
+   setup->pipe = pipe;
 
 
-/**
- * Plot a pixel in a line segment.
- */
-static INLINE void
-plot(struct setup_context *setup, int x, int y)
-{
-   const int iy = y & 1;
-   const int ix = x & 1;
-   const int quadX = x - ix;
-   const int quadY = y - iy;
-   const int mask = (1 << ix) << (2 * iy);
-
-   if (quadX != setup->quad[0].input.x0 ||
-       quadY != setup->quad[0].input.y0)
-   {
-      /* flush prev quad, start new quad */
-
-      if (setup->quad[0].input.x0 != -1)
-         clip_emit_quad( setup, &setup->quad[0] );
-
-      setup->quad[0].input.x0 = quadX;
-      setup->quad[0].input.y0 = quadY;
-      setup->quad[0].inout.mask = 0x0;
+   setup->num_threads = screen->num_threads;
+   setup->vbuf = draw_vbuf_stage(draw, &setup->base);
+   if (!setup->vbuf) {
+      goto no_vbuf;
    }
 
-   setup->quad[0].inout.mask |= mask;
-}
+   draw_set_rasterize_stage(draw, setup->vbuf);
+   draw_set_render(draw, &setup->base);
 
-
-/**
- * Do setup for line rasterization, then render the line.
- * Single-pixel width, no stipple, etc.  We rely on the 'draw' module
- * to handle stippling and wide lines.
- */
-void
-llvmpipe_setup_line(struct setup_context *setup,
-           const float (*v0)[4],
-           const float (*v1)[4])
-{
-   int x0 = (int) v0[0][0];
-   int x1 = (int) v1[0][0];
-   int y0 = (int) v0[0][1];
-   int y1 = (int) v1[0][1];
-   int dx = x1 - x0;
-   int dy = y1 - y0;
-   int xstep, ystep;
-
-#if DEBUG_VERTS
-   debug_printf("Setup line:\n");
-   print_vertex(setup, v0);
-   print_vertex(setup, v1);
-#endif
-
-   if (setup->llvmpipe->no_rast)
-      return;
-
-   if (dx == 0 && dy == 0)
-      return;
-
-   if (!setup_line_coefficients(setup, v0, v1))
-      return;
-
-   assert(v0[0][0] < 1.0e9);
-   assert(v0[0][1] < 1.0e9);
-   assert(v1[0][0] < 1.0e9);
-   assert(v1[0][1] < 1.0e9);
-
-   if (dx < 0) {
-      dx = -dx;   /* make positive */
-      xstep = -1;
-   }
-   else {
-      xstep = 1;
-   }
-
-   if (dy < 0) {
-      dy = -dy;   /* make positive */
-      ystep = -1;
-   }
-   else {
-      ystep = 1;
-   }
-
-   assert(dx >= 0);
-   assert(dy >= 0);
-   assert(setup->llvmpipe->reduced_prim == PIPE_PRIM_LINES);
-
-   setup->quad[0].input.x0 = setup->quad[0].input.y0 = -1;
-   setup->quad[0].inout.mask = 0x0;
-
-   /* XXX temporary: set coverage to 1.0 so the line appears
-    * if AA mode happens to be enabled.
-    */
-   setup->quad[0].input.coverage[0] =
-   setup->quad[0].input.coverage[1] =
-   setup->quad[0].input.coverage[2] =
-   setup->quad[0].input.coverage[3] = 1.0;
-
-   if (dx > dy) {
-      /*** X-major line ***/
-      int i;
-      const int errorInc = dy + dy;
-      int error = errorInc - dx;
-      const int errorDec = error - dx;
-
-      for (i = 0; i < dx; i++) {
-         plot(setup, x0, y0);
-
-         x0 += xstep;
-         if (error < 0) {
-            error += errorInc;
-         }
-         else {
-            error += errorDec;
-            y0 += ystep;
-         }
-      }
-   }
-   else {
-      /*** Y-major line ***/
-      int i;
-      const int errorInc = dx + dx;
-      int error = errorInc - dy;
-      const int errorDec = error - dy;
-
-      for (i = 0; i < dy; i++) {
-         plot(setup, x0, y0);
-
-         y0 += ystep;
-         if (error < 0) {
-            error += errorInc;
-         }
-         else {
-            error += errorDec;
-            x0 += xstep;
-         }
+   /* create some empty scenes */
+   for (i = 0; i < MAX_SCENES; i++) {
+      setup->scenes[i] = lp_scene_create( pipe );
+      if (!setup->scenes[i]) {
+         goto no_scenes;
       }
    }
 
-   /* draw final quad */
-   if (setup->quad[0].inout.mask) {
-      clip_emit_quad( setup, &setup->quad[0] );
-   }
-}
-
-
-static void
-point_persp_coeff(struct setup_context *setup,
-                  const float (*vert)[4],
-                  unsigned attrib,
-                  uint vertSlot)
-{
-   unsigned i;
-   for(i = 0; i < NUM_CHANNELS; ++i) {
-      setup->coef.dadx[1 + attrib][i] = 0.0F;
-      setup->coef.dady[1 + attrib][i] = 0.0F;
-      setup->coef.a0[1 + attrib][i] = vert[vertSlot][i] * vert[0][3];
-   }
-}
-
-
-/**
- * Do setup for point rasterization, then render the point.
- * Round or square points...
- * XXX could optimize a lot for 1-pixel points.
- */
-void
-llvmpipe_setup_point( struct setup_context *setup,
-             const float (*v0)[4] )
-{
-   struct llvmpipe_context *llvmpipe = setup->llvmpipe;
-   const struct lp_fragment_shader *lpfs = llvmpipe->fs;
-   const int sizeAttr = setup->llvmpipe->psize_slot;
-   const float size
-      = sizeAttr > 0 ? v0[sizeAttr][0]
-      : setup->llvmpipe->rasterizer->point_size;
-   const float halfSize = 0.5F * size;
-   const boolean round = (boolean) setup->llvmpipe->rasterizer->point_smooth;
-   const float x = v0[0][0];  /* Note: data[0] is always position */
-   const float y = v0[0][1];
-   const struct vertex_info *vinfo = llvmpipe_get_vertex_info(llvmpipe);
-   uint fragSlot;
-
-#if DEBUG_VERTS
-   debug_printf("Setup point:\n");
-   print_vertex(setup, v0);
-#endif
-
-   if (llvmpipe->no_rast)
-      return;
-
-   assert(setup->llvmpipe->reduced_prim == PIPE_PRIM_POINTS);
-
-   /* For points, all interpolants are constant-valued.
-    * However, for point sprites, we'll need to setup texcoords appropriately.
-    * XXX: which coefficients are the texcoords???
-    * We may do point sprites as textured quads...
-    *
-    * KW: We don't know which coefficients are texcoords - ultimately
-    * the choice of what interpolation mode to use for each attribute
-    * should be determined by the fragment program, using
-    * per-attribute declaration statements that include interpolation
-    * mode as a parameter.  So either the fragment program will have
-    * to be adjusted for pointsprite vs normal point behaviour, or
-    * otherwise a special interpolation mode will have to be defined
-    * which matches the required behaviour for point sprites.  But -
-    * the latter is not a feature of normal hardware, and as such
-    * probably should be ruled out on that basis.
-    */
-   setup->vprovoke = v0;
-
-   /* setup Z, W */
-   const_pos_coeff(setup, 0, 2);
-   const_pos_coeff(setup, 0, 3);
-
-   for (fragSlot = 0; fragSlot < lpfs->info.num_inputs; fragSlot++) {
-      const uint vertSlot = vinfo->attrib[fragSlot].src_index;
-
-      switch (vinfo->attrib[fragSlot].interp_mode) {
-      case INTERP_CONSTANT:
-         /* fall-through */
-      case INTERP_LINEAR:
-         const_coeff(setup, fragSlot, vertSlot);
-         break;
-      case INTERP_PERSPECTIVE:
-         point_persp_coeff(setup, setup->vprovoke, fragSlot, vertSlot);
-         break;
-      case INTERP_POS:
-         setup_fragcoord_coeff(setup, fragSlot);
-         break;
-      default:
-         assert(0);
-      }
-
-      if (lpfs->info.input_semantic_name[fragSlot] == TGSI_SEMANTIC_FACE) {
-         setup->coef.a0[1 + fragSlot][0] = 1.0f - setup->facing;
-         setup->coef.dadx[1 + fragSlot][0] = 0.0;
-         setup->coef.dady[1 + fragSlot][0] = 0.0;
-      }
-   }
-
-
-   if (halfSize <= 0.5 && !round) {
-      /* special case for 1-pixel points */
-      const int ix = ((int) x) & 1;
-      const int iy = ((int) y) & 1;
-      setup->quad[0].input.x0 = (int) x - ix;
-      setup->quad[0].input.y0 = (int) y - iy;
-      setup->quad[0].inout.mask = (1 << ix) << (2 * iy);
-      clip_emit_quad( setup, &setup->quad[0] );
-   }
-   else {
-      if (round) {
-         /* rounded points */
-         const int ixmin = block((int) (x - halfSize));
-         const int ixmax = block((int) (x + halfSize));
-         const int iymin = block((int) (y - halfSize));
-         const int iymax = block((int) (y + halfSize));
-         const float rmin = halfSize - 0.7071F;  /* 0.7071 = sqrt(2)/2 */
-         const float rmax = halfSize + 0.7071F;
-         const float rmin2 = MAX2(0.0F, rmin * rmin);
-         const float rmax2 = rmax * rmax;
-         const float cscale = 1.0F / (rmax2 - rmin2);
-         int ix, iy;
-
-         for (iy = iymin; iy <= iymax; iy += 2) {
-            for (ix = ixmin; ix <= ixmax; ix += 2) {
-               float dx, dy, dist2, cover;
-
-               setup->quad[0].inout.mask = 0x0;
-
-               dx = (ix + 0.5f) - x;
-               dy = (iy + 0.5f) - y;
-               dist2 = dx * dx + dy * dy;
-               if (dist2 <= rmax2) {
-                  cover = 1.0F - (dist2 - rmin2) * cscale;
-                  setup->quad[0].input.coverage[QUAD_TOP_LEFT] = MIN2(cover, 1.0f);
-                  setup->quad[0].inout.mask |= MASK_TOP_LEFT;
-               }
-
-               dx = (ix + 1.5f) - x;
-               dy = (iy + 0.5f) - y;
-               dist2 = dx * dx + dy * dy;
-               if (dist2 <= rmax2) {
-                  cover = 1.0F - (dist2 - rmin2) * cscale;
-                  setup->quad[0].input.coverage[QUAD_TOP_RIGHT] = MIN2(cover, 1.0f);
-                  setup->quad[0].inout.mask |= MASK_TOP_RIGHT;
-               }
-
-               dx = (ix + 0.5f) - x;
-               dy = (iy + 1.5f) - y;
-               dist2 = dx * dx + dy * dy;
-               if (dist2 <= rmax2) {
-                  cover = 1.0F - (dist2 - rmin2) * cscale;
-                  setup->quad[0].input.coverage[QUAD_BOTTOM_LEFT] = MIN2(cover, 1.0f);
-                  setup->quad[0].inout.mask |= MASK_BOTTOM_LEFT;
-               }
-
-               dx = (ix + 1.5f) - x;
-               dy = (iy + 1.5f) - y;
-               dist2 = dx * dx + dy * dy;
-               if (dist2 <= rmax2) {
-                  cover = 1.0F - (dist2 - rmin2) * cscale;
-                  setup->quad[0].input.coverage[QUAD_BOTTOM_RIGHT] = MIN2(cover, 1.0f);
-                  setup->quad[0].inout.mask |= MASK_BOTTOM_RIGHT;
-               }
-
-               if (setup->quad[0].inout.mask) {
-                  setup->quad[0].input.x0 = ix;
-                  setup->quad[0].input.y0 = iy;
-                  clip_emit_quad( setup, &setup->quad[0] );
-               }
-            }
-         }
-      }
-      else {
-         /* square points */
-         const int xmin = (int) (x + 0.75 - halfSize);
-         const int ymin = (int) (y + 0.25 - halfSize);
-         const int xmax = xmin + (int) size;
-         const int ymax = ymin + (int) size;
-         /* XXX could apply scissor to xmin,ymin,xmax,ymax now */
-         const int ixmin = block(xmin);
-         const int ixmax = block(xmax - 1);
-         const int iymin = block(ymin);
-         const int iymax = block(ymax - 1);
-         int ix, iy;
-
-         /*
-         debug_printf("(%f, %f) -> X:%d..%d Y:%d..%d\n", x, y, xmin, xmax,ymin,ymax);
-         */
-         for (iy = iymin; iy <= iymax; iy += 2) {
-            uint rowMask = 0xf;
-            if (iy < ymin) {
-               /* above the top edge */
-               rowMask &= (MASK_BOTTOM_LEFT | MASK_BOTTOM_RIGHT);
-            }
-            if (iy + 1 >= ymax) {
-               /* below the bottom edge */
-               rowMask &= (MASK_TOP_LEFT | MASK_TOP_RIGHT);
-            }
-
-            for (ix = ixmin; ix <= ixmax; ix += 2) {
-               uint mask = rowMask;
-
-               if (ix < xmin) {
-                  /* fragment is past left edge of point, turn off left bits */
-                  mask &= (MASK_BOTTOM_RIGHT | MASK_TOP_RIGHT);
-               }
-               if (ix + 1 >= xmax) {
-                  /* past the right edge */
-                  mask &= (MASK_BOTTOM_LEFT | MASK_TOP_LEFT);
-               }
-
-               setup->quad[0].inout.mask = mask;
-               setup->quad[0].input.x0 = ix;
-               setup->quad[0].input.y0 = iy;
-               clip_emit_quad( setup, &setup->quad[0] );
-            }
-         }
-      }
-   }
-}
-
-void llvmpipe_setup_prepare( struct setup_context *setup )
-{
-   struct llvmpipe_context *lp = setup->llvmpipe;
-
-   if (lp->dirty) {
-      llvmpipe_update_derived(lp);
-   }
-
-   if (lp->reduced_api_prim == PIPE_PRIM_TRIANGLES &&
-       lp->rasterizer->fill_cw == PIPE_POLYGON_MODE_FILL &&
-       lp->rasterizer->fill_ccw == PIPE_POLYGON_MODE_FILL) {
-      /* we'll do culling */
-      setup->winding = lp->rasterizer->cull_mode;
-   }
-   else {
-      /* 'draw' will do culling */
-      setup->winding = PIPE_WINDING_NONE;
-   }
-}
-
-
-
-void llvmpipe_setup_destroy_context( struct setup_context *setup )
-{
-   align_free( setup );
-}
-
-
-/**
- * Create a new primitive setup/render stage.
- */
-struct setup_context *llvmpipe_setup_create_context( struct llvmpipe_context *llvmpipe )
-{
-   struct setup_context *setup;
-   unsigned i;
-
-   setup = align_malloc(sizeof(struct setup_context), 16);
-   if (!setup)
-      return NULL;
-
-   memset(setup, 0, sizeof *setup);
-   setup->llvmpipe = llvmpipe;
-
-   for (i = 0; i < MAX_QUADS; i++) {
-      setup->quad[i].coef = &setup->coef;
-   }
-
-   setup->span.left[0] = 1000000;     /* greater than right[0] */
-   setup->span.left[1] = 1000000;     /* greater than right[1] */
+   setup->triangle = first_triangle;
+   setup->line     = first_line;
+   setup->point    = first_point;
+   
+   setup->dirty = ~0;
 
    return setup;
+
+no_scenes:
+   for (i = 0; i < MAX_SCENES; i++) {
+      if (setup->scenes[i]) {
+         lp_scene_destroy(setup->scenes[i]);
+      }
+   }
+
+   setup->vbuf->destroy(setup->vbuf);
+no_vbuf:
+   FREE(setup);
+no_setup:
+   return NULL;
 }
+
+
+/**
+ * Put a BeginQuery command into all bins.
+ */
+void
+lp_setup_begin_query(struct lp_setup_context *setup,
+                     struct llvmpipe_query *pq)
+{
+
+   set_scene_state(setup, SETUP_ACTIVE, "begin_query");
+
+   if (!(pq->type == PIPE_QUERY_OCCLUSION_COUNTER ||
+         pq->type == PIPE_QUERY_OCCLUSION_PREDICATE ||
+         pq->type == PIPE_QUERY_PIPELINE_STATISTICS))
+      return;
+
+   /* init the query to its beginning state */
+   assert(setup->active_binned_queries < LP_MAX_ACTIVE_BINNED_QUERIES);
+   /* exceeding list size so just ignore the query */
+   if (setup->active_binned_queries >= LP_MAX_ACTIVE_BINNED_QUERIES) {
+      return;
+   }
+   assert(setup->active_queries[setup->active_binned_queries] == NULL);
+   setup->active_queries[setup->active_binned_queries] = pq;
+   setup->active_binned_queries++;
+
+   assert(setup->scene);
+   if (setup->scene) {
+      if (!lp_scene_bin_everywhere(setup->scene,
+                                   LP_RAST_OP_BEGIN_QUERY,
+                                   lp_rast_arg_query(pq))) {
+
+         if (!lp_setup_flush_and_restart(setup))
+            return;
+
+         if (!lp_scene_bin_everywhere(setup->scene,
+                                      LP_RAST_OP_BEGIN_QUERY,
+                                      lp_rast_arg_query(pq))) {
+            return;
+         }
+      }
+      setup->scene->had_queries |= TRUE;
+   }
+}
+
+
+/**
+ * Put an EndQuery command into all bins.
+ */
+void
+lp_setup_end_query(struct lp_setup_context *setup, struct llvmpipe_query *pq)
+{
+   set_scene_state(setup, SETUP_ACTIVE, "end_query");
+
+   assert(setup->scene);
+   if (setup->scene) {
+      /* pq->fence should be the fence of the *last* scene which
+       * contributed to the query result.
+       */
+      lp_fence_reference(&pq->fence, setup->scene->fence);
+
+      if (pq->type == PIPE_QUERY_OCCLUSION_COUNTER ||
+          pq->type == PIPE_QUERY_OCCLUSION_PREDICATE ||
+          pq->type == PIPE_QUERY_PIPELINE_STATISTICS ||
+          pq->type == PIPE_QUERY_TIMESTAMP) {
+         if (pq->type == PIPE_QUERY_TIMESTAMP &&
+               !(setup->scene->tiles_x | setup->scene->tiles_y)) {
+            /*
+             * If there's a zero width/height framebuffer, there's no bins and
+             * hence no rast task is ever run. So fill in something here instead.
+             */
+            pq->end[0] = os_time_get_nano();
+         }
+
+         if (!lp_scene_bin_everywhere(setup->scene,
+                                      LP_RAST_OP_END_QUERY,
+                                      lp_rast_arg_query(pq))) {
+            if (!lp_setup_flush_and_restart(setup))
+               goto fail;
+
+            if (!lp_scene_bin_everywhere(setup->scene,
+                                         LP_RAST_OP_END_QUERY,
+                                         lp_rast_arg_query(pq))) {
+               goto fail;
+            }
+         }
+         setup->scene->had_queries |= TRUE;
+      }
+   }
+   else {
+      lp_fence_reference(&pq->fence, setup->last_fence);
+   }
+
+fail:
+   /* Need to do this now not earlier since it still needs to be marked as
+    * active when binning it would cause a flush.
+    */
+   if (pq->type == PIPE_QUERY_OCCLUSION_COUNTER ||
+      pq->type == PIPE_QUERY_OCCLUSION_PREDICATE ||
+      pq->type == PIPE_QUERY_PIPELINE_STATISTICS) {
+      unsigned i;
+
+      /* remove from active binned query list */
+      for (i = 0; i < setup->active_binned_queries; i++) {
+         if (setup->active_queries[i] == pq)
+            break;
+      }
+      assert(i < setup->active_binned_queries);
+      if (i == setup->active_binned_queries)
+         return;
+      setup->active_binned_queries--;
+      setup->active_queries[i] = setup->active_queries[setup->active_binned_queries];
+      setup->active_queries[setup->active_binned_queries] = NULL;
+   }
+}
+
+
+boolean
+lp_setup_flush_and_restart(struct lp_setup_context *setup)
+{
+   if (0) debug_printf("%s\n", __FUNCTION__);
+
+   assert(setup->state == SETUP_ACTIVE);
+
+   if (!set_scene_state(setup, SETUP_FLUSHED, __FUNCTION__))
+      return FALSE;
+   
+   if (!lp_setup_update_state(setup, TRUE))
+      return FALSE;
+
+   return TRUE;
+}
+
 

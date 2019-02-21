@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,91 +18,87 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  * 
  **************************************************************************/
 
-/* Authors:  Keith Whitwell <keith@tungstengraphics.com>
+/* Authors:  Keith Whitwell <keithw@vmware.com>
  */
 
+#include "pipe/p_state.h"
+#include "util/u_inlines.h"
+#include "util/u_framebuffer.h"
+#include "util/u_surface.h"
 #include "lp_context.h"
+#include "lp_scene.h"
 #include "lp_state.h"
-#include "lp_tile_cache.h"
+#include "lp_setup.h"
 
 #include "draw/draw_context.h"
 
+#include "util/u_format.h"
+
 
 /**
- * XXX this might get moved someday
  * Set the framebuffer surface info: color buffers, zbuffer, stencil buffer.
- * Here, we flush the old surfaces and update the tile cache to point to the new
- * surfaces.
  */
 void
 llvmpipe_set_framebuffer_state(struct pipe_context *pipe,
                                const struct pipe_framebuffer_state *fb)
 {
    struct llvmpipe_context *lp = llvmpipe_context(pipe);
-   uint i;
 
-   draw_flush(lp->draw);
+   boolean changed = !util_framebuffer_state_equal(&lp->framebuffer, fb);
+   unsigned i;
 
-   for (i = 0; i < PIPE_MAX_COLOR_BUFS; i++) {
-      /* check if changing cbuf */
-      if (lp->framebuffer.cbufs[i] != fb->cbufs[i]) {
-         /* flush old */
-         lp_tile_cache_map_transfers(lp->cbuf_cache[i]);
-         lp_flush_tile_cache(lp->cbuf_cache[i]);
+   assert(fb->width <= LP_MAX_WIDTH);
+   assert(fb->height <= LP_MAX_HEIGHT);
 
-         /* assign new */
-         pipe_surface_reference(&lp->framebuffer.cbufs[i], fb->cbufs[i]);
+   if (changed) {
+      /*
+       * If no depth buffer is bound, send the utility function the default
+       * format for no bound depth (PIPE_FORMAT_NONE).
+       */ 
+      enum pipe_format depth_format = fb->zsbuf ?
+         fb->zsbuf->format : PIPE_FORMAT_NONE;
+      const struct util_format_description *depth_desc =
+         util_format_description(depth_format);
 
-         /* update cache */
-         lp_tile_cache_set_surface(lp->cbuf_cache[i], fb->cbufs[i]);
+      if (lp->framebuffer.zsbuf && lp->framebuffer.zsbuf->context != pipe) {
+         debug_printf("Illegal setting of fb state with zsbuf created in "
+                       "another context\n");
       }
+      for (i = 0; i < fb->nr_cbufs; i++) {
+         if (lp->framebuffer.cbufs[i] &&
+             lp->framebuffer.cbufs[i]->context != pipe) {
+            debug_printf("Illegal setting of fb state with cbuf %d created in "
+                          "another context\n", i);
+         }
+      }
+
+      util_copy_framebuffer_state(&lp->framebuffer, fb);
+
+      if (LP_PERF & PERF_NO_DEPTH) {
+         pipe_surface_reference(&lp->framebuffer.zsbuf, NULL);
+      }
+
+      /*
+       * Calculate the floating point depth sense and Minimum Resolvable Depth
+       * value for the llvmpipe module. This is separate from the draw module.
+       */
+      lp->floating_point_depth =
+         (util_get_depth_format_type(depth_desc) == UTIL_FORMAT_TYPE_FLOAT);
+ 
+      lp->mrd = util_get_depth_format_mrd(depth_desc);
+
+      /* Tell the draw module how deep the Z/depth buffer is. */
+      draw_set_zs_format(lp->draw, depth_format);
+
+      lp_setup_bind_framebuffer( lp->setup, &lp->framebuffer );
+
+      lp->dirty |= LP_NEW_FRAMEBUFFER;
    }
-
-   lp->framebuffer.nr_cbufs = fb->nr_cbufs;
-
-   /* zbuf changing? */
-   if (lp->framebuffer.zsbuf != fb->zsbuf) {
-
-      if(lp->zsbuf_transfer) {
-         struct pipe_screen *screen = pipe->screen;
-
-         if(lp->zsbuf_map) {
-            screen->transfer_unmap(screen, lp->zsbuf_transfer);
-            lp->zsbuf_map = NULL;
-         }
-
-         screen->tex_transfer_destroy(lp->zsbuf_transfer);
-         lp->zsbuf_transfer = NULL;
-      }
-
-      /* assign new */
-      pipe_surface_reference(&lp->framebuffer.zsbuf, fb->zsbuf);
-
-      /* Tell draw module how deep the Z/depth buffer is */
-      if (lp->framebuffer.zsbuf) {
-         int depth_bits;
-         double mrd;
-         depth_bits = pf_get_component_bits(lp->framebuffer.zsbuf->format,
-                                            PIPE_FORMAT_COMP_Z);
-         if (depth_bits > 16) {
-            mrd = 0.0000001;
-         }
-         else {
-            mrd = 0.00002;
-         }
-         draw_set_mrd(lp->draw, mrd);
-      }
-   }
-
-   lp->framebuffer.width = fb->width;
-   lp->framebuffer.height = fb->height;
-
-   lp->dirty |= LP_NEW_FRAMEBUFFER;
 }

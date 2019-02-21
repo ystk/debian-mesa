@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  7.0
  *
  * Copyright (C) 1999-2007  Brian Paul   All Rights Reserved.
  *
@@ -17,9 +16,10 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 
@@ -31,8 +31,6 @@
  * The following macros may be defined to indicate what auxillary information
  * must be interplated along the line:
  *    INTERP_Z        - if defined, interpolate Z values
- *    INTERP_RGBA     - if defined, interpolate RGBA values
- *    INTERP_INDEX    - if defined, interpolate color index values
  *    INTERP_ATTRIBS  - if defined, interpolate attribs (texcoords, varying, etc)
  *
  * When one can directly address pixels in the color buffer the following
@@ -65,15 +63,15 @@
 
 
 static void
-NAME( GLcontext *ctx, const SWvertex *vert0, const SWvertex *vert1 )
+NAME( struct gl_context *ctx, const SWvertex *vert0, const SWvertex *vert1 )
 {
    const SWcontext *swrast = SWRAST_CONTEXT(ctx);
    SWspan span;
    GLuint interpFlags = 0;
-   GLint x0 = (GLint) vert0->attrib[FRAG_ATTRIB_WPOS][0];
-   GLint x1 = (GLint) vert1->attrib[FRAG_ATTRIB_WPOS][0];
-   GLint y0 = (GLint) vert0->attrib[FRAG_ATTRIB_WPOS][1];
-   GLint y1 = (GLint) vert1->attrib[FRAG_ATTRIB_WPOS][1];
+   GLint x0 = (GLint) vert0->attrib[VARYING_SLOT_POS][0];
+   GLint x1 = (GLint) vert1->attrib[VARYING_SLOT_POS][0];
+   GLint y0 = (GLint) vert0->attrib[VARYING_SLOT_POS][1];
+   GLint y1 = (GLint) vert1->attrib[VARYING_SLOT_POS][1];
    GLint dx, dy;
    GLint numPixels;
    GLint xstep, ystep;
@@ -86,7 +84,6 @@ NAME( GLcontext *ctx, const SWvertex *vert0, const SWvertex *vert1 )
    DEPTH_TYPE *zPtr;
 #elif defined(INTERP_Z)
    const GLint depthBits = ctx->DrawBuffer->Visual.depthBits;
-/*ctx->Visual.depthBits;*/
 #endif
 #ifdef PIXEL_ADDRESS
    PIXEL_TYPE *pixelPtr;
@@ -102,21 +99,21 @@ NAME( GLcontext *ctx, const SWvertex *vert0, const SWvertex *vert1 )
    /* Cull primitives with malformed coordinates.
     */
    {
-      GLfloat tmp = vert0->attrib[FRAG_ATTRIB_WPOS][0] + vert0->attrib[FRAG_ATTRIB_WPOS][1]
-                  + vert1->attrib[FRAG_ATTRIB_WPOS][0] + vert1->attrib[FRAG_ATTRIB_WPOS][1];
+      GLfloat tmp = vert0->attrib[VARYING_SLOT_POS][0] + vert0->attrib[VARYING_SLOT_POS][1]
+                  + vert1->attrib[VARYING_SLOT_POS][0] + vert1->attrib[VARYING_SLOT_POS][1];
       if (IS_INF_OR_NAN(tmp))
 	 return;
    }
 
    /*
-   printf("%s():\n", __FUNCTION__);
+   printf("%s():\n", __func__);
    printf(" (%f, %f, %f) -> (%f, %f, %f)\n",
-          vert0->attrib[FRAG_ATTRIB_WPOS][0],
-          vert0->attrib[FRAG_ATTRIB_WPOS][1],
-          vert0->attrib[FRAG_ATTRIB_WPOS][2],
-          vert1->attrib[FRAG_ATTRIB_WPOS][0],
-          vert1->attrib[FRAG_ATTRIB_WPOS][1],
-          vert1->attrib[FRAG_ATTRIB_WPOS][2]);
+          vert0->attrib[VARYING_SLOT_POS][0],
+          vert0->attrib[VARYING_SLOT_POS][1],
+          vert0->attrib[VARYING_SLOT_POS][2],
+          vert1->attrib[VARYING_SLOT_POS][0],
+          vert1->attrib[VARYING_SLOT_POS][1],
+          vert1->attrib[VARYING_SLOT_POS][2]);
    printf(" (%d, %d, %d) -> (%d, %d, %d)\n",
           vert0->color[0], vert0->color[1], vert0->color[2], 
           vert1->color[0], vert1->color[1], vert1->color[2]);
@@ -157,19 +154,19 @@ NAME( GLcontext *ctx, const SWvertex *vert0, const SWvertex *vert1 )
       return;
 
    /*
-   printf("%s %d,%d  %g %g %g %g  %g %g %g %g\n", __FUNCTION__, dx, dy,
-          vert0->attrib[FRAG_ATTRIB_COL1][0],
-          vert0->attrib[FRAG_ATTRIB_COL1][1],
-          vert0->attrib[FRAG_ATTRIB_COL1][2],
-          vert0->attrib[FRAG_ATTRIB_COL1][3],
-          vert1->attrib[FRAG_ATTRIB_COL1][0],
-          vert1->attrib[FRAG_ATTRIB_COL1][1],
-          vert1->attrib[FRAG_ATTRIB_COL1][2],
-          vert1->attrib[FRAG_ATTRIB_COL1][3]);
+   printf("%s %d,%d  %g %g %g %g  %g %g %g %g\n", __func__, dx, dy,
+          vert0->attrib[VARYING_SLOT_COL1][0],
+          vert0->attrib[VARYING_SLOT_COL1][1],
+          vert0->attrib[VARYING_SLOT_COL1][2],
+          vert0->attrib[VARYING_SLOT_COL1][3],
+          vert1->attrib[VARYING_SLOT_COL1][0],
+          vert1->attrib[VARYING_SLOT_COL1][1],
+          vert1->attrib[VARYING_SLOT_COL1][2],
+          vert1->attrib[VARYING_SLOT_COL1][3]);
    */
 
 #ifdef DEPTH_TYPE
-   zPtr = (DEPTH_TYPE *) zrb->GetPointer(ctx, zrb, x0, y0);
+   zPtr = (DEPTH_TYPE *) _swrast_pixel_address(zrb, x0, y0);
 #endif
 #ifdef PIXEL_ADDRESS
    pixelPtr = (PIXEL_TYPE *) PIXEL_ADDRESS(x0,y0);
@@ -215,15 +212,14 @@ NAME( GLcontext *ctx, const SWvertex *vert0, const SWvertex *vert1 )
 #endif
    }
 
-   ASSERT(dx >= 0);
-   ASSERT(dy >= 0);
+   assert(dx >= 0);
+   assert(dy >= 0);
 
    numPixels = MAX2(dx, dy);
 
    /*
     * Span setup: compute start and step values for all interpolated values.
     */
-#ifdef INTERP_RGBA
    interpFlags |= SPAN_RGBA;
    if (ctx->Light.ShadeModel == GL_SMOOTH) {
       span.red   = ChanToFixed(vert0->color[0]);
@@ -245,44 +241,31 @@ NAME( GLcontext *ctx, const SWvertex *vert0, const SWvertex *vert1 )
       span.blueStep  = 0;
       span.alphaStep = 0;
    }
-#endif
-#ifdef INTERP_INDEX
-   interpFlags |= SPAN_INDEX;
-   if (ctx->Light.ShadeModel == GL_SMOOTH) {
-      span.index = FloatToFixed(vert0->attrib[FRAG_ATTRIB_CI][0]);
-      span.indexStep = FloatToFixed(  vert1->attrib[FRAG_ATTRIB_CI][0]
-                                    - vert0->attrib[FRAG_ATTRIB_CI][0]) / numPixels;
-   }
-   else {
-      span.index = FloatToFixed(vert1->attrib[FRAG_ATTRIB_CI][0]);
-      span.indexStep = 0;
-   }
-#endif
 #if defined(INTERP_Z) || defined(DEPTH_TYPE)
    interpFlags |= SPAN_Z;
    {
       if (depthBits <= 16) {
-         span.z = FloatToFixed(vert0->attrib[FRAG_ATTRIB_WPOS][2]) + FIXED_HALF;
-         span.zStep = FloatToFixed(  vert1->attrib[FRAG_ATTRIB_WPOS][2]
-                                   - vert0->attrib[FRAG_ATTRIB_WPOS][2]) / numPixels;
+         span.z = FloatToFixed(vert0->attrib[VARYING_SLOT_POS][2]) + FIXED_HALF;
+         span.zStep = FloatToFixed(  vert1->attrib[VARYING_SLOT_POS][2]
+                                   - vert0->attrib[VARYING_SLOT_POS][2]) / numPixels;
       }
       else {
          /* don't use fixed point */
-         span.z = (GLuint) vert0->attrib[FRAG_ATTRIB_WPOS][2];
-         span.zStep = (GLint) ((  vert1->attrib[FRAG_ATTRIB_WPOS][2]
-                                - vert0->attrib[FRAG_ATTRIB_WPOS][2]) / numPixels);
+         span.z = (GLuint) vert0->attrib[VARYING_SLOT_POS][2];
+         span.zStep = (GLint) ((  vert1->attrib[VARYING_SLOT_POS][2]
+                                - vert0->attrib[VARYING_SLOT_POS][2]) / numPixels);
       }
    }
 #endif
 #if defined(INTERP_ATTRIBS)
    {
       const GLfloat invLen = 1.0F / numPixels;
-      const GLfloat invw0 = vert0->attrib[FRAG_ATTRIB_WPOS][3];
-      const GLfloat invw1 = vert1->attrib[FRAG_ATTRIB_WPOS][3];
+      const GLfloat invw0 = vert0->attrib[VARYING_SLOT_POS][3];
+      const GLfloat invw1 = vert1->attrib[VARYING_SLOT_POS][3];
 
-      span.attrStart[FRAG_ATTRIB_WPOS][3] = invw0;
-      span.attrStepX[FRAG_ATTRIB_WPOS][3] = (invw1 - invw0) * invLen;
-      span.attrStepY[FRAG_ATTRIB_WPOS][3] = 0.0;
+      span.attrStart[VARYING_SLOT_POS][3] = invw0;
+      span.attrStepX[VARYING_SLOT_POS][3] = (invw1 - invw0) * invLen;
+      span.attrStepY[VARYING_SLOT_POS][3] = 0.0;
 
       ATTRIB_LOOP_BEGIN
          if (swrast->_InterpMode[attr] == GL_FLAT) {
@@ -407,9 +390,7 @@ NAME( GLcontext *ctx, const SWvertex *vert0, const SWvertex *vert1 )
 
 #undef NAME
 #undef INTERP_Z
-#undef INTERP_RGBA
 #undef INTERP_ATTRIBS
-#undef INTERP_INDEX
 #undef PIXEL_ADDRESS
 #undef PIXEL_TYPE
 #undef DEPTH_TYPE

@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2003 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -30,10 +30,11 @@
 
 #include "pipe/p_compiler.h"
 #include "pipe/p_defines.h"
+#include "util/u_debug.h"
 #include "i915_reg.h"
 
 
-static INLINE unsigned
+static inline unsigned
 i915_translate_compare_func(unsigned func)
 {
    switch (func) {
@@ -58,7 +59,32 @@ i915_translate_compare_func(unsigned func)
    }
 }
 
-static INLINE unsigned
+static inline unsigned
+i915_translate_shadow_compare_func(unsigned func)
+{
+   switch (func) {
+   case PIPE_FUNC_NEVER:
+      return COMPAREFUNC_ALWAYS;
+   case PIPE_FUNC_LESS:
+      return COMPAREFUNC_LEQUAL;
+   case PIPE_FUNC_LEQUAL:
+      return COMPAREFUNC_LESS;
+   case PIPE_FUNC_GREATER:
+      return COMPAREFUNC_GEQUAL;
+   case PIPE_FUNC_GEQUAL:
+      return COMPAREFUNC_GREATER;
+   case PIPE_FUNC_NOTEQUAL:
+      return COMPAREFUNC_EQUAL;
+   case PIPE_FUNC_EQUAL:
+      return COMPAREFUNC_NOTEQUAL;
+   case PIPE_FUNC_ALWAYS:
+      return COMPAREFUNC_NEVER;
+   default:
+      return COMPAREFUNC_NEVER;
+   }
+}
+
+static inline unsigned
 i915_translate_stencil_op(unsigned op)
 {
    switch (op) {
@@ -83,7 +109,7 @@ i915_translate_stencil_op(unsigned op)
    }
 }
 
-static INLINE unsigned
+static inline unsigned
 i915_translate_blend_factor(unsigned factor)
 {
    switch (factor) {
@@ -122,7 +148,7 @@ i915_translate_blend_factor(unsigned factor)
    }
 }
 
-static INLINE unsigned
+static inline unsigned
 i915_translate_blend_func(unsigned mode)
 {
    switch (mode) {
@@ -142,7 +168,7 @@ i915_translate_blend_func(unsigned mode)
 }
 
 
-static INLINE unsigned
+static inline unsigned
 i915_translate_logic_op(unsigned opcode)
 {
    switch (opcode) {
@@ -185,7 +211,7 @@ i915_translate_logic_op(unsigned opcode)
 
 
 
-static INLINE boolean i915_validate_vertices( unsigned hw_prim, unsigned nr )
+static inline boolean i915_validate_vertices( unsigned hw_prim, unsigned nr )
 {
    boolean ok;
 

@@ -1,87 +1,98 @@
+/**************************************************************************
+ *
+ * Copyright 2009-2010 Chia-I Wu <olvaffe@gmail.com>
+ * All Rights Reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sub license, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial portions
+ * of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ *
+ **************************************************************************/
+
+
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "eglcurrent.h"
-#include "eglcontext.h"
-#include "egllog.h"
-#include "eglmutex.h"
-#include "eglglobals.h"
+#include <stdarg.h>
+#include "c99_compat.h"
+#include "c11/threads.h"
 
+#include "egllog.h"
+#include "eglcurrent.h"
+#include "eglglobals.h"
 
 /* This should be kept in sync with _eglInitThreadInfo() */
 #define _EGL_THREAD_INFO_INITIALIZER \
-   { EGL_SUCCESS, { NULL }, 0 }
+   { EGL_SUCCESS, NULL, EGL_OPENGL_ES_API, NULL, NULL, NULL }
 
 /* a fallback thread info to guarantee that every thread always has one */
 static _EGLThreadInfo dummy_thread = _EGL_THREAD_INFO_INITIALIZER;
-
-
-#ifdef GLX_USE_TLS
-static __thread const _EGLThreadInfo *_egl_TSD
-   __attribute__ ((tls_model("initial-exec")));
-
-static INLINE void _eglSetTSD(const _EGLThreadInfo *t)
-{
-   _egl_TSD = t;
-}
-
-static INLINE _EGLThreadInfo *_eglGetTSD(void)
-{
-   return (_EGLThreadInfo *) _egl_TSD;
-}
-
-static INLINE void _eglFiniTSD(void)
-{
-}
-
-static INLINE EGLBoolean _eglInitTSD(void (*dtor)(_EGLThreadInfo *))
-{
-   /* TODO destroy TSD */
-   (void) dtor;
-   (void) _eglFiniTSD;
-   return EGL_TRUE;
-}
-
-#elif PTHREADS
-#include <pthread.h>
-
-static _EGL_DECLARE_MUTEX(_egl_TSDMutex);
+static mtx_t _egl_TSDMutex = _MTX_INITIALIZER_NP;
 static EGLBoolean _egl_TSDInitialized;
-static pthread_key_t _egl_TSD;
+static tss_t _egl_TSD;
 static void (*_egl_FreeTSD)(_EGLThreadInfo *);
 
-static INLINE void _eglSetTSD(const _EGLThreadInfo *t)
+#ifdef GLX_USE_TLS
+static __thread const _EGLThreadInfo *_egl_TLS
+   __attribute__ ((tls_model("initial-exec")));
+#endif
+
+static inline void _eglSetTSD(const _EGLThreadInfo *t)
 {
-   pthread_setspecific(_egl_TSD, (const void *) t);
+   tss_set(_egl_TSD, (void *) t);
+#ifdef GLX_USE_TLS
+   _egl_TLS = t;
+#endif
 }
 
-static INLINE _EGLThreadInfo *_eglGetTSD(void)
+static inline _EGLThreadInfo *_eglGetTSD(void)
 {
-   return (_EGLThreadInfo *) pthread_getspecific(_egl_TSD);
+#ifdef GLX_USE_TLS
+   return (_EGLThreadInfo *) _egl_TLS;
+#else
+   return (_EGLThreadInfo *) tss_get(_egl_TSD);
+#endif
 }
 
-static INLINE void _eglFiniTSD(void)
+static inline void _eglFiniTSD(void)
 {
-   _eglLockMutex(&_egl_TSDMutex);
+   mtx_lock(&_egl_TSDMutex);
    if (_egl_TSDInitialized) {
       _EGLThreadInfo *t = _eglGetTSD();
 
       _egl_TSDInitialized = EGL_FALSE;
       if (t && _egl_FreeTSD)
          _egl_FreeTSD((void *) t);
-      pthread_key_delete(_egl_TSD);
+      tss_delete(_egl_TSD);
    }
-   _eglUnlockMutex(&_egl_TSDMutex);
+   mtx_unlock(&_egl_TSDMutex);
 }
 
-static INLINE EGLBoolean _eglInitTSD(void (*dtor)(_EGLThreadInfo *))
+static inline EGLBoolean _eglInitTSD(void (*dtor)(_EGLThreadInfo *))
 {
    if (!_egl_TSDInitialized) {
-      _eglLockMutex(&_egl_TSDMutex);
+      mtx_lock(&_egl_TSDMutex);
 
       /* check again after acquiring lock */
       if (!_egl_TSDInitialized) {
-         if (pthread_key_create(&_egl_TSD, (void (*)(void *)) dtor) != 0) {
-            _eglUnlockMutex(&_egl_TSDMutex);
+         if (tss_create(&_egl_TSD, (void (*)(void *)) dtor) != thrd_success) {
+            mtx_unlock(&_egl_TSDMutex);
             return EGL_FALSE;
          }
          _egl_FreeTSD = dtor;
@@ -89,43 +100,11 @@ static INLINE EGLBoolean _eglInitTSD(void (*dtor)(_EGLThreadInfo *))
          _egl_TSDInitialized = EGL_TRUE;
       }
 
-      _eglUnlockMutex(&_egl_TSDMutex);
+      mtx_unlock(&_egl_TSDMutex);
    }
 
    return EGL_TRUE;
 }
-
-#else /* PTHREADS */
-static const _EGLThreadInfo *_egl_TSD;
-static void (*_egl_FreeTSD)(_EGLThreadInfo *);
-
-static INLINE void _eglSetTSD(const _EGLThreadInfo *t)
-{
-   _egl_TSD = t;
-}
-
-static INLINE _EGLThreadInfo *_eglGetTSD(void)
-{
-   return (_EGLThreadInfo *) _egl_TSD;
-}
-
-static INLINE void _eglFiniTSD(void)
-{
-   if (_egl_FreeTSD && _egl_TSD)
-      _egl_FreeTSD((_EGLThreadInfo *) _egl_TSD);
-}
-
-static INLINE EGLBoolean _eglInitTSD(void (*dtor)(_EGLThreadInfo *))
-{
-   if (!_egl_FreeTSD && dtor) {
-      _egl_FreeTSD = dtor;
-      _eglAddAtExitCall(_eglFiniTSD);
-   }
-   return EGL_TRUE;
-}
-
-#endif /* !PTHREADS */
-
 
 static void
 _eglInitThreadInfo(_EGLThreadInfo *t)
@@ -133,7 +112,7 @@ _eglInitThreadInfo(_EGLThreadInfo *t)
    memset(t, 0, sizeof(*t));
    t->LastError = EGL_SUCCESS;
    /* default, per EGL spec */
-   t->CurrentAPIIndex = _eglConvertApiToIndex(EGL_OPENGL_ES_API);
+   t->CurrentAPI = EGL_OPENGL_ES_API;
 }
 
 
@@ -143,7 +122,7 @@ _eglInitThreadInfo(_EGLThreadInfo *t)
 static _EGLThreadInfo *
 _eglCreateThreadInfo(void)
 {
-   _EGLThreadInfo *t = (_EGLThreadInfo *) calloc(1, sizeof(_EGLThreadInfo));
+   _EGLThreadInfo *t = calloc(1, sizeof(_EGLThreadInfo));
    if (t)
       _eglInitThreadInfo(t);
    else
@@ -166,7 +145,7 @@ _eglDestroyThreadInfo(_EGLThreadInfo *t)
 /**
  * Make sure TSD is initialized and return current value.
  */
-static INLINE _EGLThreadInfo *
+static inline _EGLThreadInfo *
 _eglCheckedGetTSD(void)
 {
    if (_eglInitTSD(&_eglDestroyThreadInfo) != EGL_TRUE) {
@@ -227,67 +206,31 @@ _eglIsCurrentThreadDummy(void)
 
 
 /**
- * Return the currently bound context, or NULL.
+ * Return the currently bound context of the current API, or NULL.
  */
 _EGLContext *
 _eglGetCurrentContext(void)
 {
    _EGLThreadInfo *t = _eglGetCurrentThread();
-   return t->CurrentContexts[t->CurrentAPIIndex];
+   return t->CurrentContext;
 }
 
 
 /**
- * Return the display of the currently bound context, or NULL.
+ * Record EGL error code and return EGL_FALSE.
  */
-_EGLDisplay *
-_eglGetCurrentDisplay(void)
+static EGLBoolean
+_eglInternalError(EGLint errCode, const char *msg)
 {
    _EGLThreadInfo *t = _eglGetCurrentThread();
-   _EGLContext *ctx = t->CurrentContexts[t->CurrentAPIIndex];
-   if (ctx)
-      return ctx->Display;
-   else
-      return NULL;
-}
-
-
-/**
- * Return the read or write surface of the currently bound context, or NULL.
- */
-_EGLSurface *
-_eglGetCurrentSurface(EGLint readdraw)
-{
-   _EGLThreadInfo *t = _eglGetCurrentThread();
-   _EGLContext *ctx = t->CurrentContexts[t->CurrentAPIIndex];
-   if (ctx) {
-      switch (readdraw) {
-      case EGL_DRAW:
-         return ctx->DrawSurface;
-      case EGL_READ:
-         return ctx->ReadSurface;
-      default:
-         return NULL;
-      }
-   }
-   return NULL;
-}
-
-
-/**
- * Record EGL error code.
- */
-EGLBoolean
-_eglError(EGLint errCode, const char *msg)
-{
-   _EGLThreadInfo *t = _eglGetCurrentThread();
-   const char *s;
 
    if (t == &dummy_thread)
       return EGL_FALSE;
 
-   if (t->LastError == EGL_SUCCESS) {
-      t->LastError = errCode;
+   t->LastError = errCode;
+
+   if (errCode != EGL_SUCCESS) {
+      const char *s;
 
       switch (errCode) {
       case EGL_BAD_ACCESS:
@@ -326,17 +269,97 @@ _eglError(EGLint errCode, const char *msg)
       case EGL_BAD_SURFACE:
          s = "EGL_BAD_SURFACE";
          break;
-      case EGL_BAD_SCREEN_MESA:
-         s = "EGL_BAD_SCREEN_MESA";
-         break;
-      case EGL_BAD_MODE_MESA:
-         s = "EGL_BAD_MODE_MESA";
+      case EGL_NOT_INITIALIZED:
+         s = "EGL_NOT_INITIALIZED";
          break;
       default:
-         s = "other";
+         s = "other EGL error";
       }
       _eglLog(_EGL_DEBUG, "EGL user error 0x%x (%s) in %s\n", errCode, s, msg);
    }
 
    return EGL_FALSE;
+}
+
+EGLBoolean
+_eglError(EGLint errCode, const char *msg)
+{
+   if (errCode != EGL_SUCCESS) {
+      EGLint type;
+      if (errCode == EGL_BAD_ALLOC) {
+         type = EGL_DEBUG_MSG_CRITICAL_KHR;
+      } else {
+         type = EGL_DEBUG_MSG_ERROR_KHR;
+      }
+
+      _eglDebugReport(errCode, msg, type, NULL);
+   } else
+      _eglInternalError(errCode, msg);
+
+   return EGL_FALSE;
+}
+
+/**
+ * Returns the label set for the current thread.
+ */
+EGLLabelKHR
+_eglGetThreadLabel(void)
+{
+   _EGLThreadInfo *t = _eglGetCurrentThread();
+   return t->Label;
+}
+
+static void
+_eglDebugReportFullv(EGLenum error, const char *command, const char *funcName,
+      EGLint type, EGLLabelKHR objectLabel, const char *message, va_list args)
+{
+   EGLDEBUGPROCKHR callback = NULL;
+
+   mtx_lock(_eglGlobal.Mutex);
+   if (_eglGlobal.debugTypesEnabled & DebugBitFromType(type)) {
+      callback = _eglGlobal.debugCallback;
+   }
+   mtx_unlock(_eglGlobal.Mutex);
+
+   if (callback != NULL) {
+      char *buf = NULL;
+
+      if (message != NULL) {
+         if (vasprintf(&buf, message, args) < 0) {
+            buf = NULL;
+         }
+      }
+      callback(error, command, type, _eglGetThreadLabel(), objectLabel, buf);
+      free(buf);
+   }
+
+   if (type == EGL_DEBUG_MSG_CRITICAL_KHR || type == EGL_DEBUG_MSG_ERROR_KHR) {
+      _eglInternalError(error, funcName);
+   }
+}
+
+void
+_eglDebugReportFull(EGLenum error, const char *command, const char *funcName,
+      EGLint type, EGLLabelKHR objectLabel, const char *message, ...)
+{
+   va_list args;
+   va_start(args, message);
+   _eglDebugReportFullv(error, command, funcName, type, objectLabel, message, args);
+   va_end(args);
+}
+
+void
+_eglDebugReport(EGLenum error, const char *funcName,
+      EGLint type, const char *message, ...)
+{
+   _EGLThreadInfo *thr = _eglGetCurrentThread();
+   va_list args;
+
+   if (funcName == NULL) {
+      funcName = thr->CurrentFuncName;
+   }
+
+   va_start(args, message);
+   _eglDebugReportFullv(error, thr->CurrentFuncName, funcName, type, thr->CurrentObjectLabel, message, args);
+   va_end(args);
 }

@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2008 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -53,6 +53,10 @@
 #include "draw_pipe.h"
 
 
+/** Approx number of new tokens for instructions in aa_transform_inst() */
+#define NUM_NEW_TOKENS 200
+
+
 /*
  * Enabling NORMALIZE might give _slightly_ better results.
  * Basically, it controls whether we compute distance as d=sqrt(x*x+y*y) or
@@ -81,16 +85,19 @@ struct aapoint_stage
 {
    struct draw_stage stage;
 
-   int psize_slot;
+   /** half of pipe_rasterizer_state::point_size */
    float radius;
+
+   /** vertex attrib slot containing point size */
+   int psize_slot;
 
    /** this is the vertex attrib slot for the new texcoords */
    uint tex_slot;
+
+   /** vertex attrib slot containing position */
    uint pos_slot;
 
-   /*
-    * Currently bound state
-    */
+   /** Currently bound fragment shader */
    struct aapoint_fragment_shader *fs;
 
    /*
@@ -100,8 +107,6 @@ struct aapoint_stage
                                     const struct pipe_shader_state *);
    void (*driver_bind_fs_state)(struct pipe_context *, void *);
    void (*driver_delete_fs_state)(struct pipe_context *, void *);
-
-   struct pipe_context *pipe;
 };
 
 
@@ -116,7 +121,6 @@ struct aa_transform_context {
    int colorOutput; /**< which output is the primary color */
    int maxInput, maxGeneric;  /**< max input index found */
    int tmp0, colorTemp;  /**< temp registers */
-   boolean firstInstruction;
 };
 
 
@@ -131,22 +135,22 @@ aa_transform_decl(struct tgsi_transform_context *ctx,
    struct aa_transform_context *aactx = (struct aa_transform_context *) ctx;
 
    if (decl->Declaration.File == TGSI_FILE_OUTPUT &&
-       decl->Semantic.SemanticName == TGSI_SEMANTIC_COLOR &&
-       decl->Semantic.SemanticIndex == 0) {
-      aactx->colorOutput = decl->DeclarationRange.First;
+       decl->Semantic.Name == TGSI_SEMANTIC_COLOR &&
+       decl->Semantic.Index == 0) {
+      aactx->colorOutput = decl->Range.First;
    }
    else if (decl->Declaration.File == TGSI_FILE_INPUT) {
-      if ((int) decl->DeclarationRange.Last > aactx->maxInput)
-         aactx->maxInput = decl->DeclarationRange.Last;
-      if (decl->Semantic.SemanticName == TGSI_SEMANTIC_GENERIC &&
-           (int) decl->Semantic.SemanticIndex > aactx->maxGeneric) {
-         aactx->maxGeneric = decl->Semantic.SemanticIndex;
+      if ((int) decl->Range.Last > aactx->maxInput)
+         aactx->maxInput = decl->Range.Last;
+      if (decl->Semantic.Name == TGSI_SEMANTIC_GENERIC &&
+           (int) decl->Semantic.Index > aactx->maxGeneric) {
+         aactx->maxGeneric = decl->Semantic.Index;
       }
    }
    else if (decl->Declaration.File == TGSI_FILE_TEMPORARY) {
       uint i;
-      for (i = decl->DeclarationRange.First;
-           i <= decl->DeclarationRange.Last; i++) {
+      for (i = decl->Range.First;
+           i <= decl->Range.Last; i++) {
          aactx->tempsUsed |= (1 << i);
       }
    }
@@ -156,324 +160,189 @@ aa_transform_decl(struct tgsi_transform_context *ctx,
 
 
 /**
- * TGSI instruction transform callback.
+ * TGSI transform callback.
+ * Insert new declarations and instructions before first instruction.
+ */
+static void
+aa_transform_prolog(struct tgsi_transform_context *ctx)
+{
+   /* emit our new declarations before the first instruction */
+   struct aa_transform_context *aactx = (struct aa_transform_context *) ctx;
+   struct tgsi_full_instruction newInst;
+   const int texInput = aactx->maxInput + 1;
+   int tmp0;
+   uint i;
+
+   /* find two free temp regs */
+   for (i = 0; i < 32; i++) {
+      if ((aactx->tempsUsed & (1 << i)) == 0) {
+         /* found a free temp */
+         if (aactx->tmp0 < 0)
+            aactx->tmp0 = i;
+         else if (aactx->colorTemp < 0)
+            aactx->colorTemp = i;
+         else
+            break;
+      }
+   }
+
+   assert(aactx->colorTemp != aactx->tmp0);
+
+   tmp0 = aactx->tmp0;
+
+   /* declare new generic input/texcoord */
+   tgsi_transform_input_decl(ctx, texInput,
+                             TGSI_SEMANTIC_GENERIC, aactx->maxGeneric + 1,
+                             TGSI_INTERPOLATE_LINEAR);
+
+   /* declare new temp regs */
+   tgsi_transform_temp_decl(ctx, tmp0);
+   tgsi_transform_temp_decl(ctx, aactx->colorTemp);
+
+   /*
+    * Emit code to compute fragment coverage, kill if outside point radius
+    *
+    * Temp reg0 usage:
+    *  t0.x = distance of fragment from center point
+    *  t0.y = boolean, is t0.x > 1.0, also misc temp usage
+    *  t0.z = temporary for computing 1/(1-k) value
+    *  t0.w = final coverage value
+    */
+
+   /* MUL t0.xy, tex, tex;  # compute x^2, y^2 */
+   tgsi_transform_op2_inst(ctx, TGSI_OPCODE_MUL,
+                           TGSI_FILE_TEMPORARY, tmp0, TGSI_WRITEMASK_XY,
+                           TGSI_FILE_INPUT, texInput,
+                           TGSI_FILE_INPUT, texInput);
+
+   /* ADD t0.x, t0.x, t0.y;  # x^2 + y^2 */
+   tgsi_transform_op2_swz_inst(ctx, TGSI_OPCODE_ADD,
+                               TGSI_FILE_TEMPORARY, tmp0, TGSI_WRITEMASK_X,
+                               TGSI_FILE_TEMPORARY, tmp0, TGSI_SWIZZLE_X,
+                               TGSI_FILE_TEMPORARY, tmp0, TGSI_SWIZZLE_Y);
+
+#if NORMALIZE  /* OPTIONAL normalization of length */
+   /* RSQ t0.x, t0.x; */
+   tgsi_transform_op1_inst(ctx, TGSI_OPCODE_RSQ,
+                           TGSI_FILE_TEMPORARY, tmp0, TGSI_WRITEMASK_X,
+                           TGSI_FILE_TEMPORARY, tmp0);
+
+   /* RCP t0.x, t0.x; */
+   tgsi_transform_op1_inst(ctx, TGSI_OPCODE_RCP,
+                           TGSI_FILE_TEMPORARY, tmp0, TGSI_WRITEMASK_X,
+                           TGSI_FILE_TEMPORARY, tmp0);
+#endif
+
+   /* SGT t0.y, t0.xxxx, tex.wwww;  # bool b = d > 1 (NOTE tex.w == 1) */
+   tgsi_transform_op2_swz_inst(ctx, TGSI_OPCODE_SGT,
+                               TGSI_FILE_TEMPORARY, tmp0, TGSI_WRITEMASK_Y,
+                               TGSI_FILE_TEMPORARY, tmp0, TGSI_SWIZZLE_X,
+                               TGSI_FILE_INPUT, texInput, TGSI_SWIZZLE_W);
+
+   /* KILL_IF -tmp0.yyyy;   # if -tmp0.y < 0, KILL */
+   tgsi_transform_kill_inst(ctx, TGSI_FILE_TEMPORARY, tmp0,
+                            TGSI_SWIZZLE_Y, TRUE);
+
+   /* compute coverage factor = (1-d)/(1-k) */
+
+   /* SUB t0.z, tex.w, tex.z;  # m = 1 - k */
+   tgsi_transform_op2_swz_inst(ctx, TGSI_OPCODE_SUB,
+                               TGSI_FILE_TEMPORARY, tmp0, TGSI_WRITEMASK_Z,
+                               TGSI_FILE_INPUT, texInput, TGSI_SWIZZLE_W,
+                               TGSI_FILE_INPUT, texInput, TGSI_SWIZZLE_Z);
+
+   /* RCP t0.z, t0.z;  # t0.z = 1 / m */
+   newInst = tgsi_default_full_instruction();
+   newInst.Instruction.Opcode = TGSI_OPCODE_RCP;
+   newInst.Instruction.NumDstRegs = 1;
+   newInst.Dst[0].Register.File = TGSI_FILE_TEMPORARY;
+   newInst.Dst[0].Register.Index = tmp0;
+   newInst.Dst[0].Register.WriteMask = TGSI_WRITEMASK_Z;
+   newInst.Instruction.NumSrcRegs = 1;
+   newInst.Src[0].Register.File = TGSI_FILE_TEMPORARY;
+   newInst.Src[0].Register.Index = tmp0;
+   newInst.Src[0].Register.SwizzleX = TGSI_SWIZZLE_Z;
+   ctx->emit_instruction(ctx, &newInst);
+
+   /* SUB t0.y, 1, t0.x;  # d = 1 - d */
+   tgsi_transform_op2_swz_inst(ctx, TGSI_OPCODE_SUB,
+                               TGSI_FILE_TEMPORARY, tmp0, TGSI_WRITEMASK_Y,
+                               TGSI_FILE_INPUT, texInput, TGSI_SWIZZLE_W,
+                               TGSI_FILE_TEMPORARY, tmp0, TGSI_SWIZZLE_X);
+
+   /* MUL t0.w, t0.y, t0.z;   # coverage = d * m */
+   tgsi_transform_op2_swz_inst(ctx, TGSI_OPCODE_MUL,
+                               TGSI_FILE_TEMPORARY, tmp0, TGSI_WRITEMASK_W,
+                               TGSI_FILE_TEMPORARY, tmp0, TGSI_SWIZZLE_Y,
+                               TGSI_FILE_TEMPORARY, tmp0, TGSI_SWIZZLE_Z);
+
+   /* SLE t0.y, t0.x, tex.z;  # bool b = distance <= k */
+   tgsi_transform_op2_swz_inst(ctx, TGSI_OPCODE_SLE,
+                               TGSI_FILE_TEMPORARY, tmp0, TGSI_WRITEMASK_Y,
+                               TGSI_FILE_TEMPORARY, tmp0, TGSI_SWIZZLE_X,
+                               TGSI_FILE_INPUT, texInput, TGSI_SWIZZLE_Z);
+
+   /* CMP t0.w, -t0.y, tex.w, t0.w;
+    *  # if -t0.y < 0 then
+    *       t0.w = 1
+    *    else
+    *       t0.w = t0.w
+    */
+   tgsi_transform_op3_swz_inst(ctx, TGSI_OPCODE_CMP,
+                               TGSI_FILE_TEMPORARY, tmp0, TGSI_WRITEMASK_W,
+                               TGSI_FILE_TEMPORARY, tmp0, TGSI_SWIZZLE_Y, 1,
+                               TGSI_FILE_INPUT, texInput, TGSI_SWIZZLE_W,
+                               TGSI_FILE_TEMPORARY, tmp0, TGSI_SWIZZLE_W);
+}
+
+
+/**
+ * TGSI transform callback.
+ * Insert new instructions before the END instruction.
+ */
+static void
+aa_transform_epilog(struct tgsi_transform_context *ctx)
+{
+   struct aa_transform_context *aactx = (struct aa_transform_context *) ctx;
+
+   /* add alpha modulation code at tail of program */
+
+   /* MOV result.color.xyz, colorTemp; */
+   tgsi_transform_op1_inst(ctx, TGSI_OPCODE_MOV,
+                           TGSI_FILE_OUTPUT, aactx->colorOutput,
+                           TGSI_WRITEMASK_XYZ,
+                           TGSI_FILE_TEMPORARY, aactx->colorTemp);
+
+   /* MUL result.color.w, colorTemp, tmp0.w; */
+   tgsi_transform_op2_inst(ctx, TGSI_OPCODE_MUL,
+                           TGSI_FILE_OUTPUT, aactx->colorOutput,
+                           TGSI_WRITEMASK_W,
+                           TGSI_FILE_TEMPORARY, aactx->colorTemp,
+                           TGSI_FILE_TEMPORARY, aactx->tmp0);
+}
+
+
+/**
+ * TGSI transform callback.
+ * Called per instruction.
  * Replace writes to result.color w/ a temp reg.
- * Upon END instruction, insert texture sampling code for antialiasing.
  */
 static void
 aa_transform_inst(struct tgsi_transform_context *ctx,
                   struct tgsi_full_instruction *inst)
 {
    struct aa_transform_context *aactx = (struct aa_transform_context *) ctx;
-   struct tgsi_full_instruction newInst;
+   unsigned i;
 
-   if (aactx->firstInstruction) {
-      /* emit our new declarations before the first instruction */
-
-      struct tgsi_full_declaration decl;
-      const int texInput = aactx->maxInput + 1;
-      int tmp0;
-      uint i;
-
-      /* find two free temp regs */
-      for (i = 0; i < 32; i++) {
-         if ((aactx->tempsUsed & (1 << i)) == 0) {
-            /* found a free temp */
-            if (aactx->tmp0 < 0)
-               aactx->tmp0 = i;
-            else if (aactx->colorTemp < 0)
-               aactx->colorTemp = i;
-            else
-               break;
-         }
-      }
-
-      assert(aactx->colorTemp != aactx->tmp0);
-
-      tmp0 = aactx->tmp0;
-
-      /* declare new generic input/texcoord */
-      decl = tgsi_default_full_declaration();
-      decl.Declaration.File = TGSI_FILE_INPUT;
-      /* XXX this could be linear... */
-      decl.Declaration.Interpolate = TGSI_INTERPOLATE_PERSPECTIVE;
-      decl.Declaration.Semantic = 1;
-      decl.Semantic.SemanticName = TGSI_SEMANTIC_GENERIC;
-      decl.Semantic.SemanticIndex = aactx->maxGeneric + 1;
-      decl.DeclarationRange.First = 
-      decl.DeclarationRange.Last = texInput;
-      ctx->emit_declaration(ctx, &decl);
-
-      /* declare new temp regs */
-      decl = tgsi_default_full_declaration();
-      decl.Declaration.File = TGSI_FILE_TEMPORARY;
-      decl.DeclarationRange.First = 
-      decl.DeclarationRange.Last = tmp0;
-      ctx->emit_declaration(ctx, &decl);
-
-      decl = tgsi_default_full_declaration();
-      decl.Declaration.File = TGSI_FILE_TEMPORARY;
-      decl.DeclarationRange.First = 
-      decl.DeclarationRange.Last = aactx->colorTemp;
-      ctx->emit_declaration(ctx, &decl);
-
-      aactx->firstInstruction = FALSE;
-
-
-      /*
-       * Emit code to compute fragment coverage, kill if outside point radius
-       *
-       * Temp reg0 usage:
-       *  t0.x = distance of fragment from center point
-       *  t0.y = boolean, is t0.x > 1.0, also misc temp usage
-       *  t0.z = temporary for computing 1/(1-k) value
-       *  t0.w = final coverage value
-       */
-
-      /* MUL t0.xy, tex, tex;  # compute x^2, y^2 */
-      newInst = tgsi_default_full_instruction();
-      newInst.Instruction.Opcode = TGSI_OPCODE_MUL;
-      newInst.Instruction.NumDstRegs = 1;
-      newInst.FullDstRegisters[0].DstRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullDstRegisters[0].DstRegister.Index = tmp0;
-      newInst.FullDstRegisters[0].DstRegister.WriteMask = TGSI_WRITEMASK_XY;
-      newInst.Instruction.NumSrcRegs = 2;
-      newInst.FullSrcRegisters[0].SrcRegister.File = TGSI_FILE_INPUT;
-      newInst.FullSrcRegisters[0].SrcRegister.Index = texInput;
-      newInst.FullSrcRegisters[1].SrcRegister.File = TGSI_FILE_INPUT;
-      newInst.FullSrcRegisters[1].SrcRegister.Index = texInput;
-      ctx->emit_instruction(ctx, &newInst);
-
-      /* ADD t0.x, t0.x, t0.y;  # x^2 + y^2 */
-      newInst = tgsi_default_full_instruction();
-      newInst.Instruction.Opcode = TGSI_OPCODE_ADD;
-      newInst.Instruction.NumDstRegs = 1;
-      newInst.FullDstRegisters[0].DstRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullDstRegisters[0].DstRegister.Index = tmp0;
-      newInst.FullDstRegisters[0].DstRegister.WriteMask = TGSI_WRITEMASK_X;
-      newInst.Instruction.NumSrcRegs = 2;
-      newInst.FullSrcRegisters[0].SrcRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullSrcRegisters[0].SrcRegister.Index = tmp0;
-      newInst.FullSrcRegisters[0].SrcRegister.SwizzleX = TGSI_SWIZZLE_X;
-      newInst.FullSrcRegisters[1].SrcRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullSrcRegisters[1].SrcRegister.Index = tmp0;
-      newInst.FullSrcRegisters[1].SrcRegister.SwizzleX = TGSI_SWIZZLE_Y;
-      ctx->emit_instruction(ctx, &newInst);
-
-#if NORMALIZE  /* OPTIONAL normalization of length */
-      /* RSQ t0.x, t0.x; */
-      newInst = tgsi_default_full_instruction();
-      newInst.Instruction.Opcode = TGSI_OPCODE_RSQ;
-      newInst.Instruction.NumDstRegs = 1;
-      newInst.FullDstRegisters[0].DstRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullDstRegisters[0].DstRegister.Index = tmp0;
-      newInst.FullDstRegisters[0].DstRegister.WriteMask = TGSI_WRITEMASK_X;
-      newInst.Instruction.NumSrcRegs = 1;
-      newInst.FullSrcRegisters[0].SrcRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullSrcRegisters[0].SrcRegister.Index = tmp0;
-      ctx->emit_instruction(ctx, &newInst);
-
-      /* RCP t0.x, t0.x; */
-      newInst = tgsi_default_full_instruction();
-      newInst.Instruction.Opcode = TGSI_OPCODE_RCP;
-      newInst.Instruction.NumDstRegs = 1;
-      newInst.FullDstRegisters[0].DstRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullDstRegisters[0].DstRegister.Index = tmp0;
-      newInst.FullDstRegisters[0].DstRegister.WriteMask = TGSI_WRITEMASK_X;
-      newInst.Instruction.NumSrcRegs = 1;
-      newInst.FullSrcRegisters[0].SrcRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullSrcRegisters[0].SrcRegister.Index = tmp0;
-      ctx->emit_instruction(ctx, &newInst);
-#endif
-
-      /* SGT t0.y, t0.xxxx, tex.wwww;  # bool b = d > 1 (NOTE tex.w == 1) */
-      newInst = tgsi_default_full_instruction();
-      newInst.Instruction.Opcode = TGSI_OPCODE_SGT;
-      newInst.Instruction.NumDstRegs = 1;
-      newInst.FullDstRegisters[0].DstRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullDstRegisters[0].DstRegister.Index = tmp0;
-      newInst.FullDstRegisters[0].DstRegister.WriteMask = TGSI_WRITEMASK_Y;
-      newInst.Instruction.NumSrcRegs = 2;
-      newInst.FullSrcRegisters[0].SrcRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullSrcRegisters[0].SrcRegister.Index = tmp0;
-      newInst.FullSrcRegisters[0].SrcRegister.SwizzleY = TGSI_SWIZZLE_X;
-      newInst.FullSrcRegisters[1].SrcRegister.File = TGSI_FILE_INPUT;
-      newInst.FullSrcRegisters[1].SrcRegister.Index = texInput;
-      newInst.FullSrcRegisters[1].SrcRegister.SwizzleY = TGSI_SWIZZLE_W;
-      ctx->emit_instruction(ctx, &newInst);
-
-      /* KIL -tmp0.yyyy;   # if -tmp0.y < 0, KILL */
-      newInst = tgsi_default_full_instruction();
-      newInst.Instruction.Opcode = TGSI_OPCODE_KIL;
-      newInst.Instruction.NumDstRegs = 0;
-      newInst.Instruction.NumSrcRegs = 1;
-      newInst.FullSrcRegisters[0].SrcRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullSrcRegisters[0].SrcRegister.Index = tmp0;
-      newInst.FullSrcRegisters[0].SrcRegister.SwizzleX = TGSI_SWIZZLE_Y;
-      newInst.FullSrcRegisters[0].SrcRegister.SwizzleY = TGSI_SWIZZLE_Y;
-      newInst.FullSrcRegisters[0].SrcRegister.SwizzleZ = TGSI_SWIZZLE_Y;
-      newInst.FullSrcRegisters[0].SrcRegister.SwizzleW = TGSI_SWIZZLE_Y;
-      newInst.FullSrcRegisters[0].SrcRegister.Negate = 1;
-      ctx->emit_instruction(ctx, &newInst);
-
-
-      /* compute coverage factor = (1-d)/(1-k) */
-
-      /* SUB t0.z, tex.w, tex.z;  # m = 1 - k */
-      newInst = tgsi_default_full_instruction();
-      newInst.Instruction.Opcode = TGSI_OPCODE_SUB;
-      newInst.Instruction.NumDstRegs = 1;
-      newInst.FullDstRegisters[0].DstRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullDstRegisters[0].DstRegister.Index = tmp0;
-      newInst.FullDstRegisters[0].DstRegister.WriteMask = TGSI_WRITEMASK_Z;
-      newInst.Instruction.NumSrcRegs = 2;
-      newInst.FullSrcRegisters[0].SrcRegister.File = TGSI_FILE_INPUT;
-      newInst.FullSrcRegisters[0].SrcRegister.Index = texInput;
-      newInst.FullSrcRegisters[0].SrcRegister.SwizzleZ = TGSI_SWIZZLE_W;
-      newInst.FullSrcRegisters[1].SrcRegister.File = TGSI_FILE_INPUT;
-      newInst.FullSrcRegisters[1].SrcRegister.Index = texInput;
-      newInst.FullSrcRegisters[1].SrcRegister.SwizzleZ = TGSI_SWIZZLE_Z;
-      ctx->emit_instruction(ctx, &newInst);
-
-      /* RCP t0.z, t0.z;  # t0.z = 1 / m */
-      newInst = tgsi_default_full_instruction();
-      newInst.Instruction.Opcode = TGSI_OPCODE_RCP;
-      newInst.Instruction.NumDstRegs = 1;
-      newInst.FullDstRegisters[0].DstRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullDstRegisters[0].DstRegister.Index = tmp0;
-      newInst.FullDstRegisters[0].DstRegister.WriteMask = TGSI_WRITEMASK_Z;
-      newInst.Instruction.NumSrcRegs = 1;
-      newInst.FullSrcRegisters[0].SrcRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullSrcRegisters[0].SrcRegister.Index = tmp0;
-      newInst.FullSrcRegisters[0].SrcRegister.SwizzleX = TGSI_SWIZZLE_Z;
-      ctx->emit_instruction(ctx, &newInst);
-
-      /* SUB t0.y, 1, t0.x;  # d = 1 - d */
-      newInst = tgsi_default_full_instruction();
-      newInst.Instruction.Opcode = TGSI_OPCODE_SUB;
-      newInst.Instruction.NumDstRegs = 1;
-      newInst.FullDstRegisters[0].DstRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullDstRegisters[0].DstRegister.Index = tmp0;
-      newInst.FullDstRegisters[0].DstRegister.WriteMask = TGSI_WRITEMASK_Y;
-      newInst.Instruction.NumSrcRegs = 2;
-      newInst.FullSrcRegisters[0].SrcRegister.File = TGSI_FILE_INPUT;
-      newInst.FullSrcRegisters[0].SrcRegister.Index = texInput;
-      newInst.FullSrcRegisters[0].SrcRegister.SwizzleY = TGSI_SWIZZLE_W;
-      newInst.FullSrcRegisters[1].SrcRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullSrcRegisters[1].SrcRegister.Index = tmp0;
-      newInst.FullSrcRegisters[1].SrcRegister.SwizzleY = TGSI_SWIZZLE_X;
-      ctx->emit_instruction(ctx, &newInst);
-
-      /* MUL t0.w, t0.y, t0.z;   # coverage = d * m */
-      newInst = tgsi_default_full_instruction();
-      newInst.Instruction.Opcode = TGSI_OPCODE_MUL;
-      newInst.Instruction.NumDstRegs = 1;
-      newInst.FullDstRegisters[0].DstRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullDstRegisters[0].DstRegister.Index = tmp0;
-      newInst.FullDstRegisters[0].DstRegister.WriteMask = TGSI_WRITEMASK_W;
-      newInst.Instruction.NumSrcRegs = 2;
-      newInst.FullSrcRegisters[0].SrcRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullSrcRegisters[0].SrcRegister.Index = tmp0;
-      newInst.FullSrcRegisters[0].SrcRegister.SwizzleW = TGSI_SWIZZLE_Y;
-      newInst.FullSrcRegisters[1].SrcRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullSrcRegisters[1].SrcRegister.Index = tmp0;
-      newInst.FullSrcRegisters[1].SrcRegister.SwizzleW = TGSI_SWIZZLE_Z;
-      ctx->emit_instruction(ctx, &newInst);
-
-      /* SLE t0.y, t0.x, tex.z;  # bool b = distance <= k */
-      newInst = tgsi_default_full_instruction();
-      newInst.Instruction.Opcode = TGSI_OPCODE_SLE;
-      newInst.Instruction.NumDstRegs = 1;
-      newInst.FullDstRegisters[0].DstRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullDstRegisters[0].DstRegister.Index = tmp0;
-      newInst.FullDstRegisters[0].DstRegister.WriteMask = TGSI_WRITEMASK_Y;
-      newInst.Instruction.NumSrcRegs = 2;
-      newInst.FullSrcRegisters[0].SrcRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullSrcRegisters[0].SrcRegister.Index = tmp0;
-      newInst.FullSrcRegisters[0].SrcRegister.SwizzleY = TGSI_SWIZZLE_X;
-      newInst.FullSrcRegisters[1].SrcRegister.File = TGSI_FILE_INPUT;
-      newInst.FullSrcRegisters[1].SrcRegister.Index = texInput;
-      newInst.FullSrcRegisters[1].SrcRegister.SwizzleY = TGSI_SWIZZLE_Z;
-      ctx->emit_instruction(ctx, &newInst);
-
-      /* CMP t0.w, -t0.y, tex.w, t0.w;
-       *  # if -t0.y < 0 then
-       *       t0.w = 1
-       *    else
-       *       t0.w = t0.w
-       */
-      newInst = tgsi_default_full_instruction();
-      newInst.Instruction.Opcode = TGSI_OPCODE_CMP;
-      newInst.Instruction.NumDstRegs = 1;
-      newInst.FullDstRegisters[0].DstRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullDstRegisters[0].DstRegister.Index = tmp0;
-      newInst.FullDstRegisters[0].DstRegister.WriteMask = TGSI_WRITEMASK_W;
-      newInst.Instruction.NumSrcRegs = 3;
-      newInst.FullSrcRegisters[0].SrcRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullSrcRegisters[0].SrcRegister.Index = tmp0;
-      newInst.FullSrcRegisters[0].SrcRegister.SwizzleX = TGSI_SWIZZLE_Y;
-      newInst.FullSrcRegisters[0].SrcRegister.SwizzleY = TGSI_SWIZZLE_Y;
-      newInst.FullSrcRegisters[0].SrcRegister.SwizzleZ = TGSI_SWIZZLE_Y;
-      newInst.FullSrcRegisters[0].SrcRegister.SwizzleW = TGSI_SWIZZLE_Y;
-      newInst.FullSrcRegisters[0].SrcRegister.Negate = 1;
-      newInst.FullSrcRegisters[1].SrcRegister.File = TGSI_FILE_INPUT;
-      newInst.FullSrcRegisters[1].SrcRegister.Index = texInput;
-      newInst.FullSrcRegisters[1].SrcRegister.SwizzleX = TGSI_SWIZZLE_W;
-      newInst.FullSrcRegisters[1].SrcRegister.SwizzleY = TGSI_SWIZZLE_W;
-      newInst.FullSrcRegisters[1].SrcRegister.SwizzleZ = TGSI_SWIZZLE_W;
-      newInst.FullSrcRegisters[1].SrcRegister.SwizzleW = TGSI_SWIZZLE_W;
-      newInst.FullSrcRegisters[2].SrcRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullSrcRegisters[2].SrcRegister.Index = tmp0;
-      newInst.FullSrcRegisters[2].SrcRegister.SwizzleX = TGSI_SWIZZLE_W;
-      newInst.FullSrcRegisters[2].SrcRegister.SwizzleY = TGSI_SWIZZLE_W;
-      newInst.FullSrcRegisters[2].SrcRegister.SwizzleZ = TGSI_SWIZZLE_W;
-      newInst.FullSrcRegisters[2].SrcRegister.SwizzleW = TGSI_SWIZZLE_W;
-      ctx->emit_instruction(ctx, &newInst);
-
-   }
-
-   if (inst->Instruction.Opcode == TGSI_OPCODE_END) {
-      /* add alpha modulation code at tail of program */
-
-      /* MOV result.color.xyz, colorTemp; */
-      newInst = tgsi_default_full_instruction();
-      newInst.Instruction.Opcode = TGSI_OPCODE_MOV;
-      newInst.Instruction.NumDstRegs = 1;
-      newInst.FullDstRegisters[0].DstRegister.File = TGSI_FILE_OUTPUT;
-      newInst.FullDstRegisters[0].DstRegister.Index = aactx->colorOutput;
-      newInst.FullDstRegisters[0].DstRegister.WriteMask = TGSI_WRITEMASK_XYZ;
-      newInst.Instruction.NumSrcRegs = 1;
-      newInst.FullSrcRegisters[0].SrcRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullSrcRegisters[0].SrcRegister.Index = aactx->colorTemp;
-      ctx->emit_instruction(ctx, &newInst);
-
-      /* MUL result.color.w, colorTemp, tmp0.w; */
-      newInst = tgsi_default_full_instruction();
-      newInst.Instruction.Opcode = TGSI_OPCODE_MUL;
-      newInst.Instruction.NumDstRegs = 1;
-      newInst.FullDstRegisters[0].DstRegister.File = TGSI_FILE_OUTPUT;
-      newInst.FullDstRegisters[0].DstRegister.Index = aactx->colorOutput;
-      newInst.FullDstRegisters[0].DstRegister.WriteMask = TGSI_WRITEMASK_W;
-      newInst.Instruction.NumSrcRegs = 2;
-      newInst.FullSrcRegisters[0].SrcRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullSrcRegisters[0].SrcRegister.Index = aactx->colorTemp;
-      newInst.FullSrcRegisters[1].SrcRegister.File = TGSI_FILE_TEMPORARY;
-      newInst.FullSrcRegisters[1].SrcRegister.Index = aactx->tmp0;
-      ctx->emit_instruction(ctx, &newInst);
-   }
-   else {
-      /* Not an END instruction.
-       * Look for writes to result.color and replace with colorTemp reg.
-       */
-      uint i;
-
-      for (i = 0; i < inst->Instruction.NumDstRegs; i++) {
-         struct tgsi_full_dst_register *dst = &inst->FullDstRegisters[i];
-         if (dst->DstRegister.File == TGSI_FILE_OUTPUT &&
-             dst->DstRegister.Index == aactx->colorOutput) {
-            dst->DstRegister.File = TGSI_FILE_TEMPORARY;
-            dst->DstRegister.Index = aactx->colorTemp;
-         }
+   /* Not an END instruction.
+    * Look for writes to result.color and replace with colorTemp reg.
+    */
+   for (i = 0; i < inst->Instruction.NumDstRegs; i++) {
+      struct tgsi_full_dst_register *dst = &inst->Dst[i];
+      if (dst->Register.File == TGSI_FILE_OUTPUT &&
+          dst->Register.Index == aactx->colorOutput) {
+         dst->Register.File = TGSI_FILE_TEMPORARY;
+         dst->Register.Index = aactx->colorTemp;
       }
    }
 
@@ -491,11 +360,11 @@ generate_aapoint_fs(struct aapoint_stage *aapoint)
    const struct pipe_shader_state *orig_fs = &aapoint->fs->state;
    struct pipe_shader_state aapoint_fs;
    struct aa_transform_context transform;
-
-#define MAX 1000
+   const uint newLen = tgsi_num_tokens(orig_fs->tokens) + NUM_NEW_TOKENS;
+   struct pipe_context *pipe = aapoint->stage.draw->pipe;
 
    aapoint_fs = *orig_fs; /* copy to init */
-   aapoint_fs.tokens = MALLOC(sizeof(struct tgsi_token) * MAX);
+   aapoint_fs.tokens = tgsi_alloc_tokens(newLen);
    if (aapoint_fs.tokens == NULL)
       return FALSE;
 
@@ -505,23 +374,24 @@ generate_aapoint_fs(struct aapoint_stage *aapoint)
    transform.maxGeneric = -1;
    transform.colorTemp = -1;
    transform.tmp0 = -1;
-   transform.firstInstruction = TRUE;
+   transform.base.prolog = aa_transform_prolog;
+   transform.base.epilog = aa_transform_epilog;
    transform.base.transform_instruction = aa_transform_inst;
    transform.base.transform_declaration = aa_transform_decl;
 
    tgsi_transform_shader(orig_fs->tokens,
                          (struct tgsi_token *) aapoint_fs.tokens,
-                         MAX, &transform.base);
+                         newLen, &transform.base);
 
 #if 0 /* DEBUG */
-   printf("draw_aapoint, orig shader:\n");
+   debug_printf("draw_aapoint, orig shader:\n");
    tgsi_dump(orig_fs->tokens, 0);
-   printf("draw_aapoint, new shader:\n");
+   debug_printf("draw_aapoint, new shader:\n");
    tgsi_dump(aapoint_fs.tokens, 0);
 #endif
 
    aapoint->fs->aapoint_fs
-      = aapoint->driver_create_fs_state(aapoint->pipe, &aapoint_fs);
+      = aapoint->driver_create_fs_state(pipe, &aapoint_fs);
    if (aapoint->fs->aapoint_fs == NULL)
       goto fail;
 
@@ -543,13 +413,14 @@ static boolean
 bind_aapoint_fragment_shader(struct aapoint_stage *aapoint)
 {
    struct draw_context *draw = aapoint->stage.draw;
+   struct pipe_context *pipe = draw->pipe;
 
    if (!aapoint->fs->aapoint_fs &&
        !generate_aapoint_fs(aapoint))
       return FALSE;
 
    draw->suspend_flushing = TRUE;
-   aapoint->driver_bind_fs_state(aapoint->pipe, aapoint->fs->aapoint_fs);
+   aapoint->driver_bind_fs_state(pipe, aapoint->fs->aapoint_fs);
    draw->suspend_flushing = FALSE;
 
    return TRUE;
@@ -557,7 +428,7 @@ bind_aapoint_fragment_shader(struct aapoint_stage *aapoint)
 
 
 
-static INLINE struct aapoint_stage *
+static inline struct aapoint_stage *
 aapoint_stage( struct draw_stage *stage )
 {
    return (struct aapoint_stage *) stage;
@@ -575,8 +446,8 @@ aapoint_point(struct draw_stage *stage, struct prim_header *header)
    const struct aapoint_stage *aapoint = aapoint_stage(stage);
    struct prim_header tri;
    struct vertex_header *v[4];
-   uint texPos = aapoint->tex_slot;
-   uint pos_slot = aapoint->pos_slot;
+   const uint tex_slot = aapoint->tex_slot;
+   const uint pos_slot = aapoint->pos_slot;
    float radius, *pos, *tex;
    uint i;
    float k;
@@ -643,16 +514,16 @@ aapoint_point(struct draw_stage *stage, struct prim_header *header)
    pos[1] += radius;
 
    /* new texcoords */
-   tex = v[0]->data[texPos];
+   tex = v[0]->data[tex_slot];
    ASSIGN_4V(tex, -1, -1, k, 1);
 
-   tex = v[1]->data[texPos];
+   tex = v[1]->data[tex_slot];
    ASSIGN_4V(tex,  1, -1, k, 1);
 
-   tex = v[2]->data[texPos];
+   tex = v[2]->data[tex_slot];
    ASSIGN_4V(tex,  1,  1, k, 1);
 
-   tex = v[3]->data[texPos];
+   tex = v[3]->data[tex_slot];
    ASSIGN_4V(tex, -1,  1, k, 1);
 
    /* emit 2 tris for the quad strip */
@@ -673,6 +544,9 @@ aapoint_first_point(struct draw_stage *stage, struct prim_header *header)
 {
    auto struct aapoint_stage *aapoint = aapoint_stage(stage);
    struct draw_context *draw = stage->draw;
+   struct pipe_context *pipe = draw->pipe;
+   const struct pipe_rasterizer_state *rast = draw->rasterizer;
+   void *r;
 
    assert(draw->rasterizer->point_smooth);
 
@@ -686,29 +560,15 @@ aapoint_first_point(struct draw_stage *stage, struct prim_header *header)
     */
    bind_aapoint_fragment_shader(aapoint);
 
-   /* update vertex attrib info */
-   aapoint->tex_slot = draw->vs.num_vs_outputs;
-   assert(aapoint->tex_slot > 0); /* output[0] is vertex pos */
+   draw_aapoint_prepare_outputs(draw, draw->pipeline.aapoint);
 
-   aapoint->pos_slot = draw->vs.position_output;
+   draw->suspend_flushing = TRUE;
 
-   draw->extra_vp_outputs.semantic_name = TGSI_SEMANTIC_GENERIC;
-   draw->extra_vp_outputs.semantic_index = aapoint->fs->generic_attrib;
-   draw->extra_vp_outputs.slot = aapoint->tex_slot;
+   /* Disable triangle culling, stippling, unfilled mode etc. */
+   r = draw_get_rasterizer_no_cull(draw, rast->scissor, rast->flatshade);
+   pipe->bind_rasterizer_state(pipe, r);
 
-   /* find psize slot in post-transform vertex */
-   aapoint->psize_slot = -1;
-   if (draw->rasterizer->point_size_per_vertex) {
-      /* find PSIZ vertex output */
-      const struct draw_vertex_shader *vs = draw->vs.vertex_shader;
-      uint i;
-      for (i = 0; i < vs->info.num_outputs; i++) {
-         if (vs->info.output_semantic_name[i] == TGSI_SEMANTIC_PSIZE) {
-            aapoint->psize_slot = i;
-            break;
-         }
-      }
-   }
+   draw->suspend_flushing = FALSE;
 
    /* now really draw first point */
    stage->point = aapoint_point;
@@ -721,17 +581,23 @@ aapoint_flush(struct draw_stage *stage, unsigned flags)
 {
    struct draw_context *draw = stage->draw;
    struct aapoint_stage *aapoint = aapoint_stage(stage);
-   struct pipe_context *pipe = aapoint->pipe;
+   struct pipe_context *pipe = draw->pipe;
 
    stage->point = aapoint_first_point;
    stage->next->flush( stage->next, flags );
 
    /* restore original frag shader */
    draw->suspend_flushing = TRUE;
-   aapoint->driver_bind_fs_state(pipe, aapoint->fs->driver_fs);
+   aapoint->driver_bind_fs_state(pipe, aapoint->fs ? aapoint->fs->driver_fs : NULL);
+
+   /* restore original rasterizer state */
+   if (draw->rast_handle) {
+      pipe->bind_rasterizer_state(pipe, draw->rast_handle);
+   }
+
    draw->suspend_flushing = FALSE;
 
-   draw->extra_vp_outputs.slot = 0;
+   draw_remove_extra_vertex_attribs(draw);
 }
 
 
@@ -745,19 +611,58 @@ aapoint_reset_stipple_counter(struct draw_stage *stage)
 static void
 aapoint_destroy(struct draw_stage *stage)
 {
+   struct aapoint_stage* aapoint = aapoint_stage(stage);
+   struct pipe_context *pipe = stage->draw->pipe;
+
    draw_free_temp_verts( stage );
+
+   /* restore the old entry points */
+   pipe->create_fs_state = aapoint->driver_create_fs_state;
+   pipe->bind_fs_state = aapoint->driver_bind_fs_state;
+   pipe->delete_fs_state = aapoint->driver_delete_fs_state;
+
    FREE( stage );
 }
 
+void
+draw_aapoint_prepare_outputs(struct draw_context *draw,
+                             struct draw_stage *stage)
+{
+   struct aapoint_stage *aapoint = aapoint_stage(stage);
+   const struct pipe_rasterizer_state *rast = draw->rasterizer;
+
+   /* update vertex attrib info */
+   aapoint->pos_slot = draw_current_shader_position_output(draw);
+
+   if (!rast->point_smooth)
+      return;
+
+   /* allocate the extra post-transformed vertex attribute */
+   aapoint->tex_slot = draw_alloc_extra_vertex_attrib(draw,
+                                                      TGSI_SEMANTIC_GENERIC,
+                                                      aapoint->fs->generic_attrib);
+   assert(aapoint->tex_slot > 0); /* output[0] is vertex pos */
+
+   /* find psize slot in post-transform vertex */
+   aapoint->psize_slot = -1;
+   if (draw->rasterizer->point_size_per_vertex) {
+      const struct tgsi_shader_info *info = draw_get_shader_info(draw);
+      uint i;
+      /* find PSIZ vertex output */
+      for (i = 0; i < info->num_outputs; i++) {
+         if (info->output_semantic_name[i] == TGSI_SEMANTIC_PSIZE) {
+            aapoint->psize_slot = i;
+            break;
+         }
+      }
+   }
+}
 
 static struct aapoint_stage *
 draw_aapoint_stage(struct draw_context *draw)
 {
    struct aapoint_stage *aapoint = CALLOC_STRUCT(aapoint_stage);
-   if (aapoint == NULL)
-      goto fail;
-
-   if (!draw_alloc_temp_verts( &aapoint->stage, 4 ))
+   if (!aapoint)
       goto fail;
 
    aapoint->stage.draw = draw;
@@ -770,11 +675,14 @@ draw_aapoint_stage(struct draw_context *draw)
    aapoint->stage.reset_stipple_counter = aapoint_reset_stipple_counter;
    aapoint->stage.destroy = aapoint_destroy;
 
+   if (!draw_alloc_temp_verts( &aapoint->stage, 4 ))
+      goto fail;
+
    return aapoint;
 
  fail:
    if (aapoint)
-      aapoint_destroy(&aapoint->stage);
+      aapoint->stage.destroy(&aapoint->stage);
 
    return NULL;
 
@@ -799,13 +707,13 @@ aapoint_create_fs_state(struct pipe_context *pipe,
 {
    struct aapoint_stage *aapoint = aapoint_stage_from_pipe(pipe);
    struct aapoint_fragment_shader *aafs = CALLOC_STRUCT(aapoint_fragment_shader);
-   if (aafs == NULL) 
+   if (!aafs)
       return NULL;
 
-   aafs->state = *fs;
+   aafs->state.tokens = tgsi_dup_tokens(fs->tokens);
 
    /* pass-through */
-   aafs->driver_fs = aapoint->driver_create_fs_state(aapoint->pipe, fs);
+   aafs->driver_fs = aapoint->driver_create_fs_state(pipe, fs);
 
    return aafs;
 }
@@ -819,7 +727,7 @@ aapoint_bind_fs_state(struct pipe_context *pipe, void *fs)
    /* save current */
    aapoint->fs = aafs;
    /* pass-through */
-   aapoint->driver_bind_fs_state(aapoint->pipe,
+   aapoint->driver_bind_fs_state(pipe,
                                  (aafs ? aafs->driver_fs : NULL));
 }
 
@@ -831,10 +739,12 @@ aapoint_delete_fs_state(struct pipe_context *pipe, void *fs)
    struct aapoint_fragment_shader *aafs = (struct aapoint_fragment_shader *) fs;
 
    /* pass-through */
-   aapoint->driver_delete_fs_state(aapoint->pipe, aafs->driver_fs);
+   aapoint->driver_delete_fs_state(pipe, aafs->driver_fs);
 
    if (aafs->aapoint_fs)
-      aapoint->driver_delete_fs_state(aapoint->pipe, aafs->aapoint_fs);
+      aapoint->driver_delete_fs_state(pipe, aafs->aapoint_fs);
+
+   FREE((void*)aafs->state.tokens);
 
    FREE(aafs);
 }
@@ -857,10 +767,8 @@ draw_install_aapoint_stage(struct draw_context *draw,
     * Create / install AA point drawing / prim stage
     */
    aapoint = draw_aapoint_stage( draw );
-   if (aapoint == NULL)
-      goto fail;
-
-   aapoint->pipe = pipe;
+   if (!aapoint)
+      return FALSE;
 
    /* save original driver functions */
    aapoint->driver_create_fs_state = pipe->create_fs_state;
@@ -875,10 +783,4 @@ draw_install_aapoint_stage(struct draw_context *draw,
    draw->pipeline.aapoint = &aapoint->stage;
 
    return TRUE;
-
- fail:
-   if (aapoint)
-      aapoint->stage.destroy( &aapoint->stage );
-
-   return FALSE;
 }

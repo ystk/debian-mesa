@@ -2,61 +2,91 @@
 #define NOUVEAU_WINSYS_H
 
 #include <stdint.h>
-#include "pipe/internal/p_winsys_screen.h"
+#include <inttypes.h>
+
 #include "pipe/p_defines.h"
 
-#include "nouveau/nouveau_bo.h"
-#include "nouveau/nouveau_channel.h"
-#include "nouveau/nouveau_class.h"
-#include "nouveau/nouveau_device.h"
-#include "nouveau/nouveau_grobj.h"
-#include "nouveau/nouveau_notifier.h"
-#include "nouveau/nouveau_resource.h"
-#include "nouveau/nouveau_pushbuf.h"
+#include <drm.h>
+#include <nouveau.h>
 
-#define NOUVEAU_CAP_HW_VTXBUF (0xbeef0000)
-#define NOUVEAU_CAP_HW_IDXBUF (0xbeef0001)
+#ifndef NV04_PFIFO_MAX_PACKET_LEN
+#define NV04_PFIFO_MAX_PACKET_LEN 2047
+#endif
 
-#define NOUVEAU_TEXTURE_USAGE_LINEAR (1 << 16)
+#define NOUVEAU_MIN_BUFFER_MAP_ALIGN      64
+#define NOUVEAU_MIN_BUFFER_MAP_ALIGN_MASK (NOUVEAU_MIN_BUFFER_MAP_ALIGN - 1)
 
-#define NOUVEAU_BUFFER_USAGE_TEXTURE  (1 << 16)
-#define NOUVEAU_BUFFER_USAGE_ZETA     (1 << 17)
-#define NOUVEAU_BUFFER_USAGE_TRANSFER (1 << 18)
+static inline uint32_t
+PUSH_AVAIL(struct nouveau_pushbuf *push)
+{
+   return push->end - push->cur;
+}
 
-extern struct pipe_screen *
-nv04_screen_create(struct pipe_winsys *ws, struct nouveau_device *);
+static inline bool
+PUSH_SPACE(struct nouveau_pushbuf *push, uint32_t size)
+{
+   /* Provide a buffer so that fences always have room to be emitted */
+   size += 8;
+   if (PUSH_AVAIL(push) < size)
+      return nouveau_pushbuf_space(push, size, 0, 0) == 0;
+   return true;
+}
 
-extern struct pipe_context *
-nv04_create(struct pipe_screen *, unsigned pctx_id);
+static inline void
+PUSH_DATA(struct nouveau_pushbuf *push, uint32_t data)
+{
+   *push->cur++ = data;
+}
 
-extern struct pipe_screen *
-nv10_screen_create(struct pipe_winsys *ws, struct nouveau_device *);
+static inline void
+PUSH_DATAp(struct nouveau_pushbuf *push, const void *data, uint32_t size)
+{
+   memcpy(push->cur, data, size * 4);
+   push->cur += size;
+}
 
-extern struct pipe_context *
-nv10_create(struct pipe_screen *, unsigned pctx_id);
+static inline void
+PUSH_DATAf(struct nouveau_pushbuf *push, float f)
+{
+   union { float f; uint32_t i; } u;
+   u.f = f;
+   PUSH_DATA(push, u.i);
+}
 
-extern struct pipe_screen *
-nv20_screen_create(struct pipe_winsys *ws, struct nouveau_device *);
+static inline void
+PUSH_KICK(struct nouveau_pushbuf *push)
+{
+   nouveau_pushbuf_kick(push, push->channel);
+}
 
-extern struct pipe_context *
-nv20_create(struct pipe_screen *, unsigned pctx_id);
 
-extern struct pipe_screen *
-nv30_screen_create(struct pipe_winsys *ws, struct nouveau_device *);
+#define NOUVEAU_RESOURCE_FLAG_LINEAR   (PIPE_RESOURCE_FLAG_DRV_PRIV << 0)
+#define NOUVEAU_RESOURCE_FLAG_DRV_PRIV (PIPE_RESOURCE_FLAG_DRV_PRIV << 1)
 
-extern struct pipe_context *
-nv30_create(struct pipe_screen *, unsigned pctx_id);
+static inline uint32_t
+nouveau_screen_transfer_flags(unsigned pipe)
+{
+   uint32_t flags = 0;
 
-extern struct pipe_screen *
-nv40_screen_create(struct pipe_winsys *ws, struct nouveau_device *);
+   if (!(pipe & PIPE_TRANSFER_UNSYNCHRONIZED)) {
+      if (pipe & PIPE_TRANSFER_READ)
+         flags |= NOUVEAU_BO_RD;
+      if (pipe & PIPE_TRANSFER_WRITE)
+         flags |= NOUVEAU_BO_WR;
+      if (pipe & PIPE_TRANSFER_DONTBLOCK)
+         flags |= NOUVEAU_BO_NOBLOCK;
+   }
 
-extern struct pipe_context *
-nv40_create(struct pipe_screen *, unsigned pctx_id);
+   return flags;
+}
 
-extern struct pipe_screen *
-nv50_screen_create(struct pipe_winsys *ws, struct nouveau_device *);
+extern struct nouveau_screen *
+nv30_screen_create(struct nouveau_device *);
 
-extern struct pipe_context *
-nv50_create(struct pipe_screen *, unsigned pctx_id);
+extern struct nouveau_screen *
+nv50_screen_create(struct nouveau_device *);
+
+extern struct nouveau_screen *
+nvc0_screen_create(struct nouveau_device *);
 
 #endif

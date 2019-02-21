@@ -1,8 +1,8 @@
 /**************************************************************************
- * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ *
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
@@ -10,19 +10,19 @@
  * distribute, sub license, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice (including the
  * next paragraph) shall be included in all copies or substantial portions
  * of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- * 
+ *
  **************************************************************************/
 
 /*
@@ -31,510 +31,139 @@
  * this function whether the user called glBegin/End, glDrawArrays,
  * glDrawElements, glEvalMesh, or glCalList, etc.
  *
- * We basically convert the VBO's vertex attribute/array information into
- * Gallium vertex state, bind the vertex buffer objects and call
- * pipe->draw_elements(), pipe->draw_range_elements() or pipe->draw_arrays().
- *
  * Authors:
- *   Keith Whitwell <keith@tungstengraphics.com>
+ *   Keith Whitwell <keithw@vmware.com>
  */
 
 
 #include "main/imports.h"
 #include "main/image.h"
+#include "main/bufferobj.h"
 #include "main/macros.h"
-#include "shader/prog_uniform.h"
+#include "main/varray.h"
+
+#include "compiler/glsl/ir_uniform.h"
 
 #include "vbo/vbo.h"
 
 #include "st_context.h"
 #include "st_atom.h"
+#include "st_cb_bitmap.h"
 #include "st_cb_bufferobjects.h"
+#include "st_cb_xformfb.h"
+#include "st_debug.h"
 #include "st_draw.h"
 #include "st_program.h"
 
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
-#include "pipe/p_inlines.h"
-
-
-static GLuint double_types[4] = {
-   PIPE_FORMAT_R64_FLOAT,
-   PIPE_FORMAT_R64G64_FLOAT,
-   PIPE_FORMAT_R64G64B64_FLOAT,
-   PIPE_FORMAT_R64G64B64A64_FLOAT
-};
-
-static GLuint float_types[4] = {
-   PIPE_FORMAT_R32_FLOAT,
-   PIPE_FORMAT_R32G32_FLOAT,
-   PIPE_FORMAT_R32G32B32_FLOAT,
-   PIPE_FORMAT_R32G32B32A32_FLOAT
-};
-
-static GLuint uint_types_norm[4] = {
-   PIPE_FORMAT_R32_UNORM,
-   PIPE_FORMAT_R32G32_UNORM,
-   PIPE_FORMAT_R32G32B32_UNORM,
-   PIPE_FORMAT_R32G32B32A32_UNORM
-};
-
-static GLuint uint_types_scale[4] = {
-   PIPE_FORMAT_R32_USCALED,
-   PIPE_FORMAT_R32G32_USCALED,
-   PIPE_FORMAT_R32G32B32_USCALED,
-   PIPE_FORMAT_R32G32B32A32_USCALED
-};
-
-static GLuint int_types_norm[4] = {
-   PIPE_FORMAT_R32_SNORM,
-   PIPE_FORMAT_R32G32_SNORM,
-   PIPE_FORMAT_R32G32B32_SNORM,
-   PIPE_FORMAT_R32G32B32A32_SNORM
-};
-
-static GLuint int_types_scale[4] = {
-   PIPE_FORMAT_R32_SSCALED,
-   PIPE_FORMAT_R32G32_SSCALED,
-   PIPE_FORMAT_R32G32B32_SSCALED,
-   PIPE_FORMAT_R32G32B32A32_SSCALED
-};
-
-static GLuint ushort_types_norm[4] = {
-   PIPE_FORMAT_R16_UNORM,
-   PIPE_FORMAT_R16G16_UNORM,
-   PIPE_FORMAT_R16G16B16_UNORM,
-   PIPE_FORMAT_R16G16B16A16_UNORM
-};
-
-static GLuint ushort_types_scale[4] = {
-   PIPE_FORMAT_R16_USCALED,
-   PIPE_FORMAT_R16G16_USCALED,
-   PIPE_FORMAT_R16G16B16_USCALED,
-   PIPE_FORMAT_R16G16B16A16_USCALED
-};
-
-static GLuint short_types_norm[4] = {
-   PIPE_FORMAT_R16_SNORM,
-   PIPE_FORMAT_R16G16_SNORM,
-   PIPE_FORMAT_R16G16B16_SNORM,
-   PIPE_FORMAT_R16G16B16A16_SNORM
-};
-
-static GLuint short_types_scale[4] = {
-   PIPE_FORMAT_R16_SSCALED,
-   PIPE_FORMAT_R16G16_SSCALED,
-   PIPE_FORMAT_R16G16B16_SSCALED,
-   PIPE_FORMAT_R16G16B16A16_SSCALED
-};
-
-static GLuint ubyte_types_norm[4] = {
-   PIPE_FORMAT_R8_UNORM,
-   PIPE_FORMAT_R8G8_UNORM,
-   PIPE_FORMAT_R8G8B8_UNORM,
-   PIPE_FORMAT_R8G8B8A8_UNORM
-};
-
-static GLuint ubyte_types_scale[4] = {
-   PIPE_FORMAT_R8_USCALED,
-   PIPE_FORMAT_R8G8_USCALED,
-   PIPE_FORMAT_R8G8B8_USCALED,
-   PIPE_FORMAT_R8G8B8A8_USCALED
-};
-
-static GLuint byte_types_norm[4] = {
-   PIPE_FORMAT_R8_SNORM,
-   PIPE_FORMAT_R8G8_SNORM,
-   PIPE_FORMAT_R8G8B8_SNORM,
-   PIPE_FORMAT_R8G8B8A8_SNORM
-};
-
-static GLuint byte_types_scale[4] = {
-   PIPE_FORMAT_R8_SSCALED,
-   PIPE_FORMAT_R8G8_SSCALED,
-   PIPE_FORMAT_R8G8B8_SSCALED,
-   PIPE_FORMAT_R8G8B8A8_SSCALED
-};
-
-static GLuint fixed_types[4] = {
-   PIPE_FORMAT_R32_FIXED,
-   PIPE_FORMAT_R32G32_FIXED,
-   PIPE_FORMAT_R32G32B32_FIXED,
-   PIPE_FORMAT_R32G32B32A32_FIXED
-};
-
+#include "util/u_inlines.h"
+#include "util/u_format.h"
+#include "util/u_prim.h"
+#include "util/u_draw.h"
+#include "util/u_upload_mgr.h"
+#include "draw/draw_context.h"
+#include "cso_cache/cso_context.h"
 
 
 /**
- * Return a PIPE_FORMAT_x for the given GL datatype and size.
- */
-GLuint
-st_pipe_vertex_format(GLenum type, GLuint size, GLenum format,
-                      GLboolean normalized)
-{
-   assert((type >= GL_BYTE && type <= GL_DOUBLE) ||
-          type == GL_FIXED);
-   assert(size >= 1);
-   assert(size <= 4);
-   assert(format == GL_RGBA || format == GL_BGRA);
-
-   if (format == GL_BGRA) {
-      /* this is an odd-ball case */
-      assert(type == GL_UNSIGNED_BYTE);
-      assert(normalized);
-      return PIPE_FORMAT_B8G8R8A8_UNORM;
-   }
-
-   if (normalized) {
-      switch (type) {
-      case GL_DOUBLE: return double_types[size-1];
-      case GL_FLOAT: return float_types[size-1];
-      case GL_INT: return int_types_norm[size-1];
-      case GL_SHORT: return short_types_norm[size-1];
-      case GL_BYTE: return byte_types_norm[size-1];
-      case GL_UNSIGNED_INT: return uint_types_norm[size-1];
-      case GL_UNSIGNED_SHORT: return ushort_types_norm[size-1];
-      case GL_UNSIGNED_BYTE: return ubyte_types_norm[size-1];
-      case GL_FIXED: return fixed_types[size-1];
-      default: assert(0); return 0;
-      }      
-   }
-   else {
-      switch (type) {
-      case GL_DOUBLE: return double_types[size-1];
-      case GL_FLOAT: return float_types[size-1];
-      case GL_INT: return int_types_scale[size-1];
-      case GL_SHORT: return short_types_scale[size-1];
-      case GL_BYTE: return byte_types_scale[size-1];
-      case GL_UNSIGNED_INT: return uint_types_scale[size-1];
-      case GL_UNSIGNED_SHORT: return ushort_types_scale[size-1];
-      case GL_UNSIGNED_BYTE: return ubyte_types_scale[size-1];
-      case GL_FIXED: return fixed_types[size-1];
-      default: assert(0); return 0;
-      }      
-   }
-   return 0; /* silence compiler warning */
-}
-
-
-/*
- * If edge flags are needed, setup an bitvector of flags and call
- * pipe->set_edgeflags().
- * XXX memleak: need to free the returned pointer at some point
- */
-static void *
-setup_edgeflags(GLcontext *ctx, GLenum primMode, GLint start, GLint count,
-                const struct gl_client_array *array)
-{
-   struct pipe_context *pipe = ctx->st->pipe;
-
-   if ((primMode == GL_TRIANGLES ||
-        primMode == GL_QUADS ||
-        primMode == GL_POLYGON) &&
-       (ctx->Polygon.FrontMode != GL_FILL ||
-        ctx->Polygon.BackMode != GL_FILL)) {
-      /* need edge flags */
-      GLint i;
-      unsigned *vec;
-      struct st_buffer_object *stobj = st_buffer_object(array->BufferObj);
-      ubyte *map;
-
-      if (!stobj || stobj->Base.Name == 0) {
-         /* edge flags are not in a VBO */
-         return NULL;
-      }
-
-      vec = (unsigned *) _mesa_calloc(sizeof(unsigned) * ((count + 31) / 32));
-      if (!vec)
-         return NULL;
-
-      map = pipe_buffer_map(pipe->screen, stobj->buffer, PIPE_BUFFER_USAGE_CPU_READ);
-      map = ADD_POINTERS(map, array->Ptr);
-
-      for (i = 0; i < count; i++) {
-         if (*((float *) map))
-            vec[i/32] |= 1 << (i % 32);
-
-         map += array->StrideB;
-      }
-
-      pipe_buffer_unmap(pipe->screen, stobj->buffer);
-
-      pipe->set_edgeflags(pipe, vec);
-
-      return vec;
-   }
-   else {
-      /* edge flags not needed */
-      pipe->set_edgeflags(pipe, NULL);
-      return NULL;
-   }
-}
-
-
-/**
- * Examine the active arrays to determine if we have interleaved
- * vertex arrays all living in one VBO, or all living in user space.
- * \param userSpace  returns whether the arrays are in user space.
+ * This is very similar to vbo_all_varyings_in_vbos() but we are
+ * only interested in per-vertex data.  See bug 38626.
  */
 static GLboolean
-is_interleaved_arrays(const struct st_vertex_program *vp,
-                      const struct gl_client_array **arrays,
-                      GLboolean *userSpace)
+all_varyings_in_vbos(const struct gl_client_array *arrays[])
 {
-   GLuint attr;
-   const struct gl_buffer_object *firstBufObj = NULL;
-   GLint firstStride = -1;
-   GLuint num_client_arrays = 0;
-   const GLubyte *client_addr = NULL;
+   GLuint i;
 
-   for (attr = 0; attr < vp->num_inputs; attr++) {
-      const GLuint mesaAttr = vp->index_to_input[attr];
-      const struct gl_buffer_object *bufObj = arrays[mesaAttr]->BufferObj;
-      const GLsizei stride = arrays[mesaAttr]->StrideB; /* in bytes */
-
-      if (firstStride < 0) {
-         firstStride = stride;
-      }
-      else if (firstStride != stride) {
-         return GL_FALSE;
-      }
-         
-      if (!bufObj || !bufObj->Name) {
-         num_client_arrays++;
-         /* Try to detect if the client-space arrays are
-          * "close" to each other.
-          */
-         if (!client_addr) {
-            client_addr = arrays[mesaAttr]->Ptr;
-         }
-         else if (abs(arrays[mesaAttr]->Ptr - client_addr) > firstStride) {
-            /* arrays start too far apart */
-            return GL_FALSE;
-         }
-      }
-      else if (!firstBufObj) {
-         firstBufObj = bufObj;
-      }
-      else if (bufObj != firstBufObj) {
-         return GL_FALSE;
-      }
-   }
-
-   *userSpace = (num_client_arrays == vp->num_inputs);
-   /* printf("user space: %d (%d %d)\n", (int) *userSpace,num_client_arrays,vp->num_inputs); */
+   for (i = 0; i < VERT_ATTRIB_MAX; i++)
+      if (arrays[i]->StrideB &&
+          !arrays[i]->InstanceDivisor &&
+          !_mesa_is_bufferobj(arrays[i]->BufferObj))
+	 return GL_FALSE;
 
    return GL_TRUE;
 }
 
 
 /**
- * Compute the memory range occupied by the arrays.
+ * Basically, translate Mesa's index buffer information into
+ * a pipe_index_buffer object.
+ * \return TRUE or FALSE for success/failure
  */
-static void
-get_arrays_bounds(const struct st_vertex_program *vp,
-                       const struct gl_client_array **arrays,
-                       GLuint max_index,
-                       const GLubyte **low, const GLubyte **high)
+static boolean
+setup_index_buffer(struct st_context *st,
+                   const struct _mesa_index_buffer *ib,
+                   struct pipe_index_buffer *ibuffer)
 {
-   const GLubyte *low_addr = NULL;
-   const GLubyte *high_addr = NULL;
-   GLuint attr;
+   struct gl_buffer_object *bufobj = ib->obj;
 
-   for (attr = 0; attr < vp->num_inputs; attr++) {
-      const GLuint mesaAttr = vp->index_to_input[attr];
-      const GLint stride = arrays[mesaAttr]->StrideB;
-      const GLubyte *start = arrays[mesaAttr]->Ptr;
-      const unsigned sz = (arrays[mesaAttr]->Size * 
-                           _mesa_sizeof_type(arrays[mesaAttr]->Type));
-      const GLubyte *end = start + (max_index * stride) + sz;
+   ibuffer->index_size = vbo_sizeof_ib_type(ib->type);
 
-      if (attr == 0) {
-         low_addr = start;
-         high_addr = end;
+   /* get/create the index buffer object */
+   if (_mesa_is_bufferobj(bufobj)) {
+      /* indices are in a real VBO */
+      ibuffer->buffer = st_buffer_object(bufobj)->buffer;
+      ibuffer->offset = pointer_to_offset(ib->ptr);
+   }
+   else if (st->indexbuf_uploader) {
+      /* upload indexes from user memory into a real buffer */
+      u_upload_data(st->indexbuf_uploader, 0,
+                    ib->count * ibuffer->index_size, 4, ib->ptr,
+                    &ibuffer->offset, &ibuffer->buffer);
+      if (!ibuffer->buffer) {
+         /* out of memory */
+         return FALSE;
       }
-      else {
-         low_addr = MIN2(low_addr, start);
-         high_addr = MAX2(high_addr, end);
-      }
+      u_upload_unmap(st->indexbuf_uploader);
+   }
+   else {
+      /* indices are in user space memory */
+      ibuffer->user_buffer = ib->ptr;
    }
 
-   *low = low_addr;
-   *high = high_addr;
+   cso_set_index_buffer(st->cso_context, ibuffer);
+   return TRUE;
 }
 
 
 /**
- * Set up for drawing interleaved arrays that all live in one VBO
- * or all live in user space.
- * \param vbuffer  returns vertex buffer info
- * \param velements  returns vertex element info
+ * Set the restart index.
  */
 static void
-setup_interleaved_attribs(GLcontext *ctx,
-                          const struct st_vertex_program *vp,
-                          const struct gl_client_array **arrays,
-                          GLuint max_index,
-                          GLboolean userSpace,
-                          struct pipe_vertex_buffer *vbuffer,
-                          struct pipe_vertex_element velements[])
+setup_primitive_restart(struct gl_context *ctx,
+                        const struct _mesa_index_buffer *ib,
+                        struct pipe_draw_info *info)
 {
-   struct pipe_context *pipe = ctx->st->pipe;
-   GLuint attr;
-   const GLubyte *offset0 = NULL;
+   if (ctx->Array._PrimitiveRestart) {
+      info->restart_index = _mesa_primitive_restart_index(ctx, ib->type);
 
-   for (attr = 0; attr < vp->num_inputs; attr++) {
-      const GLuint mesaAttr = vp->index_to_input[attr];
-      struct gl_buffer_object *bufobj = arrays[mesaAttr]->BufferObj;
-      struct st_buffer_object *stobj = st_buffer_object(bufobj);
-      GLsizei stride = arrays[mesaAttr]->StrideB;
-
-      /*printf("stobj %u = %p\n", attr, (void*)stobj);*/
-
-      if (attr == 0) {
-         const GLubyte *low, *high;
-
-         get_arrays_bounds(vp, arrays, max_index, &low, &high);
-         /*printf("buffer range: %p %p  %d\n", low, high, high-low);*/
-
-         offset0 = low;
-         if (userSpace) {
-            vbuffer->buffer =
-               pipe_user_buffer_create(pipe->screen, (void *) low, high - low);
-            vbuffer->buffer_offset = 0;
-         }
-         else {
-            vbuffer->buffer = NULL;
-            pipe_buffer_reference(&vbuffer->buffer, stobj->buffer);
-            vbuffer->buffer_offset = pointer_to_offset(low);
-         }
-         vbuffer->stride = stride; /* in bytes */
-         vbuffer->max_index = max_index;
-      }
-
-      velements[attr].src_offset =
-         (unsigned) (arrays[mesaAttr]->Ptr - offset0);
-      velements[attr].vertex_buffer_index = 0;
-      velements[attr].nr_components = arrays[mesaAttr]->Size;
-      velements[attr].src_format =
-         st_pipe_vertex_format(arrays[mesaAttr]->Type,
-                               arrays[mesaAttr]->Size,
-                               arrays[mesaAttr]->Format,
-                               arrays[mesaAttr]->Normalized);
-      assert(velements[attr].src_format);
+      /* Enable primitive restart only when the restart index can have an
+       * effect. This is required for correctness in radeonsi VI support.
+       * Other hardware may also benefit from taking a faster, non-restart path
+       * when possible.
+       */
+      if ((ib->type == GL_UNSIGNED_INT) ||
+          (ib->type == GL_UNSIGNED_SHORT && info->restart_index <= 0xffff) ||
+          (ib->type == GL_UNSIGNED_BYTE && info->restart_index <= 0xff))
+         info->primitive_restart = true;
    }
 }
 
 
 /**
- * Set up a separate pipe_vertex_buffer and pipe_vertex_element for each
- * vertex attribute.
- * \param vbuffer  returns vertex buffer info
- * \param velements  returns vertex element info
+ * Translate OpenGL primtive type (GL_POINTS, GL_TRIANGLE_STRIP, etc) to
+ * the corresponding Gallium type.
  */
-static void
-setup_non_interleaved_attribs(GLcontext *ctx,
-                              const struct st_vertex_program *vp,
-                              const struct gl_client_array **arrays,
-                              GLuint max_index,
-                              GLboolean *userSpace,
-                              struct pipe_vertex_buffer vbuffer[],
-                              struct pipe_vertex_element velements[])
+static unsigned
+translate_prim(const struct gl_context *ctx, unsigned prim)
 {
-   struct pipe_context *pipe = ctx->st->pipe;
-   GLuint attr;
+   /* GL prims should match Gallium prims, spot-check a few */
+   STATIC_ASSERT(GL_POINTS == PIPE_PRIM_POINTS);
+   STATIC_ASSERT(GL_QUADS == PIPE_PRIM_QUADS);
+   STATIC_ASSERT(GL_TRIANGLE_STRIP_ADJACENCY == PIPE_PRIM_TRIANGLE_STRIP_ADJACENCY);
+   STATIC_ASSERT(GL_PATCHES == PIPE_PRIM_PATCHES);
 
-   for (attr = 0; attr < vp->num_inputs; attr++) {
-      const GLuint mesaAttr = vp->index_to_input[attr];
-      struct gl_buffer_object *bufobj = arrays[mesaAttr]->BufferObj;
-      GLsizei stride = arrays[mesaAttr]->StrideB;
-
-      *userSpace = GL_FALSE;
-
-      if (bufobj && bufobj->Name) {
-         /* Attribute data is in a VBO.
-          * Recall that for VBOs, the gl_client_array->Ptr field is
-          * really an offset from the start of the VBO, not a pointer.
-          */
-         struct st_buffer_object *stobj = st_buffer_object(bufobj);
-         assert(stobj->buffer);
-         /*printf("stobj %u = %p\n", attr, (void*) stobj);*/
-
-         vbuffer[attr].buffer = NULL;
-         pipe_buffer_reference(&vbuffer[attr].buffer, stobj->buffer);
-         vbuffer[attr].buffer_offset = pointer_to_offset(arrays[mesaAttr]->Ptr);
-         velements[attr].src_offset = 0;
-      }
-      else {
-         /* attribute data is in user-space memory, not a VBO */
-         uint bytes;
-         /*printf("user-space array %d stride %d\n", attr, stride);*/
-	
-         *userSpace = GL_TRUE;
-
-         /* wrap user data */
-         if (arrays[mesaAttr]->Ptr) {
-            /* user's vertex array */
-            if (arrays[mesaAttr]->StrideB) {
-               bytes = arrays[mesaAttr]->StrideB * (max_index + 1);
-            }
-            else {
-               bytes = arrays[mesaAttr]->Size
-                  * _mesa_sizeof_type(arrays[mesaAttr]->Type);
-            }
-            vbuffer[attr].buffer = pipe_user_buffer_create(pipe->screen,
-                           (void *) arrays[mesaAttr]->Ptr, bytes);
-         }
-         else {
-            /* no array, use ctx->Current.Attrib[] value */
-            bytes = sizeof(ctx->Current.Attrib[0]);
-            vbuffer[attr].buffer = pipe_user_buffer_create(pipe->screen,
-                           (void *) ctx->Current.Attrib[mesaAttr], bytes);
-            stride = 0;
-         }
-
-         vbuffer[attr].buffer_offset = 0;
-         velements[attr].src_offset = 0;
-      }
-
-      assert(velements[attr].src_offset <= 2048); /* 11-bit field */
-
-      /* common-case setup */
-      vbuffer[attr].stride = stride; /* in bytes */
-      vbuffer[attr].max_index = max_index;
-      velements[attr].vertex_buffer_index = attr;
-      velements[attr].nr_components = arrays[mesaAttr]->Size;
-      velements[attr].src_format
-         = st_pipe_vertex_format(arrays[mesaAttr]->Type,
-                                 arrays[mesaAttr]->Size,
-                                 arrays[mesaAttr]->Format,
-                                 arrays[mesaAttr]->Normalized);
-      assert(velements[attr].src_format);
-   }
-}
-
-
-
-/**
- * Prior to drawing, check that any uniforms referenced by the
- * current shader have been set.  If a uniform has not been set,
- * issue a warning.
- */
-static void
-check_uniforms(GLcontext *ctx)
-{
-   const struct gl_shader_program *shProg = ctx->Shader.CurrentProgram;
-   if (shProg && shProg->LinkStatus) {
-      GLuint i;
-      for (i = 0; i < shProg->Uniforms->NumUniforms; i++) {
-         const struct gl_uniform *u = &shProg->Uniforms->Uniforms[i];
-         if (!u->Initialized) {
-            _mesa_warning(ctx,
-                          "Using shader with uninitialized uniform: %s",
-                          u->Name);
-         }
-      }
-   }
+   return prim;
 }
 
 
@@ -544,195 +173,321 @@ check_uniforms(GLcontext *ctx)
  * Basically, translate the information into the format expected by gallium.
  */
 void
-st_draw_vbo(GLcontext *ctx,
-            const struct gl_client_array **arrays,
+st_draw_vbo(struct gl_context *ctx,
             const struct _mesa_prim *prims,
             GLuint nr_prims,
             const struct _mesa_index_buffer *ib,
 	    GLboolean index_bounds_valid,
             GLuint min_index,
-            GLuint max_index)
+            GLuint max_index,
+            struct gl_transform_feedback_object *tfb_vertcount,
+            unsigned stream,
+            struct gl_buffer_object *indirect)
 {
-   struct pipe_context *pipe = ctx->st->pipe;
-   const struct st_vertex_program *vp;
-   const struct pipe_shader_state *vs;
-   struct pipe_vertex_buffer vbuffer[PIPE_MAX_SHADER_INPUTS];
-   GLuint attr;
-   struct pipe_vertex_element velements[PIPE_MAX_ATTRIBS];
-   unsigned num_vbuffers, num_velements;
-   GLboolean userSpace = GL_FALSE;
-
-   /* Gallium probably doesn't want this in some cases. */
-   if (!index_bounds_valid)
-      vbo_get_minmax_index(ctx, prims, ib, &min_index, &max_index);
-
-   /* sanity check for pointer arithmetic below */
-   assert(sizeof(arrays[0]->Ptr[0]) == 1);
+   struct st_context *st = st_context(ctx);
+   struct pipe_index_buffer ibuffer = {0};
+   struct pipe_draw_info info;
+   const struct gl_client_array **arrays = ctx->Array._DrawArrays;
+   unsigned i;
 
    /* Mesa core state should have been validated already */
    assert(ctx->NewState == 0x0);
 
-   st_validate_state(ctx->st);
+   st_flush_bitmap_cache(st);
+   st_invalidate_readpix_cache(st);
 
-   /* must get these after state validation! */
-   vp = ctx->st->vp;
-   vs = &ctx->st->vp->state;
-
-#if 0
-   if (MESA_VERBOSE & VERBOSE_GLSL) {
-      check_uniforms(ctx);
+   /* Validate state. */
+   if ((st->dirty | ctx->NewDriverState) & ST_PIPELINE_RENDER_STATE_MASK ||
+       st->gfx_shaders_may_be_dirty) {
+      st_validate_state(st, ST_PIPELINE_RENDER);
    }
-#else
-   (void) check_uniforms;
-#endif
 
-   /*
-    * Setup the vbuffer[] and velements[] arrays.
-    */
-   if (is_interleaved_arrays(vp, arrays, &userSpace)) {
-      /*printf("Draw interleaved\n");*/
-      setup_interleaved_attribs(ctx, vp, arrays, max_index, userSpace,
-                                vbuffer, velements);
-      num_vbuffers = 1;
-      num_velements = vp->num_inputs;
-      if (num_velements == 0)
-         num_vbuffers = 0;
+   if (st->vertex_array_out_of_memory) {
+      return;
+   }
+
+   util_draw_init_info(&info);
+
+   if (ib) {
+      /* Get index bounds for user buffers. */
+      if (!index_bounds_valid)
+         if (!all_varyings_in_vbos(arrays))
+            vbo_get_minmax_indices(ctx, prims, ib, &min_index, &max_index,
+                                   nr_prims);
+
+      if (!setup_index_buffer(st, ib, &ibuffer)) {
+         _mesa_error(ctx, GL_OUT_OF_MEMORY, "glBegin/DrawElements/DrawArray");
+         return;
+      }
+
+      info.indexed = TRUE;
+      if (min_index != ~0U && max_index != ~0U) {
+         info.min_index = min_index;
+         info.max_index = max_index;
+      }
+
+      /* The VBO module handles restart for the non-indexed GLDrawArrays
+       * so we only set these fields for indexed drawing:
+       */
+      setup_primitive_restart(ctx, ib, &info);
    }
    else {
-      /*printf("Draw non-interleaved\n");*/
-      setup_non_interleaved_attribs(ctx, vp, arrays, max_index,
-                                    &userSpace, vbuffer, velements);
-      num_vbuffers = vp->num_inputs;
-      num_velements = vp->num_inputs;
-   }
-
-#if 0
-   {
-      GLuint i;
-      for (i = 0; i < num_vbuffers; i++) {
-         printf("buffers[%d].stride = %u\n", i, vbuffer[i].stride);
-         printf("buffers[%d].max_index = %u\n", i, vbuffer[i].max_index);
-         printf("buffers[%d].buffer_offset = %u\n", i, vbuffer[i].buffer_offset);
-         printf("buffers[%d].buffer = %p\n", i, (void*) vbuffer[i].buffer);
-      }
-      for (i = 0; i < num_velements; i++) {
-         printf("vlements[%d].vbuffer_index = %u\n", i, velements[i].vertex_buffer_index);
-         printf("vlements[%d].src_offset = %u\n", i, velements[i].src_offset);
-         printf("vlements[%d].nr_comps = %u\n", i, velements[i].nr_components);
-         printf("vlements[%d].format = %s\n", i, pf_name(velements[i].src_format));
+      /* Transform feedback drawing is always non-indexed. */
+      /* Set info.count_from_stream_output. */
+      if (tfb_vertcount) {
+         if (!st_transform_feedback_draw_init(tfb_vertcount, stream, &info))
+            return;
       }
    }
-#endif
 
-   pipe->set_vertex_buffers(pipe, num_vbuffers, vbuffer);
-   pipe->set_vertex_elements(pipe, num_velements, velements);
-
-   if (num_vbuffers == 0 || num_velements == 0)
-      return;
+   assert(!indirect);
 
    /* do actual drawing */
+   for (i = 0; i < nr_prims; i++) {
+      info.mode = translate_prim(ctx, prims[i].mode);
+      info.start = prims[i].start;
+      info.count = prims[i].count;
+      info.start_instance = prims[i].base_instance;
+      info.instance_count = prims[i].num_instances;
+      info.vertices_per_patch = ctx->TessCtrlProgram.patch_vertices;
+      info.index_bias = prims[i].basevertex;
+      info.drawid = prims[i].draw_id;
+      if (!ib) {
+         info.min_index = info.start;
+         info.max_index = info.start + info.count - 1;
+      }
+
+      if (ST_DEBUG & DEBUG_DRAW) {
+         debug_printf("st/draw: mode %s  start %u  count %u  indexed %d\n",
+                      u_prim_name(info.mode),
+                      info.start,
+                      info.count,
+                      info.indexed);
+      }
+
+      if (info.count_from_stream_output) {
+         cso_draw_vbo(st->cso_context, &info);
+      }
+      else if (info.primitive_restart) {
+         /* don't trim, restarts might be inside index list */
+         cso_draw_vbo(st->cso_context, &info);
+      }
+      else if (u_trim_pipe_prim(prims[i].mode, &info.count)) {
+         cso_draw_vbo(st->cso_context, &info);
+      }
+   }
+
+   if (ib && st->indexbuf_uploader && !_mesa_is_bufferobj(ib->obj)) {
+      pipe_resource_reference(&ibuffer.buffer, NULL);
+   }
+}
+
+static void
+st_indirect_draw_vbo(struct gl_context *ctx,
+                     GLuint mode,
+                     struct gl_buffer_object *indirect_data,
+                     GLsizeiptr indirect_offset,
+                     unsigned draw_count,
+                     unsigned stride,
+                     struct gl_buffer_object *indirect_params,
+                     GLsizeiptr indirect_params_offset,
+                     const struct _mesa_index_buffer *ib)
+{
+   struct st_context *st = st_context(ctx);
+   struct pipe_index_buffer ibuffer = {0};
+   struct pipe_draw_info info;
+
+   /* Mesa core state should have been validated already */
+   assert(ctx->NewState == 0x0);
+   assert(stride);
+
+   /* Validate state. */
+   if ((st->dirty | ctx->NewDriverState) & ST_PIPELINE_RENDER_STATE_MASK ||
+       st->gfx_shaders_may_be_dirty) {
+      st_validate_state(st, ST_PIPELINE_RENDER);
+   }
+
+   if (st->vertex_array_out_of_memory) {
+      return;
+   }
+
+   util_draw_init_info(&info);
+
    if (ib) {
-      /* indexed primitive */
-      struct gl_buffer_object *bufobj = ib->obj;
-      struct pipe_buffer *indexBuf = NULL;
-      unsigned indexSize, indexOffset, i;
-
-      switch (ib->type) {
-      case GL_UNSIGNED_INT:
-         indexSize = 4;
-         break;
-      case GL_UNSIGNED_SHORT:
-         indexSize = 2;
-         break;
-      case GL_UNSIGNED_BYTE:
-         indexSize = 1;
-         break;
-      default:
-         assert(0);
-	 return;
+      if (!setup_index_buffer(st, ib, &ibuffer)) {
+         _mesa_error(ctx, GL_OUT_OF_MEMORY, "gl%sDrawElementsIndirect%s",
+                     (draw_count > 1) ? "Multi" : "",
+                     indirect_params ? "CountARB" : "");
+         return;
       }
 
-      /* get/create the index buffer object */
-      if (bufobj && bufobj->Name) {
-         /* elements/indexes are in a real VBO */
-         struct st_buffer_object *stobj = st_buffer_object(bufobj);
-         pipe_buffer_reference(&indexBuf, stobj->buffer);
-         indexOffset = pointer_to_offset(ib->ptr) / indexSize;
-      }
-      else {
-         /* element/indicies are in user space memory */
-         indexBuf = pipe_user_buffer_create(pipe->screen, (void *) ib->ptr,
-                                            ib->count * indexSize);
-         indexOffset = 0;
-      }
+      info.indexed = TRUE;
 
-      /* draw */
-      if (nr_prims == 1 && pipe->draw_range_elements != NULL) {
-         i = 0;
-
-         /* XXX: exercise temporary path to pass min/max directly
-          * through to driver & draw module.  These interfaces still
-          * need a bit of work...
-          */
-         setup_edgeflags(ctx, prims[i].mode,
-                         prims[i].start + indexOffset, prims[i].count,
-                         arrays[VERT_ATTRIB_EDGEFLAG]);
-
-         pipe->draw_range_elements(pipe, indexBuf, indexSize,
-                                   min_index,
-                                   max_index,
-                                   prims[i].mode,
-                                   prims[i].start + indexOffset, prims[i].count);
-      }
-      else {
-         for (i = 0; i < nr_prims; i++) {
-            setup_edgeflags(ctx, prims[i].mode,
-                            prims[i].start + indexOffset, prims[i].count,
-                            arrays[VERT_ATTRIB_EDGEFLAG]);
-            
-            pipe->draw_elements(pipe, indexBuf, indexSize,
-                                prims[i].mode,
-                                prims[i].start + indexOffset, prims[i].count);
-         }
-      }
-
-      pipe_buffer_reference(&indexBuf, NULL);
-   }
-   else {
-      /* non-indexed */
-      GLuint i;
-      for (i = 0; i < nr_prims; i++) {
-         setup_edgeflags(ctx, prims[i].mode,
-                         prims[i].start, prims[i].count,
-                         arrays[VERT_ATTRIB_EDGEFLAG]);
-
-         pipe->draw_arrays(pipe, prims[i].mode, prims[i].start, prims[i].count);
-      }
+      /* Primitive restart is not handled by the VBO module in this case. */
+      setup_primitive_restart(ctx, ib, &info);
    }
 
-   /* unreference buffers (frees wrapped user-space buffer objects) */
-   for (attr = 0; attr < num_vbuffers; attr++) {
-      pipe_buffer_reference(&vbuffer[attr].buffer, NULL);
-      assert(!vbuffer[attr].buffer);
+   info.mode = translate_prim(ctx, mode);
+   info.vertices_per_patch = ctx->TessCtrlProgram.patch_vertices;
+   info.indirect = st_buffer_object(indirect_data)->buffer;
+   info.indirect_offset = indirect_offset;
+
+   if (ST_DEBUG & DEBUG_DRAW) {
+      debug_printf("st/draw indirect: mode %s drawcount %d indexed %d\n",
+                   u_prim_name(info.mode),
+                   draw_count,
+                   info.indexed);
    }
 
-   if (userSpace) 
-   {
-      pipe->set_vertex_buffers(pipe, 0, NULL);
+   if (!st->has_multi_draw_indirect) {
+      int i;
+
+      assert(!indirect_params);
+      info.indirect_count = 1;
+      for (i = 0; i < draw_count; i++) {
+         info.drawid = i;
+         cso_draw_vbo(st->cso_context, &info);
+         info.indirect_offset += stride;
+      }
+   } else {
+      info.indirect_count = draw_count;
+      info.indirect_stride = stride;
+      if (indirect_params) {
+         info.indirect_params = st_buffer_object(indirect_params)->buffer;
+         info.indirect_params_offset = indirect_params_offset;
+      }
+      cso_draw_vbo(st->cso_context, &info);
    }
 }
 
 
-void st_init_draw( struct st_context *st )
+void
+st_init_draw(struct st_context *st)
 {
-   GLcontext *ctx = st->ctx;
+   struct gl_context *ctx = st->ctx;
 
    vbo_set_draw_func(ctx, st_draw_vbo);
+   vbo_set_indirect_draw_func(ctx, st_indirect_draw_vbo);
 }
 
 
-void st_destroy_draw( struct st_context *st )
+void
+st_destroy_draw(struct st_context *st)
 {
+   draw_destroy(st->draw);
 }
 
+/**
+ * Getter for the draw_context, so that initialization of it can happen only
+ * when needed (the TGSI exec machines take up quite a bit of memory).
+ */
+struct draw_context *
+st_get_draw_context(struct st_context *st)
+{
+   if (!st->draw) {
+      st->draw = draw_create(st->pipe);
+      if (!st->draw) {
+         _mesa_error(st->ctx, GL_OUT_OF_MEMORY, "feedback fallback allocation");
+         return NULL;
+      }
+   }
 
+   /* Disable draw options that might convert points/lines to tris, etc.
+    * as that would foul-up feedback/selection mode.
+    */
+   draw_wide_line_threshold(st->draw, 1000.0f);
+   draw_wide_point_threshold(st->draw, 1000.0f);
+   draw_enable_line_stipple(st->draw, FALSE);
+   draw_enable_point_sprites(st->draw, FALSE);
+
+   return st->draw;
+}
+
+/**
+ * Draw a quad with given position, texcoords and color.
+ */
+bool
+st_draw_quad(struct st_context *st,
+             float x0, float y0, float x1, float y1, float z,
+             float s0, float t0, float s1, float t1,
+             const float *color,
+             unsigned num_instances)
+{
+   struct pipe_vertex_buffer vb = {0};
+   struct st_util_vertex *verts;
+
+   vb.stride = sizeof(struct st_util_vertex);
+
+   u_upload_alloc(st->uploader, 0, 4 * sizeof(struct st_util_vertex), 4,
+                  &vb.buffer_offset, &vb.buffer, (void **) &verts);
+   if (!vb.buffer) {
+      return false;
+   }
+
+   /* lower-left */
+   verts[0].x = x0;
+   verts[0].y = y1;
+   verts[0].z = z;
+   verts[0].r = color[0];
+   verts[0].g = color[1];
+   verts[0].b = color[2];
+   verts[0].a = color[3];
+   verts[0].s = s0;
+   verts[0].t = t0;
+
+   /* lower-right */
+   verts[1].x = x1;
+   verts[1].y = y1;
+   verts[1].z = z;
+   verts[1].r = color[0];
+   verts[1].g = color[1];
+   verts[1].b = color[2];
+   verts[1].a = color[3];
+   verts[1].s = s1;
+   verts[1].t = t0;
+
+   /* upper-right */
+   verts[2].x = x1;
+   verts[2].y = y0;
+   verts[2].z = z;
+   verts[2].r = color[0];
+   verts[2].g = color[1];
+   verts[2].b = color[2];
+   verts[2].a = color[3];
+   verts[2].s = s1;
+   verts[2].t = t1;
+
+   /* upper-left */
+   verts[3].x = x0;
+   verts[3].y = y0;
+   verts[3].z = z;
+   verts[3].r = color[0];
+   verts[3].g = color[1];
+   verts[3].b = color[2];
+   verts[3].a = color[3];
+   verts[3].s = s0;
+   verts[3].t = t1;
+
+   u_upload_unmap(st->uploader);
+
+   /* At the time of writing, cso_get_aux_vertex_buffer_slot() always returns
+    * zero.  If that ever changes we need to audit the calls to that function
+    * and make sure the slot number is used consistently everywhere.
+    */
+   assert(cso_get_aux_vertex_buffer_slot(st->cso_context) == 0);
+
+   cso_set_vertex_buffers(st->cso_context,
+                          cso_get_aux_vertex_buffer_slot(st->cso_context),
+                          1, &vb);
+
+   if (num_instances > 1) {
+      cso_draw_arrays_instanced(st->cso_context, PIPE_PRIM_TRIANGLE_FAN, 0, 4,
+                                0, num_instances);
+   } else {
+      cso_draw_arrays(st->cso_context, PIPE_PRIM_TRIANGLE_FAN, 0, 4);
+   }
+
+   pipe_resource_reference(&vb.buffer, NULL);
+
+   return true;
+}

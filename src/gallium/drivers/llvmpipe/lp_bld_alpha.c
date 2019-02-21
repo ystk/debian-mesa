@@ -32,32 +32,64 @@
  */
 
 #include "pipe/p_state.h"
+#include "util/u_format.h"
 
-#include "lp_bld_type.h"
-#include "lp_bld_const.h"
-#include "lp_bld_logic.h"
-#include "lp_bld_flow.h"
-#include "lp_bld_debug.h"
+#include "gallivm/lp_bld_type.h"
+#include "gallivm/lp_bld_const.h"
+#include "gallivm/lp_bld_arit.h"
+#include "gallivm/lp_bld_conv.h"
+#include "gallivm/lp_bld_logic.h"
+#include "gallivm/lp_bld_flow.h"
+#include "gallivm/lp_bld_debug.h"
+
 #include "lp_bld_alpha.h"
 
 
 void
-lp_build_alpha_test(LLVMBuilderRef builder,
-                    const struct pipe_alpha_state *state,
+lp_build_alpha_test(struct gallivm_state *gallivm,
+                    unsigned func,
                     struct lp_type type,
+                    const struct util_format_description *cbuf_format_desc,
                     struct lp_build_mask_context *mask,
                     LLVMValueRef alpha,
-                    LLVMValueRef ref)
+                    LLVMValueRef ref,
+                    boolean do_branch)
 {
    struct lp_build_context bld;
+   LLVMValueRef test;
 
-   lp_build_context_init(&bld, builder, type);
+   lp_build_context_init(&bld, gallivm, type);
 
-   if(state->enabled) {
-      LLVMValueRef test = lp_build_cmp(&bld, state->func, alpha, ref);
+   /*
+    * Alpha testing needs to be done in the color buffer precision.
+    *
+    * TODO: Ideally, instead of duplicating the color conversion code, we would do
+    * alpha testing after converting the output colors, but that's not very
+    * convenient, because it needs to be done before depth testing.  Hopefully
+    * LLVM will detect and remove the duplicate expression.
+    *
+    * FIXME: This should be generalized to formats other than rgba8 variants.
+    */
+   if (type.floating &&
+       util_format_is_rgba8_variant(cbuf_format_desc)) {
+      const unsigned dst_width = 8;
 
-      lp_build_name(test, "alpha_mask");
+      alpha = lp_build_clamp(&bld, alpha, bld.zero, bld.one);
+      ref   = lp_build_clamp(&bld, ref,   bld.zero, bld.one);
 
-      lp_build_mask_update(mask, test);
+      alpha = lp_build_clamped_float_to_unsigned_norm(gallivm, type, dst_width, alpha);
+      ref   = lp_build_clamped_float_to_unsigned_norm(gallivm, type, dst_width, ref);
+
+      type.floating = 0;
+      lp_build_context_init(&bld, gallivm, type);
    }
+
+   test = lp_build_cmp(&bld, func, alpha, ref);
+
+   lp_build_name(test, "alpha_mask");
+
+   lp_build_mask_update(mask, test);
+
+   if (do_branch)
+      lp_build_mask_check(mask);
 }

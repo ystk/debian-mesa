@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  6.5
  *
  * Copyright (C) 1999-2005  Brian Paul   All Rights Reserved.
  *
@@ -17,12 +16,13 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  *
  * Authors:
- *    Keith Whitwell <keith@tungstengraphics.com>
+ *    Keith Whitwell <keithw@vmware.com>
  */
 
 
@@ -38,12 +38,15 @@
  */
 
 
+#include <stdio.h>
 #include "main/glheader.h"
 #include "main/context.h"
 #include "main/enums.h"
 #include "main/macros.h"
 #include "main/imports.h"
 #include "main/mtypes.h"
+#include "math/m_xform.h"
+#include "util/bitscan.h"
 
 #include "t_pipeline.h"
 
@@ -145,7 +148,7 @@ do {							\
 
 /* TODO: do this for all primitives, verts and elts:
  */
-static void clip_elt_triangles( GLcontext *ctx,
+static void clip_elt_triangles( struct gl_context *ctx,
 				GLuint start,
 				GLuint count,
 				GLuint flags )
@@ -234,7 +237,7 @@ static void clip_elt_triangles( GLcontext *ctx,
 /*              Helper functions for drivers                  */
 /**********************************************************************/
 
-void _tnl_RenderClippedPolygon( GLcontext *ctx, const GLuint *elts, GLuint n )
+void _tnl_RenderClippedPolygon( struct gl_context *ctx, const GLuint *elts, GLuint n )
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    struct vertex_buffer *VB = &tnl->vb;
@@ -245,7 +248,7 @@ void _tnl_RenderClippedPolygon( GLcontext *ctx, const GLuint *elts, GLuint n )
    VB->Elts = tmp;
 }
 
-void _tnl_RenderClippedLine( GLcontext *ctx, GLuint ii, GLuint jj )
+void _tnl_RenderClippedLine( struct gl_context *ctx, GLuint ii, GLuint jj )
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    tnl->Driver.Render.Line( ctx, ii, jj );
@@ -258,7 +261,7 @@ void _tnl_RenderClippedLine( GLcontext *ctx, GLuint ii, GLuint jj )
 /**********************************************************************/
 
 
-static GLboolean run_render( GLcontext *ctx,
+static GLboolean run_render( struct gl_context *ctx,
 			     struct tnl_pipeline_stage *stage )
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
@@ -270,22 +273,22 @@ static GLboolean run_render( GLcontext *ctx,
     * that window coordinates are guarenteed not to change before
     * rendering.
     */
-   ASSERT(tnl->Driver.Render.Start);
+   assert(tnl->Driver.Render.Start);
 
    tnl->Driver.Render.Start( ctx );
 
-   ASSERT(tnl->Driver.Render.BuildVertices);
-   ASSERT(tnl->Driver.Render.PrimitiveNotify);
-   ASSERT(tnl->Driver.Render.Points);
-   ASSERT(tnl->Driver.Render.Line);
-   ASSERT(tnl->Driver.Render.Triangle);
-   ASSERT(tnl->Driver.Render.Quad);
-   ASSERT(tnl->Driver.Render.ResetLineStipple);
-   ASSERT(tnl->Driver.Render.Interp);
-   ASSERT(tnl->Driver.Render.CopyPV);
-   ASSERT(tnl->Driver.Render.ClippedLine);
-   ASSERT(tnl->Driver.Render.ClippedPolygon);
-   ASSERT(tnl->Driver.Render.Finish);
+   assert(tnl->Driver.Render.BuildVertices);
+   assert(tnl->Driver.Render.PrimitiveNotify);
+   assert(tnl->Driver.Render.Points);
+   assert(tnl->Driver.Render.Line);
+   assert(tnl->Driver.Render.Triangle);
+   assert(tnl->Driver.Render.Quad);
+   assert(tnl->Driver.Render.ResetLineStipple);
+   assert(tnl->Driver.Render.Interp);
+   assert(tnl->Driver.Render.CopyPV);
+   assert(tnl->Driver.Render.ClippedLine);
+   assert(tnl->Driver.Render.ClippedPolygon);
+   assert(tnl->Driver.Render.Finish);
 
    tnl->Driver.Render.BuildVertices( ctx, 0, VB->Count, ~0 );
 
@@ -313,7 +316,7 @@ static GLboolean run_render( GLcontext *ctx,
 
 	 if (MESA_VERBOSE & VERBOSE_PRIMS) 
 	    _mesa_debug(NULL, "MESA prim %s %d..%d\n", 
-			_mesa_lookup_enum_by_nr(prim & PRIM_MODE_MASK), 
+			_mesa_enum_to_string(prim & PRIM_MODE_MASK), 
 			start, start+length);
 
 	 if (length)

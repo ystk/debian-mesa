@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -27,12 +27,13 @@
 
  /*
   * Authors:
-  *   Keith Whitwell <keith@tungstengraphics.com>
+  *   Keith Whitwell <keithw@vmware.com>
   */
 
 #include "draw/draw_context.h"
 #include "draw/draw_private.h"
 #include "draw/draw_pt.h"
+#include "util/u_debug.h"
 
 void draw_pt_split_prim(unsigned prim, unsigned *first, unsigned *incr)
 {
@@ -50,15 +51,31 @@ void draw_pt_split_prim(unsigned prim, unsigned *first, unsigned *incr)
       *first = 2;
       *incr = 1;
       break;
+   case PIPE_PRIM_LINES_ADJACENCY:
+      *first = 4;
+      *incr = 4;
+      break;
+   case PIPE_PRIM_LINE_STRIP_ADJACENCY:
+      *first = 4;
+      *incr = 1;
+      break;
    case PIPE_PRIM_TRIANGLES:
       *first = 3;
       *incr = 3;
+      break;
+   case PIPE_PRIM_TRIANGLES_ADJACENCY:
+      *first = 6;
+      *incr = 6;
       break;
    case PIPE_PRIM_TRIANGLE_STRIP:
    case PIPE_PRIM_TRIANGLE_FAN:
    case PIPE_PRIM_POLYGON:
       *first = 3;
       *incr = 1;
+      break;
+   case PIPE_PRIM_TRIANGLE_STRIP_ADJACENCY:
+      *first = 6;
+      *incr = 2;
       break;
    case PIPE_PRIM_QUADS:
       *first = 4;
@@ -74,4 +91,11 @@ void draw_pt_split_prim(unsigned prim, unsigned *first, unsigned *incr)
       *incr = 1;		/* set to one so that count % incr works */
       break;
    }
+}
+
+unsigned draw_pt_trim_count(unsigned count, unsigned first, unsigned incr)
+{
+   if (count < first)
+      return 0;
+   return count - (count - first) % incr;
 }

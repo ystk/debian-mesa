@@ -1,6 +1,6 @@
 /**************************************************************************
  *
- * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2008 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -27,16 +27,11 @@
 
 #include <windows.h>
 
-#include "glapi/glthread.h"
+#include "glapi/glapi.h"
 #include "util/u_debug.h"
 #include "util/u_math.h"
+#include "util/u_memory.h"
 #include "pipe/p_screen.h"
-#include "state_tracker/st_public.h"
-
-#ifdef DEBUG
-#include "trace/tr_screen.h"
-#include "trace/tr_texture.h"
-#endif
 
 #include "stw_device.h"
 #include "stw_winsys.h"
@@ -44,43 +39,37 @@
 #include "stw_icd.h"
 #include "stw_tls.h"
 #include "stw_framebuffer.h"
-
-#ifdef WIN32_THREADS
-extern _glthread_Mutex OneTimeLock;
-extern void FreeAllTSD(void);
-#endif
+#include "stw_st.h"
 
 
 struct stw_device *stw_dev = NULL;
 
-
-/**
- * XXX: Dispatch pipe_screen::flush_front_buffer to our 
- * stw_winsys::flush_front_buffer.
- */
-static void 
-stw_flush_frontbuffer(struct pipe_screen *screen,
-                     struct pipe_surface *surface,
-                     void *context_private )
+static int
+stw_get_param(struct st_manager *smapi,
+              enum st_manager_param param)
 {
-   HDC hdc = (HDC)context_private;
-   struct stw_framebuffer *fb;
-   
-   fb = stw_framebuffer_from_hdc( hdc );
-   if (!fb) {
-      /* fb can be NULL if window was destroyed already */
-      return;
+   switch (param) {
+   case ST_MANAGER_BROKEN_INVALIDATE:
+      /*
+       * Force framebuffer validation on glViewport.
+       *
+       * Certain applications, like Rhinoceros 4, uses glReadPixels
+       * exclusively (never uses SwapBuffers), so framebuffers never get
+       * resized unless we check on glViewport.
+       */
+      return 1;
+   default:
+      return 0;
    }
-
-   stw_framebuffer_present_locked(hdc, fb, surface);
 }
-
 
 boolean
 stw_init(const struct stw_winsys *stw_winsys)
 {
    static struct stw_device stw_dev_storage;
    struct pipe_screen *screen;
+
+   debug_disable_error_message_boxes();
 
    debug_printf("%s\n", __FUNCTION__);
    
@@ -97,9 +86,10 @@ stw_init(const struct stw_winsys *stw_winsys)
    
    stw_dev->stw_winsys = stw_winsys;
 
-#ifdef WIN32_THREADS
-   _glthread_INIT_MUTEX(OneTimeLock);
-#endif
+   stw_dev->stapi = stw_st_create_api();
+   stw_dev->smapi = CALLOC_STRUCT(st_manager);
+   if (!stw_dev->stapi || !stw_dev->smapi)
+      goto error1;
 
    screen = stw_winsys->create_screen();
    if(!screen)
@@ -108,17 +98,16 @@ stw_init(const struct stw_winsys *stw_winsys)
    if(stw_winsys->get_adapter_luid)
       stw_winsys->get_adapter_luid(screen, &stw_dev->AdapterLuid);
 
-#ifdef DEBUG
-   stw_dev->screen = trace_screen_create(screen);
-   stw_dev->trace_running = stw_dev->screen != screen ? TRUE : FALSE;
-#else
+   stw_dev->smapi->screen = screen;
+   stw_dev->smapi->get_param = stw_get_param;
    stw_dev->screen = screen;
-#endif
-   
-   stw_dev->screen->flush_frontbuffer = &stw_flush_frontbuffer;
-   
-   pipe_mutex_init( stw_dev->ctx_mutex );
-   pipe_mutex_init( stw_dev->fb_mutex );
+
+   stw_dev->max_2d_levels =
+         screen->get_param(screen, PIPE_CAP_MAX_TEXTURE_2D_LEVELS);
+   stw_dev->max_2d_length = 1 << (stw_dev->max_2d_levels - 1);
+
+   InitializeCriticalSection(&stw_dev->ctx_mutex);
+   InitializeCriticalSection(&stw_dev->fb_mutex);
 
    stw_dev->ctx_table = handle_table_create();
    if (!stw_dev->ctx_table) {
@@ -127,9 +116,15 @@ stw_init(const struct stw_winsys *stw_winsys)
 
    stw_pixelformat_init();
 
+   stw_dev->initialized = true;
+
    return TRUE;
 
 error1:
+   FREE(stw_dev->smapi);
+   if (stw_dev->stapi)
+      stw_dev->stapi->destroy(stw_dev->stapi);
+
    stw_dev = NULL;
    return FALSE;
 }
@@ -163,9 +158,9 @@ stw_cleanup(void)
     * Abort cleanup if there are still active contexts. In some situations
     * this DLL may be unloaded before the DLL that is using GL contexts is.
     */
-   pipe_mutex_lock( stw_dev->ctx_mutex );
+   stw_lock_contexts(stw_dev);
    dhglrc = handle_table_get_first_handle(stw_dev->ctx_table);
-   pipe_mutex_unlock( stw_dev->ctx_mutex );
+   stw_unlock_contexts(stw_dev);
    if (dhglrc) {
       debug_printf("%s: contexts still active -- cleanup aborted\n", __FUNCTION__);
       stw_dev = NULL;
@@ -176,14 +171,17 @@ stw_cleanup(void)
 
    stw_framebuffer_cleanup();
    
-   pipe_mutex_destroy( stw_dev->fb_mutex );
-   pipe_mutex_destroy( stw_dev->ctx_mutex );
+   DeleteCriticalSection(&stw_dev->fb_mutex);
+   DeleteCriticalSection(&stw_dev->ctx_mutex);
    
+   FREE(stw_dev->smapi);
+   stw_dev->stapi->destroy(stw_dev->stapi);
+
    stw_dev->screen->destroy(stw_dev->screen);
 
-#ifdef WIN32_THREADS
-   _glthread_DESTROY_MUTEX(OneTimeLock);
-   FreeAllTSD();
+   /* glapi is statically linked: we can call the local destroy function. */
+#ifdef _GLAPI_NO_EXPORTS
+   _glapi_destroy_multithread();
 #endif
 
 #ifdef DEBUG
@@ -193,19 +191,6 @@ stw_cleanup(void)
    stw_tls_cleanup();
 
    stw_dev = NULL;
-}
-
-
-struct stw_context *
-stw_lookup_context_locked( DHGLRC dhglrc )
-{
-   if (dhglrc == 0)
-      return NULL;
-
-   if (stw_dev == NULL)
-      return NULL;
-
-   return (struct stw_context *) handle_table_get(stw_dev->ctx_table, dhglrc);
 }
 
 
@@ -230,6 +215,14 @@ BOOL APIENTRY
 DrvValidateVersion(
    ULONG ulVersion )
 {
-   /* TODO: get the expected version from the winsys */
-   return ulVersion == 1;
+   /* ulVersion is the version reported by the KMD:
+    * - via D3DKMTQueryAdapterInfo(KMTQAITYPE_UMOPENGLINFO) on WDDM,
+    * - or ExtEscape on XPDM and can be used to ensure the KMD and OpenGL ICD
+    *   versions match.
+    *
+    * We should get the expected version number from the winsys, but for now
+    * ignore it.
+    */
+   (void)ulVersion;
+   return TRUE;
 }

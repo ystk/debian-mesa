@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007-2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007-2008 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -29,15 +29,17 @@
 #define P_COMPILER_H
 
 
+#include "c99_compat.h" /* inline, __func__, etc. */
+
 #include "p_config.h"
 
-#ifndef XFree86Server
+#include "util/macros.h"
+
 #include <stdlib.h>
 #include <string.h>
-#else
-#include "xf86_ansic.h"
-#include "xf86_libc.h"
-#endif
+#include <stddef.h>
+#include <stdarg.h>
+#include <limits.h>
 
 
 #if defined(_WIN32) && !defined(__WIN32__)
@@ -46,64 +48,39 @@
 
 #if defined(_MSC_VER)
 
+#include <intrin.h>
+
 /* Avoid 'expression is always true' warning */
 #pragma warning(disable: 4296)
 
 #endif /* _MSC_VER */
 
 
-#if defined(_MSC_VER)
-
-typedef __int8             int8_t;
-typedef unsigned __int8    uint8_t;
-typedef __int16            int16_t;
-typedef unsigned __int16   uint16_t;
-#ifndef __eglplatform_h_
-typedef __int32            int32_t;
-#endif
-typedef unsigned __int32   uint32_t;
-typedef __int64            int64_t;
-typedef unsigned __int64   uint64_t;
-
-#if defined(_WIN64)
-typedef __int64            intptr_t;
-typedef unsigned __int64   uintptr_t;
-#else
-typedef __int32            intptr_t;
-typedef unsigned __int32   uintptr_t;
-#endif
-
-#define INT64_C(__val) __val##i64
-#define UINT64_C(__val) __val##ui64
-
-#ifndef __cplusplus
-#define false   0
-#define true    1
-#define bool    _Bool
-typedef int     _Bool;
-#define __bool_true_false_are_defined   1
-#endif /* !__cplusplus */
-
-#else
+/*
+ * Alternative stdint.h and stdbool.h headers are supplied in include/c99 for
+ * systems that lack it.
+ */
 #ifndef __STDC_LIMIT_MACROS
 #define __STDC_LIMIT_MACROS 1
 #endif
 #include <stdint.h>
 #include <stdbool.h>
+
+
+#ifdef __cplusplus
+extern "C" {
 #endif
 
 
-#ifndef __HAIKU__
+#if !defined(__HAIKU__) && !defined(__USE_MISC)
+#if !defined(PIPE_OS_ANDROID)
 typedef unsigned int       uint;
+#endif
 typedef unsigned short     ushort;
 #endif
 typedef unsigned char      ubyte;
 
-#if 0
-#define boolean bool
-#else
 typedef unsigned char boolean;
-#endif
 #ifndef TRUE
 #define TRUE  true
 #endif
@@ -111,44 +88,30 @@ typedef unsigned char boolean;
 #define FALSE false
 #endif
 
+#ifndef va_copy
+#ifdef __va_copy
+#define va_copy(dest, src) __va_copy((dest), (src))
+#else
+#define va_copy(dest, src) (dest) = (src)
+#endif
+#endif
 
-/* Function inlining */
-#ifndef INLINE
-#  ifdef __cplusplus
-#    define INLINE inline
-#  elif defined(__GNUC__)
-#    define INLINE __inline__
+/* Forced function inlining */
+#ifndef ALWAYS_INLINE
+#  ifdef __GNUC__
+#    define ALWAYS_INLINE inline __attribute__((always_inline))
 #  elif defined(_MSC_VER)
-#    define INLINE __inline
-#  elif defined(__ICL)
-#    define INLINE __inline
-#  elif defined(__INTEL_COMPILER)
-#    define INLINE inline
-#  elif defined(__WATCOMC__) && (__WATCOMC__ >= 1100)
-#    define INLINE __inline
-#  elif defined(__SUNPRO_C) && defined(__C99FEATURES__)
-#    define INLINE inline
-#  elif (__STDC_VERSION__ >= 199901L) /* C99 */
-#    define INLINE inline
+#    define ALWAYS_INLINE __forceinline
 #  else
-#    define INLINE
+#    define ALWAYS_INLINE inline
 #  endif
 #endif
 
-/* The __FUNCTION__ gcc variable is generally only used for debugging.
- * If we're not using gcc, define __FUNCTION__ as a cpp symbol here.
- */
+
+/* XXX: Use standard `__func__` instead */
 #ifndef __FUNCTION__
-# if (!defined(__GNUC__) || (__GNUC__ < 2))
-#  if (__STDC_VERSION__ >= 199901L) /* C99 */ || \
-    (defined(__SUNPRO_C) && defined(__C99FEATURES__))
-#   define __FUNCTION__ __func__
-#  else
-#   define __FUNCTION__ "<unknown>"
-#  endif
-# endif
+#  define __FUNCTION__ __func__
 #endif
-
 
 
 /* This should match linux gcc cdecl semantics everywhere, so that we
@@ -163,23 +126,68 @@ typedef unsigned char boolean;
 
 
 #if defined(__GNUC__)
-#define ALIGN16_DECL(TYPE, NAME, SIZE)  TYPE NAME##___aligned[SIZE] __attribute__(( aligned( 16 ) ))
-#define ALIGN16_ASSIGN(NAME) NAME##___aligned
-#define ALIGN16_ATTRIB  __attribute__(( aligned( 16 ) ))
-#define ALIGN8_ATTRIB  __attribute__(( aligned( 8 ) ))
-#if __GNUC__ > 4 || (__GNUC__ == 4 &&__GNUC_MINOR__>1)
-#define ALIGN_STACK __attribute__((force_align_arg_pointer))
+#define PIPE_DEPRECATED  __attribute__((__deprecated__))
 #else
-#define ALIGN_STACK
-#endif
-#else
-#define ALIGN16_DECL(TYPE, NAME, SIZE)  TYPE NAME##___unaligned[SIZE + 1]
-#define ALIGN16_ASSIGN(NAME) align16(NAME##___unaligned)
-#define ALIGN16_ATTRIB
-#define ALIGN8_ATTRIB
-#define ALIGN_STACK
+#define PIPE_DEPRECATED
 #endif
 
+
+
+/* Macros for data alignment. */
+#if defined(__GNUC__)
+
+/* See http://gcc.gnu.org/onlinedocs/gcc-4.4.2/gcc/Type-Attributes.html */
+#define PIPE_ALIGN_TYPE(_alignment, _type) _type __attribute__((aligned(_alignment)))
+
+/* See http://gcc.gnu.org/onlinedocs/gcc-4.4.2/gcc/Variable-Attributes.html */
+#define PIPE_ALIGN_VAR(_alignment) __attribute__((aligned(_alignment)))
+
+#if defined(__GNUC__) && !defined(PIPE_ARCH_X86_64)
+#define PIPE_ALIGN_STACK __attribute__((force_align_arg_pointer))
+#else
+#define PIPE_ALIGN_STACK
+#endif
+
+#elif defined(_MSC_VER)
+
+/* See http://msdn.microsoft.com/en-us/library/83ythb65.aspx */
+#define PIPE_ALIGN_TYPE(_alignment, _type) __declspec(align(_alignment)) _type
+#define PIPE_ALIGN_VAR(_alignment) __declspec(align(_alignment))
+
+#define PIPE_ALIGN_STACK
+
+#elif defined(SWIG)
+
+#define PIPE_ALIGN_TYPE(_alignment, _type) _type
+#define PIPE_ALIGN_VAR(_alignment)
+
+#define PIPE_ALIGN_STACK
+
+#else
+
+#error "Unsupported compiler"
+
+#endif
+
+
+#if defined(__GNUC__)
+
+#define PIPE_READ_WRITE_BARRIER() __asm__("":::"memory")
+
+#elif defined(_MSC_VER)
+
+#define PIPE_READ_WRITE_BARRIER() _ReadWriteBarrier()
+
+#else
+
+#warning "Unsupported compiler"
+#define PIPE_READ_WRITE_BARRIER() /* */
+
+#endif
+
+#if defined(__cplusplus)
+}
+#endif
 
 
 #endif /* P_COMPILER_H */

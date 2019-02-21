@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  7.6
  * 
  * Copyright (C) 1999-2008  Brian Paul   All Rights Reserved.
  * Copyright (C) 2009  VMware, Inc.  All Rights Reserved.
@@ -18,9 +17,10 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 
@@ -32,6 +32,7 @@
 #define GLX_GLXEXT_PROTOTYPES
 
 #include <string.h>
+#include "pipe/p_compiler.h"
 #include "GL/glx.h"
 #include "glapi/glapi.h"
 
@@ -168,6 +169,9 @@ static struct name_address_pair GLX_functions[] = {
    /*** GLX_ARB_get_proc_address ***/
    { "glXGetProcAddressARB", (__GLXextFuncPtr) glXGetProcAddressARB },
 
+   /*** GLX_ARB_create_context ***/
+   { "glXCreateContextAttribsARB", (__GLXextFuncPtr) glXCreateContextAttribsARB },
+
    /*** GLX_EXT_texture_from_pixmap ***/
    { "glXBindTexImageEXT", (__GLXextFuncPtr) glXBindTexImageEXT },
    { "glXReleaseTexImageEXT", (__GLXextFuncPtr) glXReleaseTexImageEXT },
@@ -192,7 +196,7 @@ _glxapi_get_proc_address(const char *funcName)
 }
 
 
-__GLXextFuncPtr
+PUBLIC __GLXextFuncPtr
 glXGetProcAddressARB(const GLubyte *procName)
 {
    __GLXextFuncPtr f;
@@ -208,6 +212,7 @@ glXGetProcAddressARB(const GLubyte *procName)
 
 
 /* GLX 1.4 */
+PUBLIC
 void (*glXGetProcAddress(const GLubyte *procName))()
 {
    return glXGetProcAddressARB(procName);

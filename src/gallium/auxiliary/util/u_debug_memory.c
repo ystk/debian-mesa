@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2008 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -29,40 +29,34 @@
  * @file
  * Memory debugging.
  * 
- * @author José Fonseca <jrfonseca@tungstengraphics.com>
+ * @author José Fonseca <jfonseca@vmware.com>
  */
 
 #include "pipe/p_config.h" 
 
-#if defined(PIPE_SUBSYSTEM_WINDOWS_DISPLAY)
-#include <windows.h>
-#include <winddi.h>
-#elif defined(PIPE_SUBSYSTEM_WINDOWS_MINIPORT)
-#include <wdm.h>
-#else
-#include <stdio.h>
-#include <stdlib.h>
-#endif
+#define DEBUG_MEMORY_IMPLEMENTATION
+
+#include "os/os_memory.h"
+#include "os/os_memory_debug.h"
+#include "os/os_thread.h"
 
 #include "util/u_debug.h" 
 #include "util/u_debug_stack.h" 
-#include "util/u_double_list.h" 
+#include "util/list.h"
 
 
 #define DEBUG_MEMORY_MAGIC 0x6e34090aU 
 #define DEBUG_MEMORY_STACK 0 /* XXX: disabled until we have symbol lookup */
 
-
-#if defined(PIPE_SUBSYSTEM_WINDOWS_DISPLAY) && !defined(WINCE)
-#define real_malloc(_size) EngAllocMem(0, _size, 'D3AG')
-#define real_free(_ptr) EngFreeMem(_ptr)
-#elif defined(PIPE_SUBSYSTEM_WINDOWS_MINIPORT)
-#define real_malloc(_size) ExAllocatePool(0, _size)
-#define real_free(_ptr) ExFreePool(_ptr)
-#else
-#define real_malloc(_size) malloc(_size)
-#define real_free(_ptr) free(_ptr)
-#endif
+/**
+ * Set to 1 to enable checking of freed blocks of memory.
+ * Basically, don't really deallocate freed memory; keep it in the list
+ * but mark it as freed and do extra checking in debug_memory_check().
+ * This can detect some cases of use-after-free.  But note that since we
+ * never really free anything this will use a lot of memory.
+ */
+#define DEBUG_FREED_MEMORY 0
+#define DEBUG_FREED_BYTE 0x33
 
 
 struct debug_memory_header 
@@ -77,8 +71,12 @@ struct debug_memory_header
    struct debug_stack_frame backtrace[DEBUG_MEMORY_STACK];
 #endif
    size_t size;
-   
+#if DEBUG_FREED_MEMORY
+   boolean freed;  /**< Is this a freed block? */
+#endif
+
    unsigned magic;
+   unsigned tag;
 };
 
 struct debug_memory_footer
@@ -89,10 +87,12 @@ struct debug_memory_footer
 
 static struct list_head list = { &list, &list };
 
+pipe_static_mutex(list_mutex);
+
 static unsigned long last_no = 0;
 
 
-static INLINE struct debug_memory_header *
+static inline struct debug_memory_header *
 header_from_data(void *data)
 {
    if(data)
@@ -101,7 +101,7 @@ header_from_data(void *data)
       return NULL;
 }
 
-static INLINE void *
+static inline void *
 data_from_header(struct debug_memory_header *hdr)
 {
    if(hdr)
@@ -110,7 +110,7 @@ data_from_header(struct debug_memory_header *hdr)
       return NULL;
 }
 
-static INLINE struct debug_memory_footer *
+static inline struct debug_memory_footer *
 footer_from_header(struct debug_memory_header *hdr)
 {
    if(hdr)
@@ -127,8 +127,8 @@ debug_malloc(const char *file, unsigned line, const char *function,
    struct debug_memory_header *hdr;
    struct debug_memory_footer *ftr;
    
-   hdr = real_malloc(sizeof(*hdr) + size + sizeof(*ftr));
-   if(!hdr) {
+   hdr = os_malloc(sizeof(*hdr) + size + sizeof(*ftr));
+   if (!hdr) {
       debug_printf("%s:%u:%s: out of memory when trying to allocate %lu bytes\n",
                    file, line, function,
                    (long unsigned)size);
@@ -141,6 +141,10 @@ debug_malloc(const char *file, unsigned line, const char *function,
    hdr->function = function;
    hdr->size = size;
    hdr->magic = DEBUG_MEMORY_MAGIC;
+   hdr->tag = 0;
+#if DEBUG_FREED_MEMORY
+   hdr->freed = FALSE;
+#endif
 
 #if DEBUG_MEMORY_STACK
    debug_backtrace_capture(hdr->backtrace, 0, DEBUG_MEMORY_STACK);
@@ -149,7 +153,9 @@ debug_malloc(const char *file, unsigned line, const char *function,
    ftr = footer_from_header(hdr);
    ftr->magic = DEBUG_MEMORY_MAGIC;
    
+   pipe_mutex_lock(list_mutex);
    LIST_ADDTAIL(&hdr->head, &list);
+   pipe_mutex_unlock(list_mutex);
    
    return data_from_header(hdr);
 }
@@ -161,7 +167,7 @@ debug_free(const char *file, unsigned line, const char *function,
    struct debug_memory_header *hdr;
    struct debug_memory_footer *ftr;
    
-   if(!ptr)
+   if (!ptr)
       return;
    
    hdr = header_from_data(ptr);
@@ -181,11 +187,25 @@ debug_free(const char *file, unsigned line, const char *function,
       debug_assert(0);
    }
 
+#if DEBUG_FREED_MEMORY
+   /* Check for double-free */
+   assert(!hdr->freed);
+   /* Mark the block as freed but don't really free it */
+   hdr->freed = TRUE;
+   /* Save file/line where freed */
+   hdr->file = file;
+   hdr->line = line;
+   /* set freed memory to special value */
+   memset(ptr, DEBUG_FREED_BYTE, hdr->size);
+#else
+   pipe_mutex_lock(list_mutex);
    LIST_DEL(&hdr->head);
+   pipe_mutex_unlock(list_mutex);
    hdr->magic = 0;
    ftr->magic = 0;
    
-   real_free(hdr);
+   os_free(hdr);
+#endif
 }
 
 void *
@@ -193,7 +213,7 @@ debug_calloc(const char *file, unsigned line, const char *function,
              size_t count, size_t size )
 {
    void *ptr = debug_malloc( file, line, function, count * size );
-   if( ptr )
+   if (ptr)
       memset( ptr, 0, count * size );
    return ptr;
 }
@@ -206,7 +226,7 @@ debug_realloc(const char *file, unsigned line, const char *function,
    struct debug_memory_footer *old_ftr, *new_ftr;
    void *new_ptr;
    
-   if(!old_ptr)
+   if (!old_ptr)
       return debug_malloc( file, line, function, new_size );
    
    if(!new_size) {
@@ -232,8 +252,8 @@ debug_realloc(const char *file, unsigned line, const char *function,
    }
 
    /* alloc new */
-   new_hdr = real_malloc(sizeof(*new_hdr) + new_size + sizeof(*new_ftr));
-   if(!new_hdr) {
+   new_hdr = os_malloc(sizeof(*new_hdr) + new_size + sizeof(*new_ftr));
+   if (!new_hdr) {
       debug_printf("%s:%u:%s: out of memory when trying to allocate %lu bytes\n",
                    file, line, function,
                    (long unsigned)new_size);
@@ -245,11 +265,17 @@ debug_realloc(const char *file, unsigned line, const char *function,
    new_hdr->function = old_hdr->function;
    new_hdr->size = new_size;
    new_hdr->magic = DEBUG_MEMORY_MAGIC;
+   new_hdr->tag = 0;
+#if DEBUG_FREED_MEMORY
+   new_hdr->freed = FALSE;
+#endif
    
    new_ftr = footer_from_header(new_hdr);
    new_ftr->magic = DEBUG_MEMORY_MAGIC;
    
+   pipe_mutex_lock(list_mutex);
    LIST_REPLACE(&old_hdr->head, &new_hdr->head);
+   pipe_mutex_unlock(list_mutex);
 
    /* copy data */
    new_ptr = data_from_header(new_hdr);
@@ -258,7 +284,7 @@ debug_realloc(const char *file, unsigned line, const char *function,
    /* free old */
    old_hdr->magic = 0;
    old_ftr->magic = 0;
-   real_free(old_hdr);
+   os_free(old_hdr);
 
    return new_ptr;
 }
@@ -320,5 +346,106 @@ debug_memory_end(unsigned long start_no)
    }
    else {
       debug_printf("No memory leaks detected.\n");
+   }
+}
+
+
+/**
+ * Put a tag (arbitrary integer) on a memory block.
+ * Can be useful for debugging.
+ */
+void
+debug_memory_tag(void *ptr, unsigned tag)
+{
+   struct debug_memory_header *hdr;
+   
+   if (!ptr)
+      return;
+   
+   hdr = header_from_data(ptr);
+   if (hdr->magic != DEBUG_MEMORY_MAGIC) {
+      debug_printf("%s corrupted memory at %p\n", __FUNCTION__, ptr);
+      debug_assert(0);
+   }
+
+   hdr->tag = tag;
+}
+
+
+/**
+ * Check the given block of memory for validity/corruption.
+ */
+void
+debug_memory_check_block(void *ptr)
+{
+   struct debug_memory_header *hdr;
+   struct debug_memory_footer *ftr;
+   
+   if (!ptr)
+      return;
+   
+   hdr = header_from_data(ptr);
+   ftr = footer_from_header(hdr);
+
+   if (hdr->magic != DEBUG_MEMORY_MAGIC) {
+      debug_printf("%s:%u:%s: bad or corrupted memory %p\n",
+                   hdr->file, hdr->line, hdr->function, ptr);
+      debug_assert(0);
+   }
+
+   if (ftr->magic != DEBUG_MEMORY_MAGIC) {
+      debug_printf("%s:%u:%s: buffer overflow %p\n",
+                   hdr->file, hdr->line, hdr->function, ptr);
+      debug_assert(0);
+   }
+}
+
+
+
+/**
+ * We can periodically call this from elsewhere to do a basic sanity
+ * check of the heap memory we've allocated.
+ */
+void 
+debug_memory_check(void)
+{
+   struct list_head *entry;
+
+   entry = list.prev;
+   for (; entry != &list; entry = entry->prev) {
+      struct debug_memory_header *hdr;
+      struct debug_memory_footer *ftr;
+      const char *ptr;
+
+      hdr = LIST_ENTRY(struct debug_memory_header, entry, head);
+      ftr = footer_from_header(hdr);
+      ptr = (const char *) data_from_header(hdr);
+
+      if (hdr->magic != DEBUG_MEMORY_MAGIC) {
+         debug_printf("%s:%u:%s: bad or corrupted memory %p\n",
+                      hdr->file, hdr->line, hdr->function, ptr);
+         debug_assert(0);
+      }
+
+      if (ftr->magic != DEBUG_MEMORY_MAGIC) {
+         debug_printf("%s:%u:%s: buffer overflow %p\n",
+                      hdr->file, hdr->line, hdr->function, ptr);
+         debug_assert(0);
+      }
+
+#if DEBUG_FREED_MEMORY
+      /* If this block is marked as freed, check that it hasn't been touched */
+      if (hdr->freed) {
+         int i;
+         for (i = 0; i < hdr->size; i++) {
+            if (ptr[i] != DEBUG_FREED_BYTE) {
+               debug_printf("Memory error: byte %d of block at %p of size %d is 0x%x\n",
+                            i, ptr, hdr->size, ptr[i]);
+               debug_printf("Block was freed at %s:%d\n", hdr->file, hdr->line);
+            }
+            assert(ptr[i] == DEBUG_FREED_BYTE);
+         }
+      }
+#endif
    }
 }

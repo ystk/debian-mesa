@@ -5,7 +5,6 @@
 
 /*
  * Mesa 3-D graphics library
- * Version:  7.1
  *
  * Copyright (C) 1999-2007  Brian Paul   All Rights Reserved.
  *
@@ -22,9 +21,10 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 
@@ -32,26 +32,43 @@
 #define TEXSTATE_H
 
 
+#include "compiler.h"
+#include "enums.h"
+#include "macros.h"
 #include "mtypes.h"
 
+
+static inline struct gl_texture_unit *
+_mesa_get_tex_unit(struct gl_context *ctx, GLuint unit)
+{
+   assert(unit < ARRAY_SIZE(ctx->Texture.Unit));
+   return &(ctx->Texture.Unit[unit]);
+}
 
 /**
  * Return pointer to current texture unit.
  * This the texture unit set by glActiveTexture(), not glClientActiveTexture().
  */
-static INLINE struct gl_texture_unit *
-_mesa_get_current_tex_unit(GLcontext *ctx)
+static inline struct gl_texture_unit *
+_mesa_get_current_tex_unit(struct gl_context *ctx)
 {
-   ASSERT(ctx->Texture.CurrentUnit < Elements(ctx->Texture.Unit));
-   return &(ctx->Texture.Unit[ctx->Texture.CurrentUnit]);
+   return _mesa_get_tex_unit(ctx, ctx->Texture.CurrentUnit);
+}
+
+static inline GLuint
+_mesa_max_tex_unit(struct gl_context *ctx)
+{
+   /* See OpenGL spec for glActiveTexture: */
+   return MAX2(ctx->Const.MaxCombinedTextureImageUnits,
+               ctx->Const.MaxTextureCoordUnits);
 }
 
 
 extern void
-_mesa_copy_texture_state( const GLcontext *src, GLcontext *dst );
+_mesa_copy_texture_state( const struct gl_context *src, struct gl_context *dst );
 
 extern void
-_mesa_print_texunit_state( GLcontext *ctx, GLuint unit );
+_mesa_print_texunit_state( struct gl_context *ctx, GLuint unit );
 
 
 
@@ -61,10 +78,10 @@ _mesa_print_texunit_state( GLcontext *ctx, GLuint unit );
 /*@{*/
 
 extern void GLAPIENTRY
-_mesa_ActiveTextureARB( GLenum target );
+_mesa_ActiveTexture( GLenum target );
 
 extern void GLAPIENTRY
-_mesa_ClientActiveTextureARB( GLenum target );
+_mesa_ClientActiveTexture( GLenum target );
 
 /*@}*/
 
@@ -75,16 +92,16 @@ _mesa_ClientActiveTextureARB( GLenum target );
 /*@{*/
 
 extern void 
-_mesa_update_texture( GLcontext *ctx, GLuint new_state );
+_mesa_update_texture( struct gl_context *ctx, GLuint new_state );
 
 extern GLboolean
-_mesa_init_texture( GLcontext *ctx );
+_mesa_init_texture( struct gl_context *ctx );
 
 extern void 
-_mesa_free_texture_data( GLcontext *ctx );
+_mesa_free_texture_data( struct gl_context *ctx );
 
 extern void
-_mesa_update_default_objects_texture(GLcontext *ctx);
+_mesa_update_default_objects_texture(struct gl_context *ctx);
 
 /*@}*/
 

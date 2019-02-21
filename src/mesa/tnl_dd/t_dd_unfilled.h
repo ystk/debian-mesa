@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  6.5.1
  *
  * Copyright (C) 1999-2006  Brian Paul   All Rights Reserved.
  *
@@ -17,20 +16,14 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  *
  * Authors:
- *    Keith Whitwell <keith@tungstengraphics.com>
+ *    Keith Whitwell <keithw@vmware.com>
  */
-
-#if HAVE_RGBA
-#define VERT_SET_IND( v, c )
-#define VERT_COPY_IND( v0, v1 )
-#define VERT_SAVE_IND( idx )
-#define VERT_RESTORE_IND( idx )
-#endif
 
 #if !HAVE_SPEC
 #define VERT_SET_SPEC( v, c )
@@ -39,7 +32,7 @@
 #define VERT_RESTORE_SPEC( idx )
 #endif
 
-static void TAG(unfilled_tri)( GLcontext *ctx,
+static void TAG(unfilled_tri)( struct gl_context *ctx,
 			       GLenum mode,
 			       GLuint e0, GLuint e1, GLuint e2 )
 {
@@ -53,28 +46,21 @@ static void TAG(unfilled_tri)( GLcontext *ctx,
    v[2] = (VERTEX *)GET_VERTEX(e2);
 
    if (ctx->Light.ShadeModel == GL_FLAT && HAVE_HW_FLATSHADE) {
-      if (HAVE_RGBA) {
-	 VERT_SAVE_RGBA(0);
-	 VERT_SAVE_RGBA(1);
-	 VERT_COPY_RGBA(v[0], v[2]);
-	 VERT_COPY_RGBA(v[1], v[2]);
+      VERT_SAVE_RGBA(0);
+      VERT_SAVE_RGBA(1);
+      VERT_COPY_RGBA(v[0], v[2]);
+      VERT_COPY_RGBA(v[1], v[2]);
 
-	 if (HAVE_SPEC) {
-	    VERT_SAVE_SPEC(0);
-	    VERT_SAVE_SPEC(1);
-	    VERT_COPY_SPEC(v[0], v[2]);
-	    VERT_COPY_SPEC(v[1], v[2]);
-	 }
-      } else {
-	 VERT_SAVE_IND(0);
-	 VERT_SAVE_IND(1);
-	 VERT_COPY_IND(v[0], v[2]);
-	 VERT_COPY_IND(v[1], v[2]);
+      if (HAVE_SPEC) {
+	 VERT_SAVE_SPEC(0);
+	 VERT_SAVE_SPEC(1);
+	 VERT_COPY_SPEC(v[0], v[2]);
+	 VERT_COPY_SPEC(v[1], v[2]);
       }
    }
 
-/*     fprintf(stderr, "%s %s %d %d %d\n", __FUNCTION__, */
-/*  	   _mesa_lookup_enum_by_nr( mode ), */
+/*     fprintf(stderr, "%s %s %d %d %d\n", __func__, */
+/*  	   _mesa_enum_to_string( mode ), */
 /*  	   ef[e0], ef[e1], ef[e2]); */
 
    if (mode == GL_POINT) {
@@ -98,23 +84,18 @@ static void TAG(unfilled_tri)( GLcontext *ctx,
    }
 
    if (ctx->Light.ShadeModel == GL_FLAT && HAVE_HW_FLATSHADE) {
-      if (HAVE_RGBA) {
-	 VERT_RESTORE_RGBA(0);
-	 VERT_RESTORE_RGBA(1);
+      VERT_RESTORE_RGBA(0);
+      VERT_RESTORE_RGBA(1);
 
-	 if (HAVE_SPEC) {
-	    VERT_RESTORE_SPEC(0);
-	    VERT_RESTORE_SPEC(1);
-	 }
-      } else {
-	 VERT_RESTORE_IND(0);
-	 VERT_RESTORE_IND(1);
+      if (HAVE_SPEC) {
+	 VERT_RESTORE_SPEC(0);
+	 VERT_RESTORE_SPEC(1);
       }
    }
 }
 
 
-static void TAG(unfilled_quad)( GLcontext *ctx,
+static void TAG(unfilled_quad)( struct gl_context *ctx,
 				GLenum mode,
 				GLuint e0, GLuint e1,
 				GLuint e2, GLuint e3 )
@@ -133,29 +114,20 @@ static void TAG(unfilled_quad)( GLcontext *ctx,
     * support flatshading, this will already have been done:
     */
    if (ctx->Light.ShadeModel == GL_FLAT && HAVE_HW_FLATSHADE) {
-      if (HAVE_RGBA) {
-	 VERT_SAVE_RGBA(0);
-	 VERT_SAVE_RGBA(1);
-	 VERT_SAVE_RGBA(2);
-	 VERT_COPY_RGBA(v[0], v[3]);
-	 VERT_COPY_RGBA(v[1], v[3]);
-	 VERT_COPY_RGBA(v[2], v[3]);
+      VERT_SAVE_RGBA(0);
+      VERT_SAVE_RGBA(1);
+      VERT_SAVE_RGBA(2);
+      VERT_COPY_RGBA(v[0], v[3]);
+      VERT_COPY_RGBA(v[1], v[3]);
+      VERT_COPY_RGBA(v[2], v[3]);
 
-	 if (HAVE_SPEC) {
-	    VERT_SAVE_SPEC(0);
-	    VERT_SAVE_SPEC(1);
-	    VERT_SAVE_SPEC(2);
-	    VERT_COPY_SPEC(v[0], v[3]);
-	    VERT_COPY_SPEC(v[1], v[3]);
-	    VERT_COPY_SPEC(v[2], v[3]);
-	 }
-      } else {
-	 VERT_SAVE_IND(0);
-	 VERT_SAVE_IND(1);
-	 VERT_SAVE_IND(2);
-	 VERT_COPY_IND(v[0], v[3]);
-	 VERT_COPY_IND(v[1], v[3]);
-	 VERT_COPY_IND(v[2], v[3]);
+      if (HAVE_SPEC) {
+	 VERT_SAVE_SPEC(0);
+	 VERT_SAVE_SPEC(1);
+	 VERT_SAVE_SPEC(2);
+	 VERT_COPY_SPEC(v[0], v[3]);
+	 VERT_COPY_SPEC(v[1], v[3]);
+	 VERT_COPY_SPEC(v[2], v[3]);
       }
    }
 
@@ -175,31 +147,18 @@ static void TAG(unfilled_quad)( GLcontext *ctx,
    }
 
    if (ctx->Light.ShadeModel == GL_FLAT && HAVE_HW_FLATSHADE) {
-      if (HAVE_RGBA) {
-	 VERT_RESTORE_RGBA(0);
-	 VERT_RESTORE_RGBA(1);
-	 VERT_RESTORE_RGBA(2);
+      VERT_RESTORE_RGBA(0);
+      VERT_RESTORE_RGBA(1);
+      VERT_RESTORE_RGBA(2);
 
-	 if (HAVE_SPEC) {
-	    VERT_RESTORE_SPEC(0);
-	    VERT_RESTORE_SPEC(1);
-	    VERT_RESTORE_SPEC(2);
-	 }
-      } else {
-	 VERT_RESTORE_IND(0);
-	 VERT_RESTORE_IND(1);
-	 VERT_RESTORE_IND(2);
+      if (HAVE_SPEC) {
+	 VERT_RESTORE_SPEC(0);
+	 VERT_RESTORE_SPEC(1);
+	 VERT_RESTORE_SPEC(2);
       }
    }
 }
 
-
-#if HAVE_RGBA
-#undef VERT_SET_IND
-#undef VERT_COPY_IND
-#undef VERT_SAVE_IND
-#undef VERT_RESTORE_IND
-#endif
 
 #if !HAVE_SPEC
 #undef VERT_SET_SPEC

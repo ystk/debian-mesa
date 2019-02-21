@@ -1,4 +1,4 @@
-/**********************************************************
+ /**********************************************************
  * Copyright 2008-2009 VMware, Inc.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person
@@ -28,9 +28,7 @@
 
 
 #include "pipe/p_screen.h"
-#include "pipe/p_thread.h"
-
-#include "util/u_double_list.h"
+#include "os/os_thread.h"
 
 #include "svga_screen_cache.h"
 
@@ -38,8 +36,6 @@
 struct svga_winsys_screen;
 struct svga_winsys_context;
 struct SVGACmdMemory;
-
-#define SVGA_COMBINE_USERBUFFERS 1
 
 /**
  * Subclass of pipe_screen
@@ -49,31 +45,53 @@ struct svga_screen
    struct pipe_screen screen;
    struct svga_winsys_screen *sws;
 
-   unsigned use_ps30;
-   unsigned use_vs30;
-   
+   SVGA3dHardwareVersion hw_version;
+
+   /** Device caps */
+   boolean haveProvokingVertex;
+   boolean haveLineStipple, haveLineSmooth;
+   float maxLineWidth, maxLineWidthAA;
+   float maxPointSize;
+   unsigned max_color_buffers;
+   unsigned max_const_buffers;
+   unsigned ms_samples;
+
    struct {
       boolean force_level_surface_view;
       boolean force_surface_view;
       boolean no_surface_view;
       boolean force_sampler_view;
       boolean no_sampler_view;
+      boolean no_cache_index_buffers;
    } debug;
-
-   /* The screen needs its own context */
-   struct svga_winsys_context *swc;
-   struct SVGACmdMemory *fifo;
 
    unsigned texture_timestamp;
    pipe_mutex tex_mutex; 
-   pipe_mutex swc_mutex; /* Protects the use of swc and dirty_buffers */
-   
+
+   pipe_mutex swc_mutex; /* Used for buffer uploads */
+
+   /* which formats to translate depth formats into */
+   struct {
+     enum SVGA3dSurfaceFormat z16;
+
+     /* note gallium order */
+     enum SVGA3dSurfaceFormat x8z24;
+     enum SVGA3dSurfaceFormat s8z24;
+   } depth;
+
    struct svga_host_surface_cache cache;
+
+   /** HUD counters */
+   struct {
+      /** Memory used by all resources (buffers and surfaces) */
+      uint64_t total_resource_bytes;
+      uint64_t num_resources;
+   } hud;
 };
 
 #ifndef DEBUG
 /** cast wrapper */
-static INLINE struct svga_screen *
+static inline struct svga_screen *
 svga_screen(struct pipe_screen *pscreen)
 {
    return (struct svga_screen *) pscreen;
@@ -82,8 +100,5 @@ svga_screen(struct pipe_screen *pscreen)
 struct svga_screen *
 svga_screen(struct pipe_screen *screen);
 #endif
-
-void svga_screen_flush( struct svga_screen *svga_screen, 
-                        struct pipe_fence_handle **pfence );
 
 #endif /* SVGA_SCREEN_H */

@@ -1,7 +1,6 @@
 
 /*
  * Mesa 3-D graphics library
- * Version:  6.5
  *
  * Copyright (C) 1999-2006  Brian Paul   All Rights Reserved.
  *
@@ -18,21 +17,24 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  *
  * Authors:
- *    Keith Whitwell <keith@tungstengraphics.com>
+ *    Keith Whitwell <keithw@vmware.com>
  */
 
 /* Split indexed primitives with per-vertex copying.
  */
 
+#include <stdio.h>
+
 #include "main/glheader.h"
 #include "main/bufferobj.h"
 #include "main/imports.h"
-#include "main/image.h"
+#include "main/glformats.h"
 #include "main/macros.h"
 #include "main/mtypes.h"
 
@@ -49,7 +51,7 @@
  */
 struct copy_context {
 
-   GLcontext *ctx;
+   struct gl_context *ctx;
    const struct gl_client_array **array;
    const struct _mesa_prim *prim;
    GLuint nr_prims;
@@ -137,7 +139,7 @@ check_flush( struct copy_context *copy )
  * Dump the parameters/info for a vbo->draw() call.
  */
 static void
-dump_draw_info(GLcontext *ctx,
+dump_draw_info(struct gl_context *ctx,
                const struct gl_client_array **arrays,
                const struct _mesa_prim *prims,
                GLuint nr_prims,
@@ -147,21 +149,21 @@ dump_draw_info(GLcontext *ctx,
 {
    GLuint i, j;
 
-   _mesa_printf("VBO Draw:\n");
+   printf("VBO Draw:\n");
    for (i = 0; i < nr_prims; i++) {
-      _mesa_printf("Prim %u of %u\n", i, nr_prims);
-      _mesa_printf("  Prim mode 0x%x\n", prims[i].mode);
-      _mesa_printf("  IB: %p\n", (void*) ib);
+      printf("Prim %u of %u\n", i, nr_prims);
+      printf("  Prim mode 0x%x\n", prims[i].mode);
+      printf("  IB: %p\n", (void*) ib);
       for (j = 0; j < VERT_ATTRIB_MAX; j++) {
-         _mesa_printf("    array %d at %p:\n", j, (void*) arrays[j]);
-         _mesa_printf("      enabled %d, ptr %p, size %d, type 0x%x, stride %d\n",
-                      arrays[j]->Enabled, arrays[j]->Ptr,
-                      arrays[j]->Size, arrays[j]->Type, arrays[j]->StrideB);
+         printf("    array %d at %p:\n", j, (void*) arrays[j]);
+         printf("      ptr %p, size %d, type 0x%x, stride %d\n",
+		arrays[j]->Ptr,
+		arrays[j]->Size, arrays[j]->Type, arrays[j]->StrideB);
          if (0) {
             GLint k = prims[i].start + prims[i].count - 1;
-            GLfloat *last = (GLfloat *) (arrays[j]->Ptr + arrays[j]->Stride * k);
-            _mesa_printf("        last: %f %f %f\n",
-                         last[0], last[1], last[2]);
+            GLfloat *last = (GLfloat *) (arrays[j]->Ptr + arrays[j]->StrideB * k);
+            printf("        last: %f %f %f\n",
+		   last[0], last[1], last[2]);
          }
       }
    }
@@ -171,6 +173,8 @@ dump_draw_info(GLcontext *ctx,
 static void
 flush( struct copy_context *copy )
 {
+   struct gl_context *ctx = copy->ctx;
+   const struct gl_client_array **saved_arrays = ctx->Array._DrawArrays;
    GLuint i;
 
    /* Set some counters: 
@@ -189,14 +193,20 @@ flush( struct copy_context *copy )
    (void) dump_draw_info;
 #endif
 
-   copy->draw( copy->ctx,
-	       copy->dstarray_ptr,
+   ctx->Array._DrawArrays = copy->dstarray_ptr;
+   ctx->NewDriverState |= ctx->DriverFlags.NewArray;
+
+   copy->draw( ctx,
 	       copy->dstprim,
 	       copy->dstprim_nr,
 	       &copy->dstib,
 	       GL_TRUE,
 	       0,
-	       copy->dstbuf_nr - 1 );
+	       copy->dstbuf_nr - 1,
+	       NULL, 0, NULL );
+
+   ctx->Array._DrawArrays = saved_arrays;
+   ctx->NewDriverState |= ctx->DriverFlags.NewArray;
 
    /* Reset all pointers: 
     */
@@ -222,6 +232,7 @@ begin( struct copy_context *copy, GLenum mode, GLboolean begin_flag )
 
    prim->mode = mode;
    prim->begin = begin_flag;
+   prim->num_instances = 1;
 }
 
 
@@ -232,10 +243,10 @@ begin( struct copy_context *copy, GLenum mode, GLboolean begin_flag )
 static GLuint
 elt(struct copy_context *copy, GLuint elt_idx)
 {
-   GLuint elt = copy->srcelt[elt_idx];
+   GLuint elt = copy->srcelt[elt_idx] + copy->prim->basevertex;
    GLuint slot = elt & (ELT_TABLE_SIZE-1);
 
-/*    _mesa_printf("elt %d\n", elt); */
+/*    printf("elt %d\n", elt); */
 
    /* Look up the incoming element in the vertex cache.  Re-emit if
     * necessary.   
@@ -244,7 +255,7 @@ elt(struct copy_context *copy, GLuint elt_idx)
       GLubyte *csr = copy->dstptr;
       GLuint i;
 
-/*       _mesa_printf("  --> emit to dstelt %d\n", copy->dstbuf_nr); */
+/*       printf("  --> emit to dstelt %d\n", copy->dstbuf_nr); */
 
       for (i = 0; i < copy->nr_varying; i++) {
 	 const struct gl_client_array *srcarray = copy->varying[i].array;
@@ -268,10 +279,10 @@ elt(struct copy_context *copy, GLuint elt_idx)
 	 {
 	    const GLuint *f = (const GLuint *)srcptr;
 	    GLuint j;
-	    _mesa_printf("  varying %d: ", i);
+	    printf("  varying %d: ", i);
 	    for(j = 0; j < copy->varying[i].size / 4; j++)
-	       _mesa_printf("%x ", f[j]);
-	    _mesa_printf("\n");
+	       printf("%x ", f[j]);
+	    printf("\n");
 	 }
       }
 
@@ -284,9 +295,9 @@ elt(struct copy_context *copy, GLuint elt_idx)
                               copy->dstbuf_nr * copy->vertex_size));
    }
 /*    else */
-/*       _mesa_printf("  --> reuse vertex\n"); */
+/*       printf("  --> reuse vertex\n"); */
    
-/*    _mesa_printf("  --> emit %d\n", copy->vert_cache[slot].out); */
+/*    printf("  --> emit %d\n", copy->vert_cache[slot].out); */
    copy->dstelt[copy->dstelt_nr++] = copy->vert_cache[slot].out;
    return check_flush(copy);
 }
@@ -300,7 +311,7 @@ end( struct copy_context *copy, GLboolean end_flag )
 {
    struct _mesa_prim *prim = &copy->dstprim[copy->dstprim_nr];
 
-/*    _mesa_printf("end (%d)\n", end_flag); */
+/*    printf("end (%d)\n", end_flag); */
 
    prim->end = end_flag;
    prim->count = copy->dstelt_nr - prim->start;
@@ -419,7 +430,7 @@ replay_elts( struct copy_context *copy )
 static void
 replay_init( struct copy_context *copy )
 {
-   GLcontext *ctx = copy->ctx;
+   struct gl_context *ctx = copy->ctx;
    GLuint i;
    GLuint offset;
    const GLvoid *srcptr;
@@ -442,11 +453,14 @@ replay_init( struct copy_context *copy )
 	 copy->varying[j].size = attr_size(copy->array[i]);
 	 copy->vertex_size += attr_size(copy->array[i]);
       
-	 if (_mesa_is_bufferobj(vbo) && !_mesa_bufferobj_mapped(vbo)) 
-	    ctx->Driver.MapBuffer(ctx, GL_ARRAY_BUFFER, GL_READ_ONLY, vbo);
+	 if (_mesa_is_bufferobj(vbo) &&
+             !_mesa_bufferobj_mapped(vbo, MAP_INTERNAL))
+	    ctx->Driver.MapBufferRange(ctx, 0, vbo->Size, GL_MAP_READ_BIT, vbo,
+                                       MAP_INTERNAL);
 
-	 copy->varying[j].src_ptr = ADD_POINTERS(vbo->Pointer,
-						 copy->array[i]->Ptr);
+	 copy->varying[j].src_ptr =
+               ADD_POINTERS(vbo->Mappings[MAP_INTERNAL].Pointer,
+                            copy->array[i]->Ptr);
 
 	 copy->dstarray_ptr[i] = &copy->varying[j].dstarray;
       }
@@ -457,16 +471,17 @@ replay_init( struct copy_context *copy )
     * do it internally.
     */
    if (_mesa_is_bufferobj(copy->ib->obj) &&
-       !_mesa_bufferobj_mapped(copy->ib->obj)) 
-      ctx->Driver.MapBuffer(ctx, GL_ELEMENT_ARRAY_BUFFER, GL_READ_ONLY,
-			    copy->ib->obj);
+       !_mesa_bufferobj_mapped(copy->ib->obj, MAP_INTERNAL))
+      ctx->Driver.MapBufferRange(ctx, 0, copy->ib->obj->Size, GL_MAP_READ_BIT,
+				 copy->ib->obj, MAP_INTERNAL);
 
-   srcptr = (const GLubyte *) ADD_POINTERS(copy->ib->obj->Pointer,
-                                           copy->ib->ptr);
+   srcptr = (const GLubyte *)
+            ADD_POINTERS(copy->ib->obj->Mappings[MAP_INTERNAL].Pointer,
+                         copy->ib->ptr);
 
    switch (copy->ib->type) {
    case GL_UNSIGNED_BYTE:
-      copy->translated_elt_buf = _mesa_malloc(sizeof(GLuint) * copy->ib->count);
+      copy->translated_elt_buf = malloc(sizeof(GLuint) * copy->ib->count);
       copy->srcelt = copy->translated_elt_buf;
 
       for (i = 0; i < copy->ib->count; i++)
@@ -474,7 +489,7 @@ replay_init( struct copy_context *copy )
       break;
 
    case GL_UNSIGNED_SHORT:
-      copy->translated_elt_buf = _mesa_malloc(sizeof(GLuint) * copy->ib->count);
+      copy->translated_elt_buf = malloc(sizeof(GLuint) * copy->ib->count);
       copy->srcelt = copy->translated_elt_buf;
 
       for (i = 0; i < copy->ib->count; i++)
@@ -500,7 +515,7 @@ replay_init( struct copy_context *copy )
     *
     * XXX:  This should be a VBO!
     */
-   copy->dstbuf = _mesa_malloc(copy->dstbuf_size * copy->vertex_size);   
+   copy->dstbuf = malloc(copy->dstbuf_size * copy->vertex_size);   
    copy->dstptr = copy->dstbuf;
 
    /* Setup new vertex arrays to point into the output buffer: 
@@ -512,13 +527,13 @@ replay_init( struct copy_context *copy )
       dst->Size = src->Size;
       dst->Type = src->Type;
       dst->Format = GL_RGBA;
-      dst->Stride = copy->vertex_size;
       dst->StrideB = copy->vertex_size;
       dst->Ptr = copy->dstbuf + offset;
-      dst->Enabled = GL_TRUE;
       dst->Normalized = src->Normalized; 
+      dst->Integer = src->Integer;
+      dst->Doubles = src->Doubles;
       dst->BufferObj = ctx->Shared->NullBufferObj;
-      dst->_MaxElement = copy->dstbuf_size; /* may be less! */
+      dst->_ElementSize = src->_ElementSize;
 
       offset += copy->varying[i].size;
    }
@@ -529,7 +544,7 @@ replay_init( struct copy_context *copy )
 			    copy->ib->count * 2 + 3);
    copy->dstelt_size = MIN2(copy->dstelt_size,
 			    copy->limits->max_indices);
-   copy->dstelt = _mesa_malloc(sizeof(GLuint) * copy->dstelt_size);
+   copy->dstelt = malloc(sizeof(GLuint) * copy->dstelt_size);
    copy->dstelt_nr = 0;
 
    /* Setup the new index buffer to point to the allocated element
@@ -548,28 +563,28 @@ replay_init( struct copy_context *copy )
 static void
 replay_finish( struct copy_context *copy )
 {
-   GLcontext *ctx = copy->ctx;
+   struct gl_context *ctx = copy->ctx;
    GLuint i;
 
    /* Free our vertex and index buffers: 
     */
-   _mesa_free(copy->translated_elt_buf);
-   _mesa_free(copy->dstbuf);
-   _mesa_free(copy->dstelt);
+   free(copy->translated_elt_buf);
+   free(copy->dstbuf);
+   free(copy->dstelt);
 
    /* Unmap VBO's 
     */
    for (i = 0; i < copy->nr_varying; i++) {
       struct gl_buffer_object *vbo = copy->varying[i].array->BufferObj;
-      if (_mesa_is_bufferobj(vbo) && _mesa_bufferobj_mapped(vbo)) 
-	 ctx->Driver.UnmapBuffer(ctx, GL_ARRAY_BUFFER, vbo);
+      if (_mesa_is_bufferobj(vbo) && _mesa_bufferobj_mapped(vbo, MAP_INTERNAL))
+	 ctx->Driver.UnmapBuffer(ctx, vbo, MAP_INTERNAL);
    }
 
    /* Unmap index buffer:
     */
    if (_mesa_is_bufferobj(copy->ib->obj) &&
-       _mesa_bufferobj_mapped(copy->ib->obj)) {
-      ctx->Driver.UnmapBuffer(ctx, GL_ELEMENT_ARRAY_BUFFER, copy->ib->obj);
+       _mesa_bufferobj_mapped(copy->ib->obj, MAP_INTERNAL)) {
+      ctx->Driver.UnmapBuffer(ctx, copy->ib->obj, MAP_INTERNAL);
    }
 }
 
@@ -577,7 +592,7 @@ replay_finish( struct copy_context *copy )
 /**
  * Split VBO into smaller pieces, draw the pieces.
  */
-void vbo_split_copy( GLcontext *ctx,
+void vbo_split_copy( struct gl_context *ctx,
 		     const struct gl_client_array *arrays[],
 		     const struct _mesa_prim *prim,
 		     GLuint nr_prims,

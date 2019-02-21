@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * Copyright 2008 VMware, Inc.  All rights reserved.
  * 
@@ -19,7 +19,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -27,140 +27,111 @@
  **************************************************************************/
 
 /* Author:
- *    Keith Whitwell <keith@tungstengraphics.com>
+ *    Keith Whitwell <keithw@vmware.com>
  */
 
 #include "draw/draw_context.h"
 #include "draw/draw_vbuf.h"
 #include "pipe/p_defines.h"
+#include "util/u_inlines.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
+#include "util/simple_list.h"
 #include "lp_clear.h"
 #include "lp_context.h"
 #include "lp_flush.h"
-#include "lp_prim_vbuf.h"
+#include "lp_perf.h"
 #include "lp_state.h"
 #include "lp_surface.h"
-#include "lp_tile_cache.h"
-#include "lp_tex_cache.h"
-#include "lp_texture.h"
-#include "lp_winsys.h"
 #include "lp_query.h"
+#include "lp_setup.h"
 
-
-
-/**
- * Map any drawing surfaces which aren't already mapped
- */
-void
-llvmpipe_map_transfers(struct llvmpipe_context *lp)
-{
-   struct pipe_screen *screen = lp->pipe.screen;
-   struct pipe_surface *zsbuf = lp->framebuffer.zsbuf;
-   unsigned i;
-
-   for (i = 0; i < lp->framebuffer.nr_cbufs; i++) {
-      lp_tile_cache_map_transfers(lp->cbuf_cache[i]);
-   }
-
-   if(zsbuf) {
-      if(!lp->zsbuf_transfer)
-         lp->zsbuf_transfer = screen->get_tex_transfer(screen, zsbuf->texture,
-                                                       zsbuf->face, zsbuf->level, zsbuf->zslice,
-                                                       PIPE_TRANSFER_READ_WRITE,
-                                                       0, 0, zsbuf->width, zsbuf->height);
-      if(lp->zsbuf_transfer && !lp->zsbuf_map)
-         lp->zsbuf_map = screen->transfer_map(screen, lp->zsbuf_transfer);
-
-   }
-}
-
-
-/**
- * Unmap any mapped drawing surfaces
- */
-void
-llvmpipe_unmap_transfers(struct llvmpipe_context *lp)
-{
-   uint i;
-
-   for (i = 0; i < lp->framebuffer.nr_cbufs; i++) {
-      lp_tile_cache_unmap_transfers(lp->cbuf_cache[i]);
-   }
-
-   if(lp->zsbuf_transfer) {
-      struct pipe_screen *screen = lp->pipe.screen;
-
-      if(lp->zsbuf_map) {
-         screen->transfer_unmap(screen, lp->zsbuf_transfer);
-         lp->zsbuf_map = NULL;
-      }
-   }
-}
-
+/* This is only safe if there's just one concurrent context */
+#ifdef PIPE_SUBSYSTEM_EMBEDDED
+#define USE_GLOBAL_LLVM_CONTEXT
+#endif
 
 static void llvmpipe_destroy( struct pipe_context *pipe )
 {
    struct llvmpipe_context *llvmpipe = llvmpipe_context( pipe );
-   uint i;
+   uint i, j;
 
+   lp_print_counters();
+
+   if (llvmpipe->blitter) {
+      util_blitter_destroy(llvmpipe->blitter);
+   }
+
+   /* This will also destroy llvmpipe->setup:
+    */
    if (llvmpipe->draw)
       draw_destroy( llvmpipe->draw );
 
    for (i = 0; i < PIPE_MAX_COLOR_BUFS; i++) {
-      lp_destroy_tile_cache(llvmpipe->cbuf_cache[i]);
       pipe_surface_reference(&llvmpipe->framebuffer.cbufs[i], NULL);
    }
+
    pipe_surface_reference(&llvmpipe->framebuffer.zsbuf, NULL);
 
-   for (i = 0; i < PIPE_MAX_SAMPLERS; i++) {
-      lp_destroy_tex_tile_cache(llvmpipe->tex_cache[i]);
-      pipe_texture_reference(&llvmpipe->texture[i], NULL);
+   for (i = 0; i < ARRAY_SIZE(llvmpipe->sampler_views[0]); i++) {
+      pipe_sampler_view_reference(&llvmpipe->sampler_views[PIPE_SHADER_FRAGMENT][i], NULL);
    }
 
-   for (i = 0; i < Elements(llvmpipe->constants); i++) {
-      if (llvmpipe->constants[i].buffer) {
-         pipe_buffer_reference(&llvmpipe->constants[i].buffer, NULL);
+   for (i = 0; i < ARRAY_SIZE(llvmpipe->sampler_views[0]); i++) {
+      pipe_sampler_view_reference(&llvmpipe->sampler_views[PIPE_SHADER_VERTEX][i], NULL);
+   }
+
+   for (i = 0; i < ARRAY_SIZE(llvmpipe->sampler_views[0]); i++) {
+      pipe_sampler_view_reference(&llvmpipe->sampler_views[PIPE_SHADER_GEOMETRY][i], NULL);
+   }
+
+   for (i = 0; i < ARRAY_SIZE(llvmpipe->constants); i++) {
+      for (j = 0; j < ARRAY_SIZE(llvmpipe->constants[i]); j++) {
+         pipe_resource_reference(&llvmpipe->constants[i][j].buffer, NULL);
       }
    }
+
+   for (i = 0; i < llvmpipe->num_vertex_buffers; i++) {
+      pipe_resource_reference(&llvmpipe->vertex_buffer[i].buffer, NULL);
+   }
+
+   lp_delete_setup_variants(llvmpipe);
+
+#ifndef USE_GLOBAL_LLVM_CONTEXT
+   LLVMContextDispose(llvmpipe->context);
+#endif
+   llvmpipe->context = NULL;
 
    align_free( llvmpipe );
 }
 
-static unsigned int
-llvmpipe_is_texture_referenced( struct pipe_context *pipe,
-				struct pipe_texture *texture,
-				unsigned face, unsigned level)
+static void
+do_flush( struct pipe_context *pipe,
+          struct pipe_fence_handle **fence,
+          unsigned flags)
 {
-   struct llvmpipe_context *llvmpipe = llvmpipe_context( pipe );
-   unsigned i;
-
-   if(llvmpipe->dirty_render_cache) {
-      for (i = 0; i < llvmpipe->framebuffer.nr_cbufs; i++) {
-         if(llvmpipe->framebuffer.cbufs[i] && 
-            llvmpipe->framebuffer.cbufs[i]->texture == texture)
-            return PIPE_REFERENCED_FOR_WRITE;
-      }
-      if(llvmpipe->framebuffer.zsbuf && 
-         llvmpipe->framebuffer.zsbuf->texture == texture)
-         return PIPE_REFERENCED_FOR_WRITE;
-   }
-   
-   return PIPE_UNREFERENCED;
+   llvmpipe_flush(pipe, fence, __FUNCTION__);
 }
 
-static unsigned int
-llvmpipe_is_buffer_referenced( struct pipe_context *pipe,
-			       struct pipe_buffer *buf)
+
+static void
+llvmpipe_render_condition ( struct pipe_context *pipe,
+                            struct pipe_query *query,
+                            boolean condition,
+                            uint mode )
 {
-   return PIPE_UNREFERENCED;
+   struct llvmpipe_context *llvmpipe = llvmpipe_context( pipe );
+
+   llvmpipe->render_cond_query = query;
+   llvmpipe->render_cond_mode = mode;
+   llvmpipe->render_cond_cond = condition;
 }
 
 struct pipe_context *
-llvmpipe_create( struct pipe_screen *screen )
+llvmpipe_create_context(struct pipe_screen *screen, void *priv,
+                        unsigned flags)
 {
    struct llvmpipe_context *llvmpipe;
-   uint i;
 
    llvmpipe = align_malloc(sizeof(struct llvmpipe_context), 16);
    if (!llvmpipe)
@@ -170,126 +141,82 @@ llvmpipe_create( struct pipe_screen *screen )
 
    memset(llvmpipe, 0, sizeof *llvmpipe);
 
-   llvmpipe->pipe.winsys = screen->winsys;
+   make_empty_list(&llvmpipe->fs_variants_list);
+
+   make_empty_list(&llvmpipe->setup_variants_list);
+
+
    llvmpipe->pipe.screen = screen;
+   llvmpipe->pipe.priv = priv;
+
+   /* Init the pipe context methods */
    llvmpipe->pipe.destroy = llvmpipe_destroy;
-
-   /* state setters */
-   llvmpipe->pipe.create_blend_state = llvmpipe_create_blend_state;
-   llvmpipe->pipe.bind_blend_state   = llvmpipe_bind_blend_state;
-   llvmpipe->pipe.delete_blend_state = llvmpipe_delete_blend_state;
-
-   llvmpipe->pipe.create_sampler_state = llvmpipe_create_sampler_state;
-   llvmpipe->pipe.bind_sampler_states  = llvmpipe_bind_sampler_states;
-   llvmpipe->pipe.delete_sampler_state = llvmpipe_delete_sampler_state;
-
-   llvmpipe->pipe.create_depth_stencil_alpha_state = llvmpipe_create_depth_stencil_state;
-   llvmpipe->pipe.bind_depth_stencil_alpha_state   = llvmpipe_bind_depth_stencil_state;
-   llvmpipe->pipe.delete_depth_stencil_alpha_state = llvmpipe_delete_depth_stencil_state;
-
-   llvmpipe->pipe.create_rasterizer_state = llvmpipe_create_rasterizer_state;
-   llvmpipe->pipe.bind_rasterizer_state   = llvmpipe_bind_rasterizer_state;
-   llvmpipe->pipe.delete_rasterizer_state = llvmpipe_delete_rasterizer_state;
-
-   llvmpipe->pipe.create_fs_state = llvmpipe_create_fs_state;
-   llvmpipe->pipe.bind_fs_state   = llvmpipe_bind_fs_state;
-   llvmpipe->pipe.delete_fs_state = llvmpipe_delete_fs_state;
-
-   llvmpipe->pipe.create_vs_state = llvmpipe_create_vs_state;
-   llvmpipe->pipe.bind_vs_state   = llvmpipe_bind_vs_state;
-   llvmpipe->pipe.delete_vs_state = llvmpipe_delete_vs_state;
-
-   llvmpipe->pipe.set_blend_color = llvmpipe_set_blend_color;
-   llvmpipe->pipe.set_clip_state = llvmpipe_set_clip_state;
-   llvmpipe->pipe.set_constant_buffer = llvmpipe_set_constant_buffer;
    llvmpipe->pipe.set_framebuffer_state = llvmpipe_set_framebuffer_state;
-   llvmpipe->pipe.set_polygon_stipple = llvmpipe_set_polygon_stipple;
-   llvmpipe->pipe.set_scissor_state = llvmpipe_set_scissor_state;
-   llvmpipe->pipe.set_sampler_textures = llvmpipe_set_sampler_textures;
-   llvmpipe->pipe.set_viewport_state = llvmpipe_set_viewport_state;
-
-   llvmpipe->pipe.set_vertex_buffers = llvmpipe_set_vertex_buffers;
-   llvmpipe->pipe.set_vertex_elements = llvmpipe_set_vertex_elements;
-
-   llvmpipe->pipe.draw_arrays = llvmpipe_draw_arrays;
-   llvmpipe->pipe.draw_elements = llvmpipe_draw_elements;
-   llvmpipe->pipe.draw_range_elements = llvmpipe_draw_range_elements;
-   llvmpipe->pipe.set_edgeflags = llvmpipe_set_edgeflags;
-
-
    llvmpipe->pipe.clear = llvmpipe_clear;
-   llvmpipe->pipe.flush = llvmpipe_flush;
+   llvmpipe->pipe.flush = do_flush;
 
-   llvmpipe->pipe.is_texture_referenced = llvmpipe_is_texture_referenced;
-   llvmpipe->pipe.is_buffer_referenced = llvmpipe_is_buffer_referenced;
+   llvmpipe->pipe.render_condition = llvmpipe_render_condition;
 
+   llvmpipe_init_blend_funcs(llvmpipe);
+   llvmpipe_init_clip_funcs(llvmpipe);
+   llvmpipe_init_draw_funcs(llvmpipe);
+   llvmpipe_init_sampler_funcs(llvmpipe);
    llvmpipe_init_query_funcs( llvmpipe );
-   llvmpipe_init_texture_funcs( llvmpipe );
+   llvmpipe_init_vertex_funcs(llvmpipe);
+   llvmpipe_init_so_funcs(llvmpipe);
+   llvmpipe_init_fs_funcs(llvmpipe);
+   llvmpipe_init_vs_funcs(llvmpipe);
+   llvmpipe_init_gs_funcs(llvmpipe);
+   llvmpipe_init_rasterizer_funcs(llvmpipe);
+   llvmpipe_init_context_resource_funcs( &llvmpipe->pipe );
+   llvmpipe_init_surface_functions(llvmpipe);
 
-   /*
-    * Alloc caches for accessing drawing surfaces and textures.
-    */
-   for (i = 0; i < PIPE_MAX_COLOR_BUFS; i++)
-      llvmpipe->cbuf_cache[i] = lp_create_tile_cache( screen );
+#ifdef USE_GLOBAL_LLVM_CONTEXT
+   llvmpipe->context = LLVMGetGlobalContext();
+#else
+   llvmpipe->context = LLVMContextCreate();
+#endif
 
-   for (i = 0; i < PIPE_MAX_SAMPLERS; i++)
-      llvmpipe->tex_cache[i] = lp_create_tex_tile_cache( screen );
-
-
-   /* vertex shader samplers */
-   for (i = 0; i < PIPE_MAX_SAMPLERS; i++) {
-      llvmpipe->tgsi.vert_samplers[i].base.get_samples = lp_get_samples;
-      llvmpipe->tgsi.vert_samplers[i].processor = TGSI_PROCESSOR_VERTEX;
-      llvmpipe->tgsi.vert_samplers[i].cache = llvmpipe->tex_cache[i];
-      llvmpipe->tgsi.vert_samplers_list[i] = &llvmpipe->tgsi.vert_samplers[i];
-   }
-
-   /* fragment shader samplers */
-   for (i = 0; i < PIPE_MAX_SAMPLERS; i++) {
-      llvmpipe->tgsi.frag_samplers[i].base.get_samples = lp_get_samples;
-      llvmpipe->tgsi.frag_samplers[i].processor = TGSI_PROCESSOR_FRAGMENT;
-      llvmpipe->tgsi.frag_samplers[i].cache = llvmpipe->tex_cache[i];
-      llvmpipe->tgsi.frag_samplers_list[i] = &llvmpipe->tgsi.frag_samplers[i];
-   }
+   if (!llvmpipe->context)
+      goto fail;
 
    /*
     * Create drawing context and plug our rendering stage into it.
     */
-   llvmpipe->draw = draw_create();
-   if (!llvmpipe->draw) 
+   llvmpipe->draw = draw_create_with_llvm_context(&llvmpipe->pipe,
+                                                  llvmpipe->context);
+   if (!llvmpipe->draw)
       goto fail;
 
-   draw_texture_samplers(llvmpipe->draw,
-                         PIPE_MAX_SAMPLERS,
-                         (struct tgsi_sampler **)
-                            llvmpipe->tgsi.vert_samplers_list);
+   /* FIXME: devise alternative to draw_texture_samplers */
 
-   if (debug_get_bool_option( "LP_NO_RAST", FALSE ))
-      llvmpipe->no_rast = TRUE;
-
-   llvmpipe->vbuf_backend = lp_create_vbuf_backend(llvmpipe);
-   if (!llvmpipe->vbuf_backend)
+   llvmpipe->setup = lp_setup_create( &llvmpipe->pipe,
+                                      llvmpipe->draw );
+   if (!llvmpipe->setup)
       goto fail;
 
-   llvmpipe->vbuf = draw_vbuf_stage(llvmpipe->draw, llvmpipe->vbuf_backend);
-   if (!llvmpipe->vbuf)
+   llvmpipe->blitter = util_blitter_create(&llvmpipe->pipe);
+   if (!llvmpipe->blitter) {
       goto fail;
+   }
 
-   draw_set_rasterize_stage(llvmpipe->draw, llvmpipe->vbuf);
-   draw_set_render(llvmpipe->draw, llvmpipe->vbuf_backend);
-
-
+   /* must be done before installing Draw stages */
+   util_blitter_cache_all_shaders(llvmpipe->blitter);
 
    /* plug in AA line/point stages */
    draw_install_aaline_stage(llvmpipe->draw, &llvmpipe->pipe);
    draw_install_aapoint_stage(llvmpipe->draw, &llvmpipe->pipe);
-
-#if USE_DRAW_STAGE_PSTIPPLE
-   /* Do polygon stipple w/ texture map + frag prog? */
    draw_install_pstipple_stage(llvmpipe->draw, &llvmpipe->pipe);
-#endif
 
-   lp_init_surface_functions(llvmpipe);
+   /* convert points and lines into triangles: 
+    * (otherwise, draw points and lines natively)
+    */
+   draw_wide_point_sprites(llvmpipe->draw, FALSE);
+   draw_enable_point_sprites(llvmpipe->draw, FALSE);
+   draw_wide_point_threshold(llvmpipe->draw, 10000.0);
+   draw_wide_line_threshold(llvmpipe->draw, 10000.0);
+
+   lp_reset_counters();
 
    return &llvmpipe->pipe;
 

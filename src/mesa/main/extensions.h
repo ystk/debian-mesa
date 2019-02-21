@@ -10,7 +10,6 @@
 
 /*
  * Mesa 3-D graphics library
- * Version:  6.5.1
  *
  * Copyright (C) 1999-2006  Brian Paul   All Rights Reserved.
  *
@@ -27,60 +26,89 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 
 #ifndef _EXTENSIONS_H_
 #define _EXTENSIONS_H_
 
-#include "mtypes.h"
+#include "glheader.h"
 
-#if _HAVE_FULL_GL
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-extern void _mesa_enable_sw_extensions(GLcontext *ctx);
+struct gl_context;
+struct gl_extensions;
 
-extern void _mesa_enable_imaging_extensions(GLcontext *ctx);
+extern void _mesa_enable_sw_extensions(struct gl_context *ctx);
 
-extern void _mesa_enable_1_3_extensions(GLcontext *ctx);
+extern void _mesa_one_time_init_extension_overrides(void);
 
-extern void _mesa_enable_1_4_extensions(GLcontext *ctx);
+extern void _mesa_init_extensions(struct gl_extensions *extentions);
 
-extern void _mesa_enable_1_5_extensions(GLcontext *ctx);
+extern GLubyte *_mesa_make_extension_string(struct gl_context *ctx);
 
-extern void _mesa_enable_2_0_extensions(GLcontext *ctx);
+extern GLuint
+_mesa_get_extension_count(struct gl_context *ctx);
 
-extern void _mesa_enable_2_1_extensions(GLcontext *ctx);
+extern const GLubyte *
+_mesa_get_enabled_extension(struct gl_context *ctx, GLuint index);
 
-extern void _mesa_enable_extension(GLcontext *ctx, const char *name);
 
-extern void _mesa_disable_extension(GLcontext *ctx, const char *name);
+/**
+ * \brief An element of the \c extension_table.
+ */
+struct mesa_extension {
+   /** Name of extension, such as "GL_ARB_depth_clamp". */
+   const char *name;
 
-extern GLboolean _mesa_extension_is_enabled(GLcontext *ctx, const char *name);
+   /** Offset (in bytes) of the corresponding member in struct gl_extensions. */
+   size_t offset;
 
-extern void _mesa_init_extensions(GLcontext *ctx);
+   /** Minimum version the extension requires for the given API
+    * (see gl_api defined in mtypes.h). The value is equal to:
+    * 10 * major_version + minor_version
+    */
+   uint8_t version[API_OPENGL_LAST + 1];
 
-extern GLubyte *_mesa_make_extension_string(GLcontext *ctx);
+   /** Year the extension was proposed or approved.  Used to sort the 
+    * extension string chronologically. */
+   uint16_t year;
+};
 
-#else
+extern const struct mesa_extension _mesa_extension_table[];
 
-/** No-op */
-#define _mesa_extensions_dtr( ctx ) ((void)0)
 
-/** No-op */
-#define _mesa_extensions_ctr( ctx ) ((void)0)
+/* Generate enums for the functions below */
+enum {
+#define EXT(name_str, ...) MESA_EXTENSION_##name_str,
+#include "extensions_table.h"
+#undef EXT
+MESA_EXTENSION_COUNT
+};
 
-/** No-op */
-#define _mesa_extensions_get_string( ctx ) "GL_EXT_texture_object"
 
-/** No-op */
-#define _mesa_enable_imaging_extensions( c ) ((void)0)
+/** Checks if the context supports a user-facing extension */
+#define EXT(name_str, driver_cap, ...) \
+static inline bool \
+_mesa_has_##name_str(const struct gl_context *ctx) \
+{ \
+   return ctx->Extensions.driver_cap && (ctx->Extensions.Version >= \
+          _mesa_extension_table[MESA_EXTENSION_##name_str].version[ctx->API]); \
+}
+#include "extensions_table.h"
+#undef EXT
 
-/** No-op */
-#define _mesa_enable_extension( c, n ) ((void)0)
+extern struct gl_extensions _mesa_extension_override_enables;
+extern struct gl_extensions _mesa_extension_override_disables;
 
+#ifdef __cplusplus
+}
 #endif
 
 #endif

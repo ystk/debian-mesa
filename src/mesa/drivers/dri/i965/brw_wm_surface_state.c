@@ -1,8 +1,8 @@
 /*
  Copyright (C) Intel Corp.  2006.  All Rights Reserved.
- Intel funded Tungsten Graphics (http://www.tungstengraphics.com) to
+ Intel funded Tungsten Graphics to
  develop this 3D driver.
- 
+
  Permission is hereby granted, free of charge, to any person obtaining
  a copy of this software and associated documentation files (the
  "Software"), to deal in the Software without restriction, including
@@ -10,11 +10,11 @@
  distribute, sublicense, and/or sell copies of the Software, and to
  permit persons to whom the Software is furnished to do so, subject to
  the following conditions:
- 
+
  The above copyright notice and this permission notice (including the
  next paragraph) shall be included in all copies or substantial
  portions of the Software.
- 
+
  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
  EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
@@ -22,351 +22,803 @@
  LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
  OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- 
+
  **********************************************************************/
  /*
   * Authors:
-  *   Keith Whitwell <keith@tungstengraphics.com>
+  *   Keith Whitwell <keithw@vmware.com>
   */
-                   
 
+
+#include "compiler/nir/nir.h"
+#include "main/context.h"
+#include "main/blend.h"
 #include "main/mtypes.h"
-#include "main/texstore.h"
-#include "shader/prog_parameter.h"
+#include "main/samplerobj.h"
+#include "main/shaderimage.h"
+#include "main/teximage.h"
+#include "program/prog_parameter.h"
+#include "program/prog_instruction.h"
+#include "main/framebuffer.h"
+#include "main/shaderapi.h"
+
+#include "isl/isl.h"
 
 #include "intel_mipmap_tree.h"
 #include "intel_batchbuffer.h"
 #include "intel_tex.h"
 #include "intel_fbo.h"
+#include "intel_buffer_objects.h"
 
 #include "brw_context.h"
 #include "brw_state.h"
 #include "brw_defines.h"
+#include "brw_wm.h"
 
+enum {
+   INTEL_RENDERBUFFER_LAYERED = 1 << 0,
+   INTEL_AUX_BUFFER_DISABLED = 1 << 1,
+};
 
-static GLuint translate_tex_target( GLenum target )
-{
-   switch (target) {
-   case GL_TEXTURE_1D: 
-      return BRW_SURFACE_1D;
+struct surface_state_info {
+   unsigned num_dwords;
+   unsigned ss_align; /* Required alignment of RENDER_SURFACE_STATE in bytes */
+   unsigned reloc_dw;
+   unsigned aux_reloc_dw;
+   unsigned tex_mocs;
+   unsigned rb_mocs;
+};
 
-   case GL_TEXTURE_RECTANGLE_NV: 
-      return BRW_SURFACE_2D;
-
-   case GL_TEXTURE_2D: 
-      return BRW_SURFACE_2D;
-
-   case GL_TEXTURE_3D: 
-      return BRW_SURFACE_3D;
-
-   case GL_TEXTURE_CUBE_MAP: 
-      return BRW_SURFACE_CUBE;
-
-   default: 
-      assert(0); 
-      return 0;
-   }
-}
-
-
-static GLuint translate_tex_format( gl_format mesa_format,
-                                    GLenum internal_format,
-				    GLenum depth_mode )
-{
-   switch( mesa_format ) {
-   case MESA_FORMAT_L8:
-      return BRW_SURFACEFORMAT_L8_UNORM;
-
-   case MESA_FORMAT_I8:
-      return BRW_SURFACEFORMAT_I8_UNORM;
-
-   case MESA_FORMAT_A8:
-      return BRW_SURFACEFORMAT_A8_UNORM; 
-
-   case MESA_FORMAT_AL88:
-      return BRW_SURFACEFORMAT_L8A8_UNORM;
-
-   case MESA_FORMAT_AL1616:
-      return BRW_SURFACEFORMAT_L16A16_UNORM;
-
-   case MESA_FORMAT_RGB888:
-      assert(0);		/* not supported for sampling */
-      return BRW_SURFACEFORMAT_R8G8B8_UNORM;      
-
-   case MESA_FORMAT_ARGB8888:
-      return BRW_SURFACEFORMAT_B8G8R8A8_UNORM;
-
-   case MESA_FORMAT_XRGB8888:
-      return BRW_SURFACEFORMAT_B8G8R8X8_UNORM;
-
-   case MESA_FORMAT_RGBA8888_REV:
-      _mesa_problem(NULL, "unexpected format in i965:translate_tex_format()");
-      return BRW_SURFACEFORMAT_R8G8B8A8_UNORM;
-
-   case MESA_FORMAT_RGB565:
-      return BRW_SURFACEFORMAT_B5G6R5_UNORM;
-
-   case MESA_FORMAT_ARGB1555:
-      return BRW_SURFACEFORMAT_B5G5R5A1_UNORM;
-
-   case MESA_FORMAT_ARGB4444:
-      return BRW_SURFACEFORMAT_B4G4R4A4_UNORM;
-
-   case MESA_FORMAT_YCBCR_REV:
-      return BRW_SURFACEFORMAT_YCRCB_NORMAL;
-
-   case MESA_FORMAT_YCBCR:
-      return BRW_SURFACEFORMAT_YCRCB_SWAPUVY;
-
-   case MESA_FORMAT_RGB_FXT1:
-   case MESA_FORMAT_RGBA_FXT1:
-      return BRW_SURFACEFORMAT_FXT1;
-
-   case MESA_FORMAT_Z16:
-      if (depth_mode == GL_INTENSITY) 
-	  return BRW_SURFACEFORMAT_I16_UNORM;
-      else if (depth_mode == GL_ALPHA)
-	  return BRW_SURFACEFORMAT_A16_UNORM;
-      else
-	  return BRW_SURFACEFORMAT_L16_UNORM;
-
-   case MESA_FORMAT_RGB_DXT1:
-       return BRW_SURFACEFORMAT_DXT1_RGB;
-
-   case MESA_FORMAT_RGBA_DXT1:
-       return BRW_SURFACEFORMAT_BC1_UNORM;
-       
-   case MESA_FORMAT_RGBA_DXT3:
-       return BRW_SURFACEFORMAT_BC2_UNORM;
-       
-   case MESA_FORMAT_RGBA_DXT5:
-       return BRW_SURFACEFORMAT_BC3_UNORM;
-
-   case MESA_FORMAT_SARGB8:
-      return BRW_SURFACEFORMAT_B8G8R8A8_UNORM_SRGB;
-
-   case MESA_FORMAT_SLA8:
-      return BRW_SURFACEFORMAT_L8A8_UNORM_SRGB;
-
-   case MESA_FORMAT_SL8:
-      return BRW_SURFACEFORMAT_L8_UNORM_SRGB;
-
-   case MESA_FORMAT_SRGB_DXT1:
-      return BRW_SURFACEFORMAT_BC1_UNORM_SRGB;
-
-   case MESA_FORMAT_S8_Z24:
-      /* XXX: these different surface formats don't seem to
-       * make any difference for shadow sampler/compares.
-       */
-      if (depth_mode == GL_INTENSITY) 
-         return BRW_SURFACEFORMAT_I24X8_UNORM;
-      else if (depth_mode == GL_ALPHA)
-         return BRW_SURFACEFORMAT_A24X8_UNORM;
-      else
-         return BRW_SURFACEFORMAT_L24X8_UNORM;
-
-   case MESA_FORMAT_DUDV8:
-      return BRW_SURFACEFORMAT_R8G8_SNORM;
-
-   case MESA_FORMAT_SIGNED_RGBA8888_REV:
-      return BRW_SURFACEFORMAT_R8G8B8A8_SNORM;
-
-   default:
-      assert(0);
-      return 0;
-   }
-}
+static const struct surface_state_info surface_state_infos[] = {
+   [4] = {6,  32, 1,  0},
+   [5] = {6,  32, 1,  0},
+   [6] = {6,  32, 1,  0},
+   [7] = {8,  32, 1,  6,  GEN7_MOCS_L3, GEN7_MOCS_L3},
+   [8] = {13, 64, 8,  10, BDW_MOCS_WB,  BDW_MOCS_PTE},
+   [9] = {16, 64, 8,  10, SKL_MOCS_WB,  SKL_MOCS_PTE},
+};
 
 static void
-brw_set_surface_tiling(struct brw_surface_state *surf, uint32_t tiling)
+brw_emit_surface_state(struct brw_context *brw,
+                       struct intel_mipmap_tree *mt, uint32_t flags,
+                       GLenum target, struct isl_view view,
+                       uint32_t mocs, uint32_t *surf_offset, int surf_index,
+                       unsigned read_domains, unsigned write_domains)
 {
-   switch (tiling) {
-   case I915_TILING_NONE:
-      surf->ss3.tiled_surface = 0;
-      surf->ss3.tile_walk = 0;
-      break;
-   case I915_TILING_X:
-      surf->ss3.tiled_surface = 1;
-      surf->ss3.tile_walk = BRW_TILEWALK_XMAJOR;
-      break;
-   case I915_TILING_Y:
-      surf->ss3.tiled_surface = 1;
-      surf->ss3.tile_walk = BRW_TILEWALK_YMAJOR;
-      break;
+   const struct surface_state_info ss_info = surface_state_infos[brw->gen];
+   uint32_t tile_x = mt->level[0].slice[0].x_offset;
+   uint32_t tile_y = mt->level[0].slice[0].y_offset;
+   uint32_t offset = mt->offset;
+
+   struct isl_surf surf;
+   intel_miptree_get_isl_surf(brw, mt, &surf);
+
+   surf.dim = get_isl_surf_dim(target);
+
+   const enum isl_dim_layout dim_layout =
+      get_isl_dim_layout(&brw->screen->devinfo, mt->tiling, target);
+
+   if (surf.dim_layout != dim_layout) {
+      /* The layout of the specified texture target is not compatible with the
+       * actual layout of the miptree structure in memory -- You're entering
+       * dangerous territory, this can only possibly work if you only intended
+       * to access a single level and slice of the texture, and the hardware
+       * supports the tile offset feature in order to allow non-tile-aligned
+       * base offsets, since we'll have to point the hardware to the first
+       * texel of the level instead of relying on the usual base level/layer
+       * controls.
+       */
+      assert(brw->has_surface_tile_offset);
+      assert(view.levels == 1 && view.array_len == 1);
+      assert(tile_x == 0 && tile_y == 0);
+
+      offset += intel_miptree_get_tile_offsets(mt, view.base_level,
+                                               view.base_array_layer,
+                                               &tile_x, &tile_y);
+
+      /* Minify the logical dimensions of the texture. */
+      const unsigned l = view.base_level - mt->first_level;
+      surf.logical_level0_px.width = minify(surf.logical_level0_px.width, l);
+      surf.logical_level0_px.height = surf.dim <= ISL_SURF_DIM_1D ? 1 :
+         minify(surf.logical_level0_px.height, l);
+      surf.logical_level0_px.depth = surf.dim <= ISL_SURF_DIM_2D ? 1 :
+         minify(surf.logical_level0_px.depth, l);
+
+      /* Only the base level and layer can be addressed with the overridden
+       * layout.
+       */
+      surf.logical_level0_px.array_len = 1;
+      surf.levels = 1;
+      surf.dim_layout = dim_layout;
+
+      /* The requested slice of the texture is now at the base level and
+       * layer.
+       */
+      view.base_level = 0;
+      view.base_array_layer = 0;
+   }
+
+   union isl_color_value clear_color = { .u32 = { 0, 0, 0, 0 } };
+
+   struct isl_surf *aux_surf = NULL, aux_surf_s;
+   uint64_t aux_offset = 0;
+   enum isl_aux_usage aux_usage = ISL_AUX_USAGE_NONE;
+   if (mt->mcs_mt && !(flags & INTEL_AUX_BUFFER_DISABLED)) {
+      intel_miptree_get_aux_isl_surf(brw, mt, &aux_surf_s, &aux_usage);
+      aux_surf = &aux_surf_s;
+      assert(mt->mcs_mt->offset == 0);
+      aux_offset = mt->mcs_mt->bo->offset64;
+
+      /* We only really need a clear color if we also have an auxiliary
+       * surfacae.  Without one, it does nothing.
+       */
+      clear_color = intel_miptree_get_isl_clear_color(brw, mt);
+   }
+
+   uint32_t *dw = __brw_state_batch(brw, AUB_TRACE_SURFACE_STATE,
+                                    ss_info.num_dwords * 4, ss_info.ss_align,
+                                    surf_index, surf_offset);
+
+   isl_surf_fill_state(&brw->isl_dev, dw, .surf = &surf, .view = &view,
+                       .address = mt->bo->offset64 + offset,
+                       .aux_surf = aux_surf, .aux_usage = aux_usage,
+                       .aux_address = aux_offset,
+                       .mocs = mocs, .clear_color = clear_color,
+                       .x_offset_sa = tile_x, .y_offset_sa = tile_y);
+
+   drm_intel_bo_emit_reloc(brw->batch.bo,
+                           *surf_offset + 4 * ss_info.reloc_dw,
+                           mt->bo, offset,
+                           read_domains, write_domains);
+
+   if (aux_surf) {
+      /* On gen7 and prior, the upper 20 bits of surface state DWORD 6 are the
+       * upper 20 bits of the GPU address of the MCS buffer; the lower 12 bits
+       * contain other control information.  Since buffer addresses are always
+       * on 4k boundaries (and thus have their lower 12 bits zero), we can use
+       * an ordinary reloc to do the necessary address translation.
+       */
+      assert((aux_offset & 0xfff) == 0);
+      drm_intel_bo_emit_reloc(brw->batch.bo,
+                              *surf_offset + 4 * ss_info.aux_reloc_dw,
+                              mt->mcs_mt->bo, dw[ss_info.aux_reloc_dw] & 0xfff,
+                              read_domains, write_domains);
    }
 }
 
-static dri_bo *
-brw_create_texture_surface( struct brw_context *brw,
-			    struct brw_surface_key *key )
+uint32_t
+brw_update_renderbuffer_surface(struct brw_context *brw,
+                                struct gl_renderbuffer *rb,
+                                uint32_t flags, unsigned unit /* unused */,
+                                uint32_t surf_index)
 {
-   struct brw_surface_state surf;
-   dri_bo *bo;
+   struct gl_context *ctx = &brw->ctx;
+   struct intel_renderbuffer *irb = intel_renderbuffer(rb);
+   struct intel_mipmap_tree *mt = irb->mt;
 
-   memset(&surf, 0, sizeof(surf));
-
-   surf.ss0.mipmap_layout_mode = BRW_SURFACE_MIPMAPLAYOUT_BELOW;
-   surf.ss0.surface_type = translate_tex_target(key->target);
-   if (key->bo) {
-      surf.ss0.surface_format = translate_tex_format(key->format,
-						     key->internal_format,
-						     key->depthmode);
+   if (brw->gen < 9) {
+      assert(!(flags & INTEL_AUX_BUFFER_DISABLED));
    }
-   else {
-      switch (key->depth) {
-      case 32:
-         surf.ss0.surface_format = BRW_SURFACEFORMAT_B8G8R8A8_UNORM;
+
+   assert(brw_render_target_supported(brw, rb));
+   intel_miptree_used_for_rendering(mt);
+
+   mesa_format rb_format = _mesa_get_render_format(ctx, intel_rb_format(irb));
+   if (unlikely(!brw->format_supported_as_render_target[rb_format])) {
+      _mesa_problem(ctx, "%s: renderbuffer format %s unsupported\n",
+                    __func__, _mesa_get_format_name(rb_format));
+   }
+
+   const unsigned layer_multiplier =
+      (irb->mt->msaa_layout == INTEL_MSAA_LAYOUT_UMS ||
+       irb->mt->msaa_layout == INTEL_MSAA_LAYOUT_CMS) ?
+      MAX2(irb->mt->num_samples, 1) : 1;
+
+   struct isl_view view = {
+      .format = brw->render_target_format[rb_format],
+      .base_level = irb->mt_level - irb->mt->first_level,
+      .levels = 1,
+      .base_array_layer = irb->mt_layer / layer_multiplier,
+      .array_len = MAX2(irb->layer_count, 1),
+      .swizzle = ISL_SWIZZLE_IDENTITY,
+      .usage = ISL_SURF_USAGE_RENDER_TARGET_BIT,
+   };
+
+   uint32_t offset;
+   brw_emit_surface_state(brw, mt, flags, mt->target, view,
+                          surface_state_infos[brw->gen].rb_mocs,
+                          &offset, surf_index,
+                          I915_GEM_DOMAIN_RENDER,
+                          I915_GEM_DOMAIN_RENDER);
+   return offset;
+}
+
+GLuint
+translate_tex_target(GLenum target)
+{
+   switch (target) {
+   case GL_TEXTURE_1D:
+   case GL_TEXTURE_1D_ARRAY_EXT:
+      return BRW_SURFACE_1D;
+
+   case GL_TEXTURE_RECTANGLE_NV:
+      return BRW_SURFACE_2D;
+
+   case GL_TEXTURE_2D:
+   case GL_TEXTURE_2D_ARRAY_EXT:
+   case GL_TEXTURE_EXTERNAL_OES:
+   case GL_TEXTURE_2D_MULTISAMPLE:
+   case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+      return BRW_SURFACE_2D;
+
+   case GL_TEXTURE_3D:
+      return BRW_SURFACE_3D;
+
+   case GL_TEXTURE_CUBE_MAP:
+   case GL_TEXTURE_CUBE_MAP_ARRAY:
+      return BRW_SURFACE_CUBE;
+
+   default:
+      unreachable("not reached");
+   }
+}
+
+uint32_t
+brw_get_surface_tiling_bits(uint32_t tiling)
+{
+   switch (tiling) {
+   case I915_TILING_X:
+      return BRW_SURFACE_TILED;
+   case I915_TILING_Y:
+      return BRW_SURFACE_TILED | BRW_SURFACE_TILED_Y;
+   default:
+      return 0;
+   }
+}
+
+
+uint32_t
+brw_get_surface_num_multisamples(unsigned num_samples)
+{
+   if (num_samples > 1)
+      return BRW_SURFACE_MULTISAMPLECOUNT_4;
+   else
+      return BRW_SURFACE_MULTISAMPLECOUNT_1;
+}
+
+/**
+ * Compute the combination of DEPTH_TEXTURE_MODE and EXT_texture_swizzle
+ * swizzling.
+ */
+int
+brw_get_texture_swizzle(const struct gl_context *ctx,
+                        const struct gl_texture_object *t)
+{
+   const struct gl_texture_image *img = t->Image[0][t->BaseLevel];
+
+   int swizzles[SWIZZLE_NIL + 1] = {
+      SWIZZLE_X,
+      SWIZZLE_Y,
+      SWIZZLE_Z,
+      SWIZZLE_W,
+      SWIZZLE_ZERO,
+      SWIZZLE_ONE,
+      SWIZZLE_NIL
+   };
+
+   if (img->_BaseFormat == GL_DEPTH_COMPONENT ||
+       img->_BaseFormat == GL_DEPTH_STENCIL) {
+      GLenum depth_mode = t->DepthMode;
+
+      /* In ES 3.0, DEPTH_TEXTURE_MODE is expected to be GL_RED for textures
+       * with depth component data specified with a sized internal format.
+       * Otherwise, it's left at the old default, GL_LUMINANCE.
+       */
+      if (_mesa_is_gles3(ctx) &&
+          img->InternalFormat != GL_DEPTH_COMPONENT &&
+          img->InternalFormat != GL_DEPTH_STENCIL) {
+         depth_mode = GL_RED;
+      }
+
+      switch (depth_mode) {
+      case GL_ALPHA:
+         swizzles[0] = SWIZZLE_ZERO;
+         swizzles[1] = SWIZZLE_ZERO;
+         swizzles[2] = SWIZZLE_ZERO;
+         swizzles[3] = SWIZZLE_X;
          break;
-      default:
-      case 24:
-         surf.ss0.surface_format = BRW_SURFACEFORMAT_B8G8R8X8_UNORM;
+      case GL_LUMINANCE:
+         swizzles[0] = SWIZZLE_X;
+         swizzles[1] = SWIZZLE_X;
+         swizzles[2] = SWIZZLE_X;
+         swizzles[3] = SWIZZLE_ONE;
          break;
-      case 16:
-         surf.ss0.surface_format = BRW_SURFACEFORMAT_B5G6R5_UNORM;
+      case GL_INTENSITY:
+         swizzles[0] = SWIZZLE_X;
+         swizzles[1] = SWIZZLE_X;
+         swizzles[2] = SWIZZLE_X;
+         swizzles[3] = SWIZZLE_X;
+         break;
+      case GL_RED:
+         swizzles[0] = SWIZZLE_X;
+         swizzles[1] = SWIZZLE_ZERO;
+         swizzles[2] = SWIZZLE_ZERO;
+         swizzles[3] = SWIZZLE_ONE;
          break;
       }
    }
 
-   /* This is ok for all textures with channel width 8bit or less:
+   GLenum datatype = _mesa_get_format_datatype(img->TexFormat);
+
+   /* If the texture's format is alpha-only, force R, G, and B to
+    * 0.0. Similarly, if the texture's format has no alpha channel,
+    * force the alpha value read to 1.0. This allows for the
+    * implementation to use an RGBA texture for any of these formats
+    * without leaking any unexpected values.
     */
-/*    surf.ss0.data_return_format = BRW_SURFACERETURNFORMAT_S1; */
-   if (key->bo)
-      surf.ss1.base_addr = key->bo->offset; /* reloc */
-   else
-      surf.ss1.base_addr = key->offset;
-
-   surf.ss2.mip_count = key->last_level - key->first_level;
-   surf.ss2.width = key->width - 1;
-   surf.ss2.height = key->height - 1;
-   brw_set_surface_tiling(&surf, key->tiling);
-   surf.ss3.pitch = (key->pitch * key->cpp) - 1;
-   surf.ss3.depth = key->depth - 1;
-
-   surf.ss4.min_lod = 0;
- 
-   if (key->target == GL_TEXTURE_CUBE_MAP) {
-      surf.ss0.cube_pos_x = 1;
-      surf.ss0.cube_pos_y = 1;
-      surf.ss0.cube_pos_z = 1;
-      surf.ss0.cube_neg_x = 1;
-      surf.ss0.cube_neg_y = 1;
-      surf.ss0.cube_neg_z = 1;
+   switch (img->_BaseFormat) {
+   case GL_ALPHA:
+      swizzles[0] = SWIZZLE_ZERO;
+      swizzles[1] = SWIZZLE_ZERO;
+      swizzles[2] = SWIZZLE_ZERO;
+      break;
+   case GL_LUMINANCE:
+      if (t->_IsIntegerFormat || datatype == GL_SIGNED_NORMALIZED) {
+         swizzles[0] = SWIZZLE_X;
+         swizzles[1] = SWIZZLE_X;
+         swizzles[2] = SWIZZLE_X;
+         swizzles[3] = SWIZZLE_ONE;
+      }
+      break;
+   case GL_LUMINANCE_ALPHA:
+      if (datatype == GL_SIGNED_NORMALIZED) {
+         swizzles[0] = SWIZZLE_X;
+         swizzles[1] = SWIZZLE_X;
+         swizzles[2] = SWIZZLE_X;
+         swizzles[3] = SWIZZLE_W;
+      }
+      break;
+   case GL_INTENSITY:
+      if (datatype == GL_SIGNED_NORMALIZED) {
+         swizzles[0] = SWIZZLE_X;
+         swizzles[1] = SWIZZLE_X;
+         swizzles[2] = SWIZZLE_X;
+         swizzles[3] = SWIZZLE_X;
+      }
+      break;
+   case GL_RED:
+   case GL_RG:
+   case GL_RGB:
+      if (_mesa_get_format_bits(img->TexFormat, GL_ALPHA_BITS) > 0)
+         swizzles[3] = SWIZZLE_ONE;
+      break;
    }
 
-   bo = brw_upload_cache(&brw->surface_cache, BRW_SS_SURFACE,
-			 key, sizeof(*key),
-			 &key->bo, key->bo ? 1 : 0,
-			 &surf, sizeof(surf),
-			 NULL, NULL);
-
-   if (key->bo) {
-      /* Emit relocation to surface contents */
-      dri_bo_emit_reloc(bo,
-			I915_GEM_DOMAIN_SAMPLER, 0,
-			0,
-			offsetof(struct brw_surface_state, ss1),
-			key->bo);
-   }
-   return bo;
+   return MAKE_SWIZZLE4(swizzles[GET_SWZ(t->_Swizzle, 0)],
+                        swizzles[GET_SWZ(t->_Swizzle, 1)],
+                        swizzles[GET_SWZ(t->_Swizzle, 2)],
+                        swizzles[GET_SWZ(t->_Swizzle, 3)]);
 }
 
-static void
-brw_update_texture_surface( GLcontext *ctx, GLuint unit )
+/**
+ * Convert an swizzle enumeration (i.e. SWIZZLE_X) to one of the Gen7.5+
+ * "Shader Channel Select" enumerations (i.e. HSW_SCS_RED).  The mappings are
+ *
+ * SWIZZLE_X, SWIZZLE_Y, SWIZZLE_Z, SWIZZLE_W, SWIZZLE_ZERO, SWIZZLE_ONE
+ *         0          1          2          3             4            5
+ *         4          5          6          7             0            1
+ *   SCS_RED, SCS_GREEN,  SCS_BLUE, SCS_ALPHA,     SCS_ZERO,     SCS_ONE
+ *
+ * which is simply adding 4 then modding by 8 (or anding with 7).
+ *
+ * We then may need to apply workarounds for textureGather hardware bugs.
+ */
+static unsigned
+swizzle_to_scs(GLenum swizzle, bool need_green_to_blue)
+{
+   unsigned scs = (swizzle + 4) & 7;
+
+   return (need_green_to_blue && scs == HSW_SCS_GREEN) ? HSW_SCS_BLUE : scs;
+}
+
+static unsigned
+brw_find_matching_rb(const struct gl_framebuffer *fb,
+                     const struct intel_mipmap_tree *mt)
+{
+   for (unsigned i = 0; i < fb->_NumColorDrawBuffers; i++) {
+      const struct intel_renderbuffer *irb =
+         intel_renderbuffer(fb->_ColorDrawBuffers[i]);
+
+      if (irb && irb->mt == mt)
+         return i;
+   }
+
+   return fb->_NumColorDrawBuffers;
+}
+
+static inline bool
+brw_texture_view_sane(const struct brw_context *brw,
+                      const struct intel_mipmap_tree *mt, unsigned format)
+{
+   /* There are special cases only for lossless compression. */
+   if (!intel_miptree_is_lossless_compressed(brw, mt))
+      return true;
+
+   if (isl_format_supports_lossless_compression(&brw->screen->devinfo,
+                                                format))
+      return true;
+
+   /* Logic elsewhere needs to take care to resolve the color buffer prior
+    * to sampling it as non-compressed.
+    */
+   if (mt->fast_clear_state != INTEL_FAST_CLEAR_STATE_RESOLVED)
+      return false;
+
+   const struct gl_framebuffer *fb = brw->ctx.DrawBuffer;
+   const unsigned rb_index = brw_find_matching_rb(fb, mt);
+
+   if (rb_index == fb->_NumColorDrawBuffers)
+      return true;
+
+   /* Underlying surface is compressed but it is sampled using a format that
+    * the sampling engine doesn't support as compressed. Compression must be
+    * disabled for both sampling engine and data port in case the same surface
+    * is used also as render target.
+    */
+   return brw->draw_aux_buffer_disabled[rb_index];
+}
+
+static bool
+brw_disable_aux_surface(const struct brw_context *brw,
+                        const struct intel_mipmap_tree *mt)
+{
+   /* Nothing to disable. */
+   if (!mt->mcs_mt)
+      return false;
+
+   /* There are special cases only for lossless compression. */
+   if (!intel_miptree_is_lossless_compressed(brw, mt))
+      return mt->fast_clear_state == INTEL_FAST_CLEAR_STATE_RESOLVED;
+
+   const struct gl_framebuffer *fb = brw->ctx.DrawBuffer;
+   const unsigned rb_index = brw_find_matching_rb(fb, mt);
+
+   /* If we are drawing into this with compression enabled, then we must also
+    * enable compression when texturing from it regardless of
+    * fast_clear_state.  If we don't then, after the first draw call with
+    * this setup, there will be data in the CCS which won't get picked up by
+    * subsequent texturing operations as required by ARB_texture_barrier.
+    * Since we don't want to re-emit the binding table or do a resolve
+    * operation every draw call, the easiest thing to do is just enable
+    * compression on the texturing side.  This is completely safe to do
+    * since, if compressed texturing weren't allowed, we would have disabled
+    * compression of render targets in whatever_that_function_is_called().
+    */
+   if (rb_index < fb->_NumColorDrawBuffers) {
+      if (brw->draw_aux_buffer_disabled[rb_index]) {
+         assert(mt->fast_clear_state == INTEL_FAST_CLEAR_STATE_RESOLVED);
+      }
+
+      return brw->draw_aux_buffer_disabled[rb_index];
+   }
+
+   return mt->fast_clear_state == INTEL_FAST_CLEAR_STATE_RESOLVED;
+}
+
+void
+brw_update_texture_surface(struct gl_context *ctx,
+                           unsigned unit,
+                           uint32_t *surf_offset,
+                           bool for_gather,
+                           uint32_t plane)
+{
+   struct brw_context *brw = brw_context(ctx);
+   struct gl_texture_object *obj = ctx->Texture.Unit[unit]._Current;
+
+   if (obj->Target == GL_TEXTURE_BUFFER) {
+      brw_update_buffer_texture_surface(ctx, unit, surf_offset);
+
+   } else {
+      struct intel_texture_object *intel_obj = intel_texture_object(obj);
+      struct intel_mipmap_tree *mt = intel_obj->mt;
+
+      if (plane > 0) {
+         if (mt->plane[plane - 1] == NULL)
+            return;
+         mt = mt->plane[plane - 1];
+      }
+
+      struct gl_sampler_object *sampler = _mesa_get_samplerobj(ctx, unit);
+      /* If this is a view with restricted NumLayers, then our effective depth
+       * is not just the miptree depth.
+       */
+      const unsigned view_num_layers =
+         (obj->Immutable && obj->Target != GL_TEXTURE_3D) ? obj->NumLayers :
+                                                            mt->logical_depth0;
+
+      /* Handling GL_ALPHA as a surface format override breaks 1.30+ style
+       * texturing functions that return a float, as our code generation always
+       * selects the .x channel (which would always be 0).
+       */
+      struct gl_texture_image *firstImage = obj->Image[0][obj->BaseLevel];
+      const bool alpha_depth = obj->DepthMode == GL_ALPHA &&
+         (firstImage->_BaseFormat == GL_DEPTH_COMPONENT ||
+          firstImage->_BaseFormat == GL_DEPTH_STENCIL);
+      const unsigned swizzle = (unlikely(alpha_depth) ? SWIZZLE_XYZW :
+                                brw_get_texture_swizzle(&brw->ctx, obj));
+
+      mesa_format mesa_fmt = plane == 0 ? intel_obj->_Format : mt->format;
+      unsigned format = translate_tex_format(brw, mesa_fmt,
+                                             sampler->sRGBDecode);
+
+      /* Implement gen6 and gen7 gather work-around */
+      bool need_green_to_blue = false;
+      if (for_gather) {
+         if (brw->gen == 7 && format == BRW_SURFACEFORMAT_R32G32_FLOAT) {
+            format = BRW_SURFACEFORMAT_R32G32_FLOAT_LD;
+            need_green_to_blue = brw->is_haswell;
+         } else if (brw->gen == 6) {
+            /* Sandybridge's gather4 message is broken for integer formats.
+             * To work around this, we pretend the surface is UNORM for
+             * 8 or 16-bit formats, and emit shader instructions to recover
+             * the real INT/UINT value.  For 32-bit formats, we pretend
+             * the surface is FLOAT, and simply reinterpret the resulting
+             * bits.
+             */
+            switch (format) {
+            case BRW_SURFACEFORMAT_R8_SINT:
+            case BRW_SURFACEFORMAT_R8_UINT:
+               format = BRW_SURFACEFORMAT_R8_UNORM;
+               break;
+
+            case BRW_SURFACEFORMAT_R16_SINT:
+            case BRW_SURFACEFORMAT_R16_UINT:
+               format = BRW_SURFACEFORMAT_R16_UNORM;
+               break;
+
+            case BRW_SURFACEFORMAT_R32_SINT:
+            case BRW_SURFACEFORMAT_R32_UINT:
+               format = BRW_SURFACEFORMAT_R32_FLOAT;
+               break;
+
+            default:
+               break;
+            }
+         }
+      }
+
+      if (obj->StencilSampling && firstImage->_BaseFormat == GL_DEPTH_STENCIL) {
+         if (brw->gen <= 7) {
+            assert(mt->r8stencil_mt && !mt->stencil_mt->r8stencil_needs_update);
+            mt = mt->r8stencil_mt;
+         } else {
+            mt = mt->stencil_mt;
+         }
+         format = BRW_SURFACEFORMAT_R8_UINT;
+      } else if (brw->gen <= 7 && mt->format == MESA_FORMAT_S_UINT8) {
+         assert(mt->r8stencil_mt && !mt->r8stencil_needs_update);
+         mt = mt->r8stencil_mt;
+         format = BRW_SURFACEFORMAT_R8_UINT;
+      }
+
+      const int surf_index = surf_offset - &brw->wm.base.surf_offset[0];
+
+      struct isl_view view = {
+         .format = format,
+         .base_level = obj->MinLevel + obj->BaseLevel,
+         .levels = intel_obj->_MaxLevel - obj->BaseLevel + 1,
+         .base_array_layer = obj->MinLayer,
+         .array_len = view_num_layers,
+         .swizzle = {
+            .r = swizzle_to_scs(GET_SWZ(swizzle, 0), need_green_to_blue),
+            .g = swizzle_to_scs(GET_SWZ(swizzle, 1), need_green_to_blue),
+            .b = swizzle_to_scs(GET_SWZ(swizzle, 2), need_green_to_blue),
+            .a = swizzle_to_scs(GET_SWZ(swizzle, 3), need_green_to_blue),
+         },
+         .usage = ISL_SURF_USAGE_TEXTURE_BIT,
+      };
+
+      if (obj->Target == GL_TEXTURE_CUBE_MAP ||
+          obj->Target == GL_TEXTURE_CUBE_MAP_ARRAY)
+         view.usage |= ISL_SURF_USAGE_CUBE_BIT;
+
+      assert(brw_texture_view_sane(brw, mt, format));
+
+      const int flags =
+         brw_disable_aux_surface(brw, mt) ? INTEL_AUX_BUFFER_DISABLED : 0;
+      brw_emit_surface_state(brw, mt, flags, mt->target, view,
+                             surface_state_infos[brw->gen].tex_mocs,
+                             surf_offset, surf_index,
+                             I915_GEM_DOMAIN_SAMPLER, 0);
+   }
+}
+
+void
+brw_emit_buffer_surface_state(struct brw_context *brw,
+                              uint32_t *out_offset,
+                              drm_intel_bo *bo,
+                              unsigned buffer_offset,
+                              unsigned surface_format,
+                              unsigned buffer_size,
+                              unsigned pitch,
+                              bool rw)
+{
+   const struct surface_state_info ss_info = surface_state_infos[brw->gen];
+
+   uint32_t *dw = brw_state_batch(brw, AUB_TRACE_SURFACE_STATE,
+                                  ss_info.num_dwords * 4, ss_info.ss_align,
+                                  out_offset);
+
+   isl_buffer_fill_state(&brw->isl_dev, dw,
+                         .address = (bo ? bo->offset64 : 0) + buffer_offset,
+                         .size = buffer_size,
+                         .format = surface_format,
+                         .stride = pitch,
+                         .mocs = ss_info.tex_mocs);
+
+   if (bo) {
+      drm_intel_bo_emit_reloc(brw->batch.bo,
+                              *out_offset + 4 * ss_info.reloc_dw,
+                              bo, buffer_offset,
+                              I915_GEM_DOMAIN_SAMPLER,
+                              (rw ? I915_GEM_DOMAIN_SAMPLER : 0));
+   }
+}
+
+void
+brw_update_buffer_texture_surface(struct gl_context *ctx,
+                                  unsigned unit,
+                                  uint32_t *surf_offset)
 {
    struct brw_context *brw = brw_context(ctx);
    struct gl_texture_object *tObj = ctx->Texture.Unit[unit]._Current;
-   struct intel_texture_object *intelObj = intel_texture_object(tObj);
-   struct gl_texture_image *firstImage = tObj->Image[0][intelObj->firstLevel];
-   struct brw_surface_key key;
-   const GLuint surf = SURF_INDEX_TEXTURE(unit);
+   struct intel_buffer_object *intel_obj =
+      intel_buffer_object(tObj->BufferObject);
+   uint32_t size = tObj->BufferSize;
+   drm_intel_bo *bo = NULL;
+   mesa_format format = tObj->_BufferObjectFormat;
+   uint32_t brw_format = brw_format_for_mesa_format(format);
+   int texel_size = _mesa_get_format_bytes(format);
 
-   memset(&key, 0, sizeof(key));
-
-   if (intelObj->imageOverride) {
-      key.pitch = intelObj->pitchOverride / intelObj->mt->cpp;
-      key.depth = intelObj->depthOverride;
-      key.bo = NULL;
-      key.offset = intelObj->textureOffset;
-   } else {
-      key.format = firstImage->TexFormat;
-      key.internal_format = firstImage->InternalFormat;
-      key.pitch = intelObj->mt->pitch;
-      key.depth = firstImage->Depth;
-      key.bo = intelObj->mt->region->buffer;
-      key.offset = 0;
+   if (intel_obj) {
+      size = MIN2(size, intel_obj->Base.Size);
+      bo = intel_bufferobj_buffer(brw, intel_obj, tObj->BufferOffset, size);
    }
 
-   key.target = tObj->Target;
-   key.depthmode = tObj->DepthMode;
-   key.first_level = intelObj->firstLevel;
-   key.last_level = intelObj->lastLevel;
-   key.width = firstImage->Width;
-   key.height = firstImage->Height;
-   key.cpp = intelObj->mt->cpp;
-   key.tiling = intelObj->mt->region->tiling;
-
-   dri_bo_unreference(brw->wm.surf_bo[surf]);
-   brw->wm.surf_bo[surf] = brw_search_cache(&brw->surface_cache,
-                                            BRW_SS_SURFACE,
-                                            &key, sizeof(key),
-                                            &key.bo, key.bo ? 1 : 0,
-                                            NULL);
-   if (brw->wm.surf_bo[surf] == NULL) {
-      brw->wm.surf_bo[surf] = brw_create_texture_surface(brw, &key);
+   if (brw_format == 0 && format != MESA_FORMAT_RGBA_FLOAT32) {
+      _mesa_problem(NULL, "bad format %s for texture buffer\n",
+		    _mesa_get_format_name(format));
    }
+
+   brw_emit_buffer_surface_state(brw, surf_offset, bo,
+                                 tObj->BufferOffset,
+                                 brw_format,
+                                 size,
+                                 texel_size,
+                                 false /* rw */);
 }
-
-
 
 /**
  * Create the constant buffer surface.  Vertex/fragment shader constants will be
  * read from this buffer with Data Port Read instructions/messages.
  */
-dri_bo *
-brw_create_constant_surface( struct brw_context *brw,
-                             struct brw_surface_key *key )
+void
+brw_create_constant_surface(struct brw_context *brw,
+			    drm_intel_bo *bo,
+			    uint32_t offset,
+			    uint32_t size,
+			    uint32_t *out_offset)
 {
-   const GLint w = key->width - 1;
-   struct brw_surface_state surf;
-   dri_bo *bo;
+   brw_emit_buffer_surface_state(brw, out_offset, bo, offset,
+                                 BRW_SURFACEFORMAT_R32G32B32A32_FLOAT,
+                                 size, 1, false);
+}
 
-   memset(&surf, 0, sizeof(surf));
+/**
+ * Create the buffer surface. Shader buffer variables will be
+ * read from / write to this buffer with Data Port Read/Write
+ * instructions/messages.
+ */
+void
+brw_create_buffer_surface(struct brw_context *brw,
+                          drm_intel_bo *bo,
+                          uint32_t offset,
+                          uint32_t size,
+                          uint32_t *out_offset)
+{
+   /* Use a raw surface so we can reuse existing untyped read/write/atomic
+    * messages. We need these specifically for the fragment shader since they
+    * include a pixel mask header that we need to ensure correct behavior
+    * with helper invocations, which cannot write to the buffer.
+    */
+   brw_emit_buffer_surface_state(brw, out_offset, bo, offset,
+                                 BRW_SURFACEFORMAT_RAW,
+                                 size, 1, true);
+}
 
-   surf.ss0.mipmap_layout_mode = BRW_SURFACE_MIPMAPLAYOUT_BELOW;
-   surf.ss0.surface_type = BRW_SURFACE_BUFFER;
-   surf.ss0.surface_format = BRW_SURFACEFORMAT_R32G32B32A32_FLOAT;
+/**
+ * Set up a binding table entry for use by stream output logic (transform
+ * feedback).
+ *
+ * buffer_size_minus_1 must be less than BRW_MAX_NUM_BUFFER_ENTRIES.
+ */
+void
+brw_update_sol_surface(struct brw_context *brw,
+                       struct gl_buffer_object *buffer_obj,
+                       uint32_t *out_offset, unsigned num_vector_components,
+                       unsigned stride_dwords, unsigned offset_dwords)
+{
+   struct intel_buffer_object *intel_bo = intel_buffer_object(buffer_obj);
+   uint32_t offset_bytes = 4 * offset_dwords;
+   drm_intel_bo *bo = intel_bufferobj_buffer(brw, intel_bo,
+                                             offset_bytes,
+                                             buffer_obj->Size - offset_bytes);
+   uint32_t *surf = brw_state_batch(brw, AUB_TRACE_SURFACE_STATE, 6 * 4, 32,
+                                    out_offset);
+   uint32_t pitch_minus_1 = 4*stride_dwords - 1;
+   size_t size_dwords = buffer_obj->Size / 4;
+   uint32_t buffer_size_minus_1, width, height, depth, surface_format;
 
-   assert(key->bo);
-   if (key->bo)
-      surf.ss1.base_addr = key->bo->offset; /* reloc */
-   else
-      surf.ss1.base_addr = key->offset;
+   /* FIXME: can we rely on core Mesa to ensure that the buffer isn't
+    * too big to map using a single binding table entry?
+    */
+   assert((size_dwords - offset_dwords) / stride_dwords
+          <= BRW_MAX_NUM_BUFFER_ENTRIES);
 
-   surf.ss2.width = w & 0x7f;            /* bits 6:0 of size or width */
-   surf.ss2.height = (w >> 7) & 0x1fff;  /* bits 19:7 of size or width */
-   surf.ss3.depth = (w >> 20) & 0x7f;    /* bits 26:20 of size or width */
-   surf.ss3.pitch = (key->pitch * key->cpp) - 1; /* ignored?? */
-   brw_set_surface_tiling(&surf, key->tiling); /* tiling now allowed */
- 
-   bo = brw_upload_cache(&brw->surface_cache, BRW_SS_SURFACE,
-			 key, sizeof(*key),
-			 &key->bo, key->bo ? 1 : 0,
-			 &surf, sizeof(surf),
-			 NULL, NULL);
-
-   if (key->bo) {
-      /* Emit relocation to surface contents.  Section 5.1.1 of the gen4
-       * bspec ("Data Cache") says that the data cache does not exist as
-       * a separate cache and is just the sampler cache.
+   if (size_dwords > offset_dwords + num_vector_components) {
+      /* There is room for at least 1 transform feedback output in the buffer.
+       * Compute the number of additional transform feedback outputs the
+       * buffer has room for.
        */
-      dri_bo_emit_reloc(bo,
-			I915_GEM_DOMAIN_SAMPLER, 0,
-			0,
-			offsetof(struct brw_surface_state, ss1),
-			key->bo);
+      buffer_size_minus_1 =
+         (size_dwords - offset_dwords - num_vector_components) / stride_dwords;
+   } else {
+      /* There isn't even room for a single transform feedback output in the
+       * buffer.  We can't configure the binding table entry to prevent output
+       * entirely; we'll have to rely on the geometry shader to detect
+       * overflow.  But to minimize the damage in case of a bug, set up the
+       * binding table entry to just allow a single output.
+       */
+      buffer_size_minus_1 = 0;
+   }
+   width = buffer_size_minus_1 & 0x7f;
+   height = (buffer_size_minus_1 & 0xfff80) >> 7;
+   depth = (buffer_size_minus_1 & 0x7f00000) >> 20;
+
+   switch (num_vector_components) {
+   case 1:
+      surface_format = BRW_SURFACEFORMAT_R32_FLOAT;
+      break;
+   case 2:
+      surface_format = BRW_SURFACEFORMAT_R32G32_FLOAT;
+      break;
+   case 3:
+      surface_format = BRW_SURFACEFORMAT_R32G32B32_FLOAT;
+      break;
+   case 4:
+      surface_format = BRW_SURFACEFORMAT_R32G32B32A32_FLOAT;
+      break;
+   default:
+      unreachable("Invalid vector size for transform feedback output");
    }
 
-   return bo;
+   surf[0] = BRW_SURFACE_BUFFER << BRW_SURFACE_TYPE_SHIFT |
+      BRW_SURFACE_MIPMAPLAYOUT_BELOW << BRW_SURFACE_MIPLAYOUT_SHIFT |
+      surface_format << BRW_SURFACE_FORMAT_SHIFT |
+      BRW_SURFACE_RC_READ_WRITE;
+   surf[1] = bo->offset64 + offset_bytes; /* reloc */
+   surf[2] = (width << BRW_SURFACE_WIDTH_SHIFT |
+	      height << BRW_SURFACE_HEIGHT_SHIFT);
+   surf[3] = (depth << BRW_SURFACE_DEPTH_SHIFT |
+              pitch_minus_1 << BRW_SURFACE_PITCH_SHIFT);
+   surf[4] = 0;
+   surf[5] = 0;
+
+   /* Emit relocation to surface contents. */
+   drm_intel_bo_emit_reloc(brw->batch.bo,
+			   *out_offset + 4,
+			   bo, offset_bytes,
+			   I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER);
 }
 
 /* Creates a new WM constant buffer reflecting the current fragment program's
@@ -375,406 +827,1066 @@ brw_create_constant_surface( struct brw_context *brw,
  * Otherwise, constants go through the CURBEs using the brw_constant_buffer
  * state atom.
  */
-static drm_intel_bo *
-brw_wm_update_constant_buffer(struct brw_context *brw)
-{
-   struct intel_context *intel = &brw->intel;
-   struct brw_fragment_program *fp =
-      (struct brw_fragment_program *) brw->fragment_program;
-   const struct gl_program_parameter_list *params = fp->program.Base.Parameters;
-   const int size = params->NumParameters * 4 * sizeof(GLfloat);
-   drm_intel_bo *const_buffer;
-
-   /* BRW_NEW_FRAGMENT_PROGRAM */
-   if (!fp->use_const_buffer)
-      return NULL;
-
-   const_buffer = drm_intel_bo_alloc(intel->bufmgr, "fp_const_buffer",
-				     size, 64);
-
-   /* _NEW_PROGRAM_CONSTANTS */
-   dri_bo_subdata(const_buffer, 0, size, params->ParameterValues);
-
-   return const_buffer;
-}
-
-/**
- * Update the surface state for a WM constant buffer.
- * The constant buffer will be (re)allocated here if needed.
- */
 static void
-brw_update_wm_constant_surface( GLcontext *ctx,
-                                GLuint surf)
+brw_upload_wm_pull_constants(struct brw_context *brw)
 {
-   struct brw_context *brw = brw_context(ctx);
-   struct brw_surface_key key;
+   struct brw_stage_state *stage_state = &brw->wm.base;
+   /* BRW_NEW_FRAGMENT_PROGRAM */
    struct brw_fragment_program *fp =
       (struct brw_fragment_program *) brw->fragment_program;
-   const struct gl_program_parameter_list *params =
-      fp->program.Base.Parameters;
+   /* BRW_NEW_FS_PROG_DATA */
+   struct brw_stage_prog_data *prog_data = brw->wm.base.prog_data;
 
-   /* If we're in this state update atom, we need to update WM constants, so
-    * free the old buffer and create a new one for the new contents.
-    */
-   dri_bo_unreference(fp->const_buffer);
-   fp->const_buffer = brw_wm_update_constant_buffer(brw);
-
-   /* If there's no constant buffer, then no surface BO is needed to point at
-    * it.
-    */
-   if (fp->const_buffer == 0) {
-      drm_intel_bo_unreference(brw->wm.surf_bo[surf]);
-      brw->wm.surf_bo[surf] = NULL;
-      return;
-   }
-
-   memset(&key, 0, sizeof(key));
-
-   key.format = MESA_FORMAT_RGBA_FLOAT32;
-   key.internal_format = GL_RGBA;
-   key.bo = fp->const_buffer;
-   key.depthmode = GL_NONE;
-   key.pitch = params->NumParameters;
-   key.width = params->NumParameters;
-   key.height = 1;
-   key.depth = 1;
-   key.cpp = 16;
-
-   /*
-   printf("%s:\n", __FUNCTION__);
-   printf("  width %d  height %d  depth %d  cpp %d  pitch %d\n",
-          key.width, key.height, key.depth, key.cpp, key.pitch);
-   */
-
-   dri_bo_unreference(brw->wm.surf_bo[surf]);
-   brw->wm.surf_bo[surf] = brw_search_cache(&brw->surface_cache,
-                                            BRW_SS_SURFACE,
-                                            &key, sizeof(key),
-                                            &key.bo, key.bo ? 1 : 0,
-                                            NULL);
-   if (brw->wm.surf_bo[surf] == NULL) {
-      brw->wm.surf_bo[surf] = brw_create_constant_surface(brw, &key);
-   }
-   brw->state.dirty.brw |= BRW_NEW_WM_SURFACES;
+   _mesa_shader_write_subroutine_indices(&brw->ctx, MESA_SHADER_FRAGMENT);
+   /* _NEW_PROGRAM_CONSTANTS */
+   brw_upload_pull_constants(brw, BRW_NEW_SURFACES, &fp->program.Base,
+                             stage_state, prog_data);
 }
 
-/**
- * Updates surface / buffer for fragment shader constant buffer, if
- * one is required.
- *
- * This consumes the state updates for the constant buffer, and produces
- * BRW_NEW_WM_SURFACES to get picked up by brw_prepare_wm_surfaces for
- * inclusion in the binding table.
- */
-static void prepare_wm_constant_surface(struct brw_context *brw )
-{
-   GLcontext *ctx = &brw->intel.ctx;
-   struct brw_fragment_program *fp =
-      (struct brw_fragment_program *) brw->fragment_program;
-   GLuint surf = SURF_INDEX_FRAG_CONST_BUFFER;
-
-   drm_intel_bo_unreference(fp->const_buffer);
-   fp->const_buffer = brw_wm_update_constant_buffer(brw);
-
-   /* If there's no constant buffer, then no surface BO is needed to point at
-    * it.
-    */
-   if (fp->const_buffer == 0) {
-      if (brw->wm.surf_bo[surf] != NULL) {
-	 drm_intel_bo_unreference(brw->wm.surf_bo[surf]);
-	 brw->wm.surf_bo[surf] = NULL;
-	 brw->state.dirty.brw |= BRW_NEW_WM_SURFACES;
-      }
-      return;
-   }
-
-   brw_update_wm_constant_surface(ctx, surf);
-}
-
-const struct brw_tracked_state brw_wm_constant_surface = {
+const struct brw_tracked_state brw_wm_pull_constants = {
    .dirty = {
-      .mesa = (_NEW_PROGRAM_CONSTANTS),
-      .brw = (BRW_NEW_FRAGMENT_PROGRAM),
-      .cache = 0
+      .mesa = _NEW_PROGRAM_CONSTANTS,
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP |
+             BRW_NEW_FRAGMENT_PROGRAM |
+             BRW_NEW_FS_PROG_DATA,
    },
-   .prepare = prepare_wm_constant_surface,
+   .emit = brw_upload_wm_pull_constants,
 };
 
+/**
+ * Creates a null renderbuffer surface.
+ *
+ * This is used when the shader doesn't write to any color output.  An FB
+ * write to target 0 will still be emitted, because that's how the thread is
+ * terminated (and computed depth is returned), so we need to have the
+ * hardware discard the target 0 color output..
+ */
+static void
+brw_emit_null_surface_state(struct brw_context *brw,
+                            unsigned width,
+                            unsigned height,
+                            unsigned samples,
+                            uint32_t *out_offset)
+{
+   /* From the Sandy bridge PRM, Vol4 Part1 p71 (Surface Type: Programming
+    * Notes):
+    *
+    *     A null surface will be used in instances where an actual surface is
+    *     not bound. When a write message is generated to a null surface, no
+    *     actual surface is written to. When a read message (including any
+    *     sampling engine message) is generated to a null surface, the result
+    *     is all zeros. Note that a null surface type is allowed to be used
+    *     with all messages, even if it is not specificially indicated as
+    *     supported. All of the remaining fields in surface state are ignored
+    *     for null surfaces, with the following exceptions:
+    *
+    *     - [DevSNB+]: Width, Height, Depth, and LOD fields must match the
+    *       depth buffer’s corresponding state for all render target surfaces,
+    *       including null.
+    *
+    *     - Surface Format must be R8G8B8A8_UNORM.
+    */
+   unsigned surface_type = BRW_SURFACE_NULL;
+   drm_intel_bo *bo = NULL;
+   unsigned pitch_minus_1 = 0;
+   uint32_t multisampling_state = 0;
+   uint32_t *surf = brw_state_batch(brw, AUB_TRACE_SURFACE_STATE, 6 * 4, 32,
+                                    out_offset);
+
+   if (samples > 1) {
+      /* On Gen6, null render targets seem to cause GPU hangs when
+       * multisampling.  So work around this problem by rendering into dummy
+       * color buffer.
+       *
+       * To decrease the amount of memory needed by the workaround buffer, we
+       * set its pitch to 128 bytes (the width of a Y tile).  This means that
+       * the amount of memory needed for the workaround buffer is
+       * (width_in_tiles + height_in_tiles - 1) tiles.
+       *
+       * Note that since the workaround buffer will be interpreted by the
+       * hardware as an interleaved multisampled buffer, we need to compute
+       * width_in_tiles and height_in_tiles by dividing the width and height
+       * by 16 rather than the normal Y-tile size of 32.
+       */
+      unsigned width_in_tiles = ALIGN(width, 16) / 16;
+      unsigned height_in_tiles = ALIGN(height, 16) / 16;
+      unsigned size_needed = (width_in_tiles + height_in_tiles - 1) * 4096;
+      brw_get_scratch_bo(brw, &brw->wm.multisampled_null_render_target_bo,
+                         size_needed);
+      bo = brw->wm.multisampled_null_render_target_bo;
+      surface_type = BRW_SURFACE_2D;
+      pitch_minus_1 = 127;
+      multisampling_state = brw_get_surface_num_multisamples(samples);
+   }
+
+   surf[0] = (surface_type << BRW_SURFACE_TYPE_SHIFT |
+	      BRW_SURFACEFORMAT_B8G8R8A8_UNORM << BRW_SURFACE_FORMAT_SHIFT);
+   if (brw->gen < 6) {
+      surf[0] |= (1 << BRW_SURFACE_WRITEDISABLE_R_SHIFT |
+		  1 << BRW_SURFACE_WRITEDISABLE_G_SHIFT |
+		  1 << BRW_SURFACE_WRITEDISABLE_B_SHIFT |
+		  1 << BRW_SURFACE_WRITEDISABLE_A_SHIFT);
+   }
+   surf[1] = bo ? bo->offset64 : 0;
+   surf[2] = ((width - 1) << BRW_SURFACE_WIDTH_SHIFT |
+              (height - 1) << BRW_SURFACE_HEIGHT_SHIFT);
+
+   /* From Sandy bridge PRM, Vol4 Part1 p82 (Tiled Surface: Programming
+    * Notes):
+    *
+    *     If Surface Type is SURFTYPE_NULL, this field must be TRUE
+    */
+   surf[3] = (BRW_SURFACE_TILED | BRW_SURFACE_TILED_Y |
+              pitch_minus_1 << BRW_SURFACE_PITCH_SHIFT);
+   surf[4] = multisampling_state;
+   surf[5] = 0;
+
+   if (bo) {
+      drm_intel_bo_emit_reloc(brw->batch.bo,
+                              *out_offset + 4,
+                              bo, 0,
+                              I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER);
+   }
+}
 
 /**
  * Sets up a surface state structure to point at the given region.
  * While it is only used for the front/back buffer currently, it should be
  * usable for further buffers when doing ARB_draw_buffer support.
  */
-static void
-brw_update_renderbuffer_surface(struct brw_context *brw,
-				struct gl_renderbuffer *rb,
-				unsigned int unit)
+static uint32_t
+gen4_update_renderbuffer_surface(struct brw_context *brw,
+                                 struct gl_renderbuffer *rb,
+                                 uint32_t flags, unsigned unit,
+                                 uint32_t surf_index)
 {
-   GLcontext *ctx = &brw->intel.ctx;
-   dri_bo *region_bo = NULL;
+   struct gl_context *ctx = &brw->ctx;
    struct intel_renderbuffer *irb = intel_renderbuffer(rb);
-   struct intel_region *region = irb ? irb->region : NULL;
-   struct {
-      unsigned int surface_type;
-      unsigned int surface_format;
-      unsigned int width, height, pitch, cpp;
-      GLubyte color_mask[4];
-      GLboolean color_blend;
-      uint32_t tiling;
-      uint32_t draw_x;
-      uint32_t draw_y;
-   } key;
+   struct intel_mipmap_tree *mt = irb->mt;
+   uint32_t *surf;
+   uint32_t tile_x, tile_y;
+   uint32_t format = 0;
+   uint32_t offset;
+   /* _NEW_BUFFERS */
+   mesa_format rb_format = _mesa_get_render_format(ctx, intel_rb_format(irb));
+   /* BRW_NEW_FS_PROG_DATA */
 
-   memset(&key, 0, sizeof(key));
+   assert(!(flags & INTEL_RENDERBUFFER_LAYERED));
+   assert(!(flags & INTEL_AUX_BUFFER_DISABLED));
 
-   if (region != NULL) {
-      region_bo = region->buffer;
+   if (rb->TexImage && !brw->has_surface_tile_offset) {
+      intel_renderbuffer_get_tile_offsets(irb, &tile_x, &tile_y);
 
-      key.surface_type = BRW_SURFACE_2D;
-      switch (irb->Base.Format) {
-      /* XRGB and ARGB are treated the same here because the chips in this
-       * family cannot render to XRGB targets.  This means that we have to
-       * mask writes to alpha (ala glColorMask) and reconfigure the alpha
-       * blending hardware to use GL_ONE (or GL_ZERO) for cases where
-       * GL_DST_ALPHA (or GL_ONE_MINUS_DST_ALPHA) is used.
-       */
-      case MESA_FORMAT_ARGB8888:
-      case MESA_FORMAT_XRGB8888:
-	 key.surface_format = BRW_SURFACEFORMAT_B8G8R8A8_UNORM;
-	 break;
-      case MESA_FORMAT_RGB565:
-	 key.surface_format = BRW_SURFACEFORMAT_B5G6R5_UNORM;
-	 break;
-      case MESA_FORMAT_ARGB1555:
-	 key.surface_format = BRW_SURFACEFORMAT_B5G5R5A1_UNORM;
-	 break;
-      case MESA_FORMAT_ARGB4444:
-	 key.surface_format = BRW_SURFACEFORMAT_B4G4R4A4_UNORM;
-	 break;
-      default:
-	 _mesa_problem(ctx, "Bad renderbuffer format: %d\n", irb->Base.Format);
+      if (tile_x != 0 || tile_y != 0) {
+	 /* Original gen4 hardware couldn't draw to a non-tile-aligned
+	  * destination in a miptree unless you actually setup your renderbuffer
+	  * as a miptree and used the fragile lod/array_index/etc. controls to
+	  * select the image.  So, instead, we just make a new single-level
+	  * miptree and render into that.
+	  */
+	 intel_renderbuffer_move_to_temp(brw, irb, false);
+	 mt = irb->mt;
       }
-      key.tiling = region->tiling;
-      if (brw->intel.intelScreen->driScrnPriv->dri2.enabled) {
-	 key.width = rb->Width;
-	 key.height = rb->Height;
-      } else {
-	 key.width = region->width;
-	 key.height = region->height;
-      }
-      key.pitch = region->pitch;
-      key.cpp = region->cpp;
-      key.draw_x = region->draw_x;
-      key.draw_y = region->draw_y;
-   } else {
-      key.surface_type = BRW_SURFACE_NULL;
-      key.surface_format = BRW_SURFACEFORMAT_B8G8R8A8_UNORM;
-      key.tiling = I915_TILING_X;
-      key.width = 1;
-      key.height = 1;
-      key.cpp = 4;
-      key.draw_x = 0;
-      key.draw_y = 0;
    }
-   /* _NEW_COLOR */
-   memcpy(key.color_mask, ctx->Color.ColorMask,
-	  sizeof(key.color_mask));
 
-   /* As mentioned above, disable writes to the alpha component when the
-    * renderbuffer is XRGB.
+   intel_miptree_used_for_rendering(irb->mt);
+
+   surf = brw_state_batch(brw, AUB_TRACE_SURFACE_STATE, 6 * 4, 32, &offset);
+
+   format = brw->render_target_format[rb_format];
+   if (unlikely(!brw->format_supported_as_render_target[rb_format])) {
+      _mesa_problem(ctx, "%s: renderbuffer format %s unsupported\n",
+                    __func__, _mesa_get_format_name(rb_format));
+   }
+
+   surf[0] = (BRW_SURFACE_2D << BRW_SURFACE_TYPE_SHIFT |
+	      format << BRW_SURFACE_FORMAT_SHIFT);
+
+   /* reloc */
+   assert(mt->offset % mt->cpp == 0);
+   surf[1] = (intel_renderbuffer_get_tile_offsets(irb, &tile_x, &tile_y) +
+	      mt->bo->offset64 + mt->offset);
+
+   surf[2] = ((rb->Width - 1) << BRW_SURFACE_WIDTH_SHIFT |
+	      (rb->Height - 1) << BRW_SURFACE_HEIGHT_SHIFT);
+
+   surf[3] = (brw_get_surface_tiling_bits(mt->tiling) |
+	      (mt->pitch - 1) << BRW_SURFACE_PITCH_SHIFT);
+
+   surf[4] = brw_get_surface_num_multisamples(mt->num_samples);
+
+   assert(brw->has_surface_tile_offset || (tile_x == 0 && tile_y == 0));
+   /* Note that the low bits of these fields are missing, so
+    * there's the possibility of getting in trouble.
     */
-   if (ctx->DrawBuffer->Visual.alphaBits == 0)
-     key.color_mask[3] = GL_FALSE;
+   assert(tile_x % 4 == 0);
+   assert(tile_y % 2 == 0);
+   surf[5] = ((tile_x / 4) << BRW_SURFACE_X_OFFSET_SHIFT |
+	      (tile_y / 2) << BRW_SURFACE_Y_OFFSET_SHIFT |
+	      (mt->valign == 4 ? BRW_SURFACE_VERTICAL_ALIGN_ENABLE : 0));
 
-   key.color_blend = (!ctx->Color._LogicOpEnabled &&
-		      ctx->Color.BlendEnabled);
-
-   dri_bo_unreference(brw->wm.surf_bo[unit]);
-   brw->wm.surf_bo[unit] = brw_search_cache(&brw->surface_cache,
-					    BRW_SS_SURFACE,
-					    &key, sizeof(key),
-					    &region_bo, 1,
-					    NULL);
-
-   if (brw->wm.surf_bo[unit] == NULL) {
-      struct brw_surface_state surf;
-
-      memset(&surf, 0, sizeof(surf));
-
-      surf.ss0.surface_format = key.surface_format;
-      surf.ss0.surface_type = key.surface_type;
-      if (key.tiling == I915_TILING_NONE) {
-	 surf.ss1.base_addr = (key.draw_x + key.draw_y * key.pitch) * key.cpp;
-      } else {
-	 uint32_t tile_base, tile_x, tile_y;
-	 uint32_t pitch = key.pitch * key.cpp;
-
-	 if (key.tiling == I915_TILING_X) {
-	    tile_x = key.draw_x % (512 / key.cpp);
-	    tile_y = key.draw_y % 8;
-	    tile_base = ((key.draw_y / 8) * (8 * pitch));
-	    tile_base += (key.draw_x - tile_x) / (512 / key.cpp) * 4096;
-	 } else {
-	    /* Y */
-	    tile_x = key.draw_x % (128 / key.cpp);
-	    tile_y = key.draw_y % 32;
-	    tile_base = ((key.draw_y / 32) * (32 * pitch));
-	    tile_base += (key.draw_x - tile_x) / (128 / key.cpp) * 4096;
-	 }
-	 assert(BRW_IS_G4X(brw) || (tile_x == 0 && tile_y == 0));
-	 assert(tile_x % 4 == 0);
-	 assert(tile_y % 2 == 0);
-	 /* Note that the low bits of these fields are missing, so
-	  * there's the possibility of getting in trouble.
-	  */
-	 surf.ss1.base_addr = tile_base;
-	 surf.ss5.x_offset = tile_x / 4;
-	 surf.ss5.y_offset = tile_y / 2;
-      }
-      if (region_bo != NULL)
-	 surf.ss1.base_addr += region_bo->offset; /* reloc */
-
-      surf.ss2.width = key.width - 1;
-      surf.ss2.height = key.height - 1;
-      brw_set_surface_tiling(&surf, key.tiling);
-      surf.ss3.pitch = (key.pitch * key.cpp) - 1;
-
+   if (brw->gen < 6) {
       /* _NEW_COLOR */
-      surf.ss0.color_blend = key.color_blend;
-      surf.ss0.writedisable_red =   !key.color_mask[0];
-      surf.ss0.writedisable_green = !key.color_mask[1];
-      surf.ss0.writedisable_blue =  !key.color_mask[2];
-      surf.ss0.writedisable_alpha = !key.color_mask[3];
+      if (!ctx->Color.ColorLogicOpEnabled && !ctx->Color._AdvancedBlendMode &&
+          (ctx->Color.BlendEnabled & (1 << unit)))
+	 surf[0] |= BRW_SURFACE_BLEND_ENABLED;
 
-      /* Key size will never match key size for textures, so we're safe. */
-      brw->wm.surf_bo[unit] = brw_upload_cache(&brw->surface_cache,
-                                               BRW_SS_SURFACE,
-                                               &key, sizeof(key),
-					       &region_bo, 1,
-					       &surf, sizeof(surf),
-					       NULL, NULL);
-      if (region_bo != NULL) {
-	 /* We might sample from it, and we might render to it, so flag
-	  * them both.  We might be able to figure out from other state
-	  * a more restrictive relocation to emit.
-	  */
-	 drm_intel_bo_emit_reloc(brw->wm.surf_bo[unit],
-				 offsetof(struct brw_surface_state, ss1),
-				 region_bo,
-				 surf.ss1.base_addr - region_bo->offset,
-				 I915_GEM_DOMAIN_RENDER,
-				 I915_GEM_DOMAIN_RENDER);
+      if (!ctx->Color.ColorMask[unit][0])
+	 surf[0] |= 1 << BRW_SURFACE_WRITEDISABLE_R_SHIFT;
+      if (!ctx->Color.ColorMask[unit][1])
+	 surf[0] |= 1 << BRW_SURFACE_WRITEDISABLE_G_SHIFT;
+      if (!ctx->Color.ColorMask[unit][2])
+	 surf[0] |= 1 << BRW_SURFACE_WRITEDISABLE_B_SHIFT;
+
+      /* As mentioned above, disable writes to the alpha component when the
+       * renderbuffer is XRGB.
+       */
+      if (ctx->DrawBuffer->Visual.alphaBits == 0 ||
+	  !ctx->Color.ColorMask[unit][3]) {
+	 surf[0] |= 1 << BRW_SURFACE_WRITEDISABLE_A_SHIFT;
+      }
+   }
+
+   drm_intel_bo_emit_reloc(brw->batch.bo,
+                           offset + 4,
+                           mt->bo,
+                           surf[1] - mt->bo->offset64,
+                           I915_GEM_DOMAIN_RENDER,
+                           I915_GEM_DOMAIN_RENDER);
+
+   return offset;
+}
+
+/**
+ * Construct SURFACE_STATE objects for renderbuffers/draw buffers.
+ */
+void
+brw_update_renderbuffer_surfaces(struct brw_context *brw,
+                                 const struct gl_framebuffer *fb,
+                                 uint32_t render_target_start,
+                                 uint32_t *surf_offset)
+{
+   GLuint i;
+   const unsigned int w = _mesa_geometric_width(fb);
+   const unsigned int h = _mesa_geometric_height(fb);
+   const unsigned int s = _mesa_geometric_samples(fb);
+
+   /* Update surfaces for drawing buffers */
+   if (fb->_NumColorDrawBuffers >= 1) {
+      for (i = 0; i < fb->_NumColorDrawBuffers; i++) {
+         const uint32_t surf_index = render_target_start + i;
+         const int flags = (_mesa_geometric_layers(fb) > 0 ?
+                              INTEL_RENDERBUFFER_LAYERED : 0) |
+                           (brw->draw_aux_buffer_disabled[i] ?
+                              INTEL_AUX_BUFFER_DISABLED : 0);
+
+	 if (intel_renderbuffer(fb->_ColorDrawBuffers[i])) {
+            surf_offset[surf_index] =
+               brw->vtbl.update_renderbuffer_surface(
+                  brw, fb->_ColorDrawBuffers[i], flags, i, surf_index);
+	 } else {
+            brw->vtbl.emit_null_surface_state(brw, w, h, s,
+               &surf_offset[surf_index]);
+	 }
+      }
+   } else {
+      const uint32_t surf_index = render_target_start;
+      brw->vtbl.emit_null_surface_state(brw, w, h, s,
+         &surf_offset[surf_index]);
+   }
+}
+
+static void
+update_renderbuffer_surfaces(struct brw_context *brw)
+{
+   const struct gl_context *ctx = &brw->ctx;
+
+   /* BRW_NEW_FS_PROG_DATA */
+   const struct brw_wm_prog_data *wm_prog_data =
+      brw_wm_prog_data(brw->wm.base.prog_data);
+
+   /* _NEW_BUFFERS | _NEW_COLOR */
+   const struct gl_framebuffer *fb = ctx->DrawBuffer;
+   brw_update_renderbuffer_surfaces(
+      brw, fb,
+      wm_prog_data->binding_table.render_target_start,
+      brw->wm.base.surf_offset);
+   brw->ctx.NewDriverState |= BRW_NEW_SURFACES;
+}
+
+const struct brw_tracked_state brw_renderbuffer_surfaces = {
+   .dirty = {
+      .mesa = _NEW_BUFFERS |
+              _NEW_COLOR,
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP |
+             BRW_NEW_FS_PROG_DATA,
+   },
+   .emit = update_renderbuffer_surfaces,
+};
+
+const struct brw_tracked_state gen6_renderbuffer_surfaces = {
+   .dirty = {
+      .mesa = _NEW_BUFFERS,
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP,
+   },
+   .emit = update_renderbuffer_surfaces,
+};
+
+static void
+update_renderbuffer_read_surfaces(struct brw_context *brw)
+{
+   const struct gl_context *ctx = &brw->ctx;
+
+   /* BRW_NEW_FS_PROG_DATA */
+   const struct brw_wm_prog_data *wm_prog_data =
+      brw_wm_prog_data(brw->wm.base.prog_data);
+
+   /* BRW_NEW_FRAGMENT_PROGRAM */
+   if (!ctx->Extensions.MESA_shader_framebuffer_fetch &&
+       brw->fragment_program &&
+       brw->fragment_program->Base.nir->info.outputs_read) {
+      /* _NEW_BUFFERS */
+      const struct gl_framebuffer *fb = ctx->DrawBuffer;
+
+      for (unsigned i = 0; i < fb->_NumColorDrawBuffers; i++) {
+         struct gl_renderbuffer *rb = fb->_ColorDrawBuffers[i];
+         const struct intel_renderbuffer *irb = intel_renderbuffer(rb);
+         const unsigned surf_index =
+            wm_prog_data->binding_table.render_target_read_start + i;
+         uint32_t *surf_offset = &brw->wm.base.surf_offset[surf_index];
+
+         if (irb) {
+            const unsigned format = brw->render_target_format[
+               _mesa_get_render_format(ctx, intel_rb_format(irb))];
+            assert(isl_format_supports_sampling(&brw->screen->devinfo,
+                                                format));
+
+            /* Override the target of the texture if the render buffer is a
+             * single slice of a 3D texture (since the minimum array element
+             * field of the surface state structure is ignored by the sampler
+             * unit for 3D textures on some hardware), or if the render buffer
+             * is a 1D array (since shaders always provide the array index
+             * coordinate at the Z component to avoid state-dependent
+             * recompiles when changing the texture target of the
+             * framebuffer).
+             */
+            const GLenum target =
+               (irb->mt->target == GL_TEXTURE_3D &&
+                irb->layer_count == 1) ? GL_TEXTURE_2D :
+               irb->mt->target == GL_TEXTURE_1D_ARRAY ? GL_TEXTURE_2D_ARRAY :
+               irb->mt->target;
+
+            /* intel_renderbuffer::mt_layer is expressed in sample units for
+             * the UMS and CMS multisample layouts, but
+             * intel_renderbuffer::layer_count is expressed in units of whole
+             * logical layers regardless of the multisample layout.
+             */
+            const unsigned mt_layer_unit =
+               (irb->mt->msaa_layout == INTEL_MSAA_LAYOUT_UMS ||
+                irb->mt->msaa_layout == INTEL_MSAA_LAYOUT_CMS) ?
+               MAX2(irb->mt->num_samples, 1) : 1;
+
+            const struct isl_view view = {
+               .format = format,
+               .base_level = irb->mt_level - irb->mt->first_level,
+               .levels = 1,
+               .base_array_layer = irb->mt_layer / mt_layer_unit,
+               .array_len = irb->layer_count,
+               .swizzle = ISL_SWIZZLE_IDENTITY,
+               .usage = ISL_SURF_USAGE_TEXTURE_BIT,
+            };
+
+            const int flags = brw->draw_aux_buffer_disabled[i] ?
+                                 INTEL_AUX_BUFFER_DISABLED : 0;
+            brw_emit_surface_state(brw, irb->mt, flags, target, view,
+                                   surface_state_infos[brw->gen].tex_mocs,
+                                   surf_offset, surf_index,
+                                   I915_GEM_DOMAIN_SAMPLER, 0);
+
+         } else {
+            brw->vtbl.emit_null_surface_state(
+               brw, _mesa_geometric_width(fb), _mesa_geometric_height(fb),
+               _mesa_geometric_samples(fb), surf_offset);
+         }
+      }
+
+      brw->ctx.NewDriverState |= BRW_NEW_SURFACES;
+   }
+}
+
+const struct brw_tracked_state brw_renderbuffer_read_surfaces = {
+   .dirty = {
+      .mesa = _NEW_BUFFERS,
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_FRAGMENT_PROGRAM |
+             BRW_NEW_FS_PROG_DATA,
+   },
+   .emit = update_renderbuffer_read_surfaces,
+};
+
+static void
+update_stage_texture_surfaces(struct brw_context *brw,
+                              const struct gl_program *prog,
+                              struct brw_stage_state *stage_state,
+                              bool for_gather, uint32_t plane)
+{
+   if (!prog)
+      return;
+
+   struct gl_context *ctx = &brw->ctx;
+
+   uint32_t *surf_offset = stage_state->surf_offset;
+
+   /* BRW_NEW_*_PROG_DATA */
+   if (for_gather)
+      surf_offset += stage_state->prog_data->binding_table.gather_texture_start;
+   else
+      surf_offset += stage_state->prog_data->binding_table.plane_start[plane];
+
+   unsigned num_samplers = util_last_bit(prog->SamplersUsed);
+   for (unsigned s = 0; s < num_samplers; s++) {
+      surf_offset[s] = 0;
+
+      if (prog->SamplersUsed & (1 << s)) {
+         const unsigned unit = prog->SamplerUnits[s];
+
+         /* _NEW_TEXTURE */
+         if (ctx->Texture.Unit[unit]._Current) {
+            brw_update_texture_surface(ctx, unit, surf_offset + s, for_gather, plane);
+         }
       }
    }
 }
 
 
 /**
- * Constructs the binding table for the WM surface state, which maps unit
- * numbers to surface state objects.
+ * Construct SURFACE_STATE objects for enabled textures.
  */
-static dri_bo *
-brw_wm_get_binding_table(struct brw_context *brw)
+static void
+brw_update_texture_surfaces(struct brw_context *brw)
 {
-   dri_bo *bind_bo;
+   /* BRW_NEW_VERTEX_PROGRAM */
+   struct gl_program *vs = (struct gl_program *) brw->vertex_program;
 
-   assert(brw->wm.nr_surfaces <= BRW_WM_MAX_SURF);
+   /* BRW_NEW_TESS_PROGRAMS */
+   struct gl_program *tcs = (struct gl_program *) brw->tess_ctrl_program;
+   struct gl_program *tes = (struct gl_program *) brw->tess_eval_program;
 
-   bind_bo = brw_search_cache(&brw->surface_cache, BRW_SS_SURF_BIND,
-			      NULL, 0,
-			      brw->wm.surf_bo, brw->wm.nr_surfaces,
-			      NULL);
+   /* BRW_NEW_GEOMETRY_PROGRAM */
+   struct gl_program *gs = (struct gl_program *) brw->geometry_program;
 
-   if (bind_bo == NULL) {
-      GLuint data_size = brw->wm.nr_surfaces * sizeof(GLuint);
-      uint32_t data[BRW_WM_MAX_SURF];
-      int i;
+   /* BRW_NEW_FRAGMENT_PROGRAM */
+   struct gl_program *fs = (struct gl_program *) brw->fragment_program;
 
-      for (i = 0; i < brw->wm.nr_surfaces; i++)
-         if (brw->wm.surf_bo[i])
-            data[i] = brw->wm.surf_bo[i]->offset;
-         else
-            data[i] = 0;
+   /* _NEW_TEXTURE */
+   update_stage_texture_surfaces(brw, vs, &brw->vs.base, false, 0);
+   update_stage_texture_surfaces(brw, tcs, &brw->tcs.base, false, 0);
+   update_stage_texture_surfaces(brw, tes, &brw->tes.base, false, 0);
+   update_stage_texture_surfaces(brw, gs, &brw->gs.base, false, 0);
+   update_stage_texture_surfaces(brw, fs, &brw->wm.base, false, 0);
 
-      bind_bo = brw_upload_cache( &brw->surface_cache, BRW_SS_SURF_BIND,
-				  NULL, 0,
-				  brw->wm.surf_bo, brw->wm.nr_surfaces,
-				  data, data_size,
-				  NULL, NULL);
-
-      /* Emit binding table relocations to surface state */
-      for (i = 0; i < BRW_WM_MAX_SURF; i++) {
-	 if (brw->wm.surf_bo[i] != NULL) {
-	    dri_bo_emit_reloc(bind_bo,
-			      I915_GEM_DOMAIN_INSTRUCTION, 0,
-			      0,
-			      i * sizeof(GLuint),
-			      brw->wm.surf_bo[i]);
-	 }
-      }
+   /* emit alternate set of surface state for gather. this
+    * allows the surface format to be overriden for only the
+    * gather4 messages. */
+   if (brw->gen < 8) {
+      if (vs && vs->nir->info.uses_texture_gather)
+         update_stage_texture_surfaces(brw, vs, &brw->vs.base, true, 0);
+      if (tcs && tcs->nir->info.uses_texture_gather)
+         update_stage_texture_surfaces(brw, tcs, &brw->tcs.base, true, 0);
+      if (tes && tes->nir->info.uses_texture_gather)
+         update_stage_texture_surfaces(brw, tes, &brw->tes.base, true, 0);
+      if (gs && gs->nir->info.uses_texture_gather)
+         update_stage_texture_surfaces(brw, gs, &brw->gs.base, true, 0);
+      if (fs && fs->nir->info.uses_texture_gather)
+         update_stage_texture_surfaces(brw, fs, &brw->wm.base, true, 0);
    }
 
-   return bind_bo;
+   if (fs) {
+      update_stage_texture_surfaces(brw, fs, &brw->wm.base, false, 1);
+      update_stage_texture_surfaces(brw, fs, &brw->wm.base, false, 2);
+   }
+
+   brw->ctx.NewDriverState |= BRW_NEW_SURFACES;
 }
 
-static void prepare_wm_surfaces(struct brw_context *brw )
-{
-   GLcontext *ctx = &brw->intel.ctx;
-   GLuint i;
-   int old_nr_surfaces;
-
-   /* _NEW_BUFFERS | _NEW_COLOR */
-   /* Update surfaces for drawing buffers */
-   if (ctx->DrawBuffer->_NumColorDrawBuffers >= 1) {
-      for (i = 0; i < ctx->DrawBuffer->_NumColorDrawBuffers; i++) {
-         brw_update_renderbuffer_surface(brw,
-					 ctx->DrawBuffer->_ColorDrawBuffers[i],
-					 i);
-      }
-   } else {
-      brw_update_renderbuffer_surface(brw, NULL, 0);
-   }
-
-   old_nr_surfaces = brw->wm.nr_surfaces;
-   brw->wm.nr_surfaces = BRW_MAX_DRAW_BUFFERS;
-
-   if (brw->wm.surf_bo[SURF_INDEX_FRAG_CONST_BUFFER] != NULL)
-       brw->wm.nr_surfaces = SURF_INDEX_FRAG_CONST_BUFFER + 1;
-
-   /* Update surfaces for textures */
-   for (i = 0; i < BRW_MAX_TEX_UNIT; i++) {
-      const struct gl_texture_unit *texUnit = &ctx->Texture.Unit[i];
-      const GLuint surf = SURF_INDEX_TEXTURE(i);
-
-      /* _NEW_TEXTURE, BRW_NEW_TEXDATA */
-      if (texUnit->_ReallyEnabled) {
-	 brw_update_texture_surface(ctx, i);
-	 brw->wm.nr_surfaces = surf + 1;
-      } else {
-         dri_bo_unreference(brw->wm.surf_bo[surf]);
-         brw->wm.surf_bo[surf] = NULL;
-      }
-   }
-
-   dri_bo_unreference(brw->wm.bind_bo);
-   brw->wm.bind_bo = brw_wm_get_binding_table(brw);
-
-   if (brw->wm.nr_surfaces != old_nr_surfaces)
-      brw->state.dirty.brw |= BRW_NEW_NR_WM_SURFACES;
-}
-
-const struct brw_tracked_state brw_wm_surfaces = {
+const struct brw_tracked_state brw_texture_surfaces = {
    .dirty = {
-      .mesa = (_NEW_COLOR |
-               _NEW_TEXTURE |
-               _NEW_BUFFERS),
-      .brw = (BRW_NEW_CONTEXT |
-	      BRW_NEW_WM_SURFACES),
-      .cache = 0
+      .mesa = _NEW_TEXTURE,
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP |
+             BRW_NEW_FRAGMENT_PROGRAM |
+             BRW_NEW_FS_PROG_DATA |
+             BRW_NEW_GEOMETRY_PROGRAM |
+             BRW_NEW_GS_PROG_DATA |
+             BRW_NEW_TESS_PROGRAMS |
+             BRW_NEW_TCS_PROG_DATA |
+             BRW_NEW_TES_PROG_DATA |
+             BRW_NEW_TEXTURE_BUFFER |
+             BRW_NEW_VERTEX_PROGRAM |
+             BRW_NEW_VS_PROG_DATA,
    },
-   .prepare = prepare_wm_surfaces,
+   .emit = brw_update_texture_surfaces,
+};
+
+static void
+brw_update_cs_texture_surfaces(struct brw_context *brw)
+{
+   /* BRW_NEW_COMPUTE_PROGRAM */
+   struct gl_program *cs = (struct gl_program *) brw->compute_program;
+
+   /* _NEW_TEXTURE */
+   update_stage_texture_surfaces(brw, cs, &brw->cs.base, false, 0);
+
+   /* emit alternate set of surface state for gather. this
+    * allows the surface format to be overriden for only the
+    * gather4 messages.
+    */
+   if (brw->gen < 8) {
+      if (cs && cs->nir->info.uses_texture_gather)
+         update_stage_texture_surfaces(brw, cs, &brw->cs.base, true, 0);
+   }
+
+   brw->ctx.NewDriverState |= BRW_NEW_SURFACES;
+}
+
+const struct brw_tracked_state brw_cs_texture_surfaces = {
+   .dirty = {
+      .mesa = _NEW_TEXTURE,
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP |
+             BRW_NEW_COMPUTE_PROGRAM,
+   },
+   .emit = brw_update_cs_texture_surfaces,
 };
 
 
+void
+brw_upload_ubo_surfaces(struct brw_context *brw,
+			struct gl_linked_shader *shader,
+                        struct brw_stage_state *stage_state,
+                        struct brw_stage_prog_data *prog_data)
+{
+   struct gl_context *ctx = &brw->ctx;
 
+   if (!shader)
+      return;
+
+   uint32_t *ubo_surf_offsets =
+      &stage_state->surf_offset[prog_data->binding_table.ubo_start];
+
+   for (int i = 0; i < shader->NumUniformBlocks; i++) {
+      struct gl_uniform_buffer_binding *binding =
+         &ctx->UniformBufferBindings[shader->UniformBlocks[i]->Binding];
+
+      if (binding->BufferObject == ctx->Shared->NullBufferObj) {
+         brw->vtbl.emit_null_surface_state(brw, 1, 1, 1, &ubo_surf_offsets[i]);
+      } else {
+         struct intel_buffer_object *intel_bo =
+            intel_buffer_object(binding->BufferObject);
+         GLsizeiptr size = binding->BufferObject->Size - binding->Offset;
+         if (!binding->AutomaticSize)
+            size = MIN2(size, binding->Size);
+         drm_intel_bo *bo =
+            intel_bufferobj_buffer(brw, intel_bo,
+                                   binding->Offset,
+                                   size);
+         brw_create_constant_surface(brw, bo, binding->Offset,
+                                     size,
+                                     &ubo_surf_offsets[i]);
+      }
+   }
+
+   uint32_t *ssbo_surf_offsets =
+      &stage_state->surf_offset[prog_data->binding_table.ssbo_start];
+
+   for (int i = 0; i < shader->NumShaderStorageBlocks; i++) {
+      struct gl_shader_storage_buffer_binding *binding =
+         &ctx->ShaderStorageBufferBindings[shader->ShaderStorageBlocks[i]->Binding];
+
+      if (binding->BufferObject == ctx->Shared->NullBufferObj) {
+         brw->vtbl.emit_null_surface_state(brw, 1, 1, 1, &ssbo_surf_offsets[i]);
+      } else {
+         struct intel_buffer_object *intel_bo =
+            intel_buffer_object(binding->BufferObject);
+         GLsizeiptr size = binding->BufferObject->Size - binding->Offset;
+         if (!binding->AutomaticSize)
+            size = MIN2(size, binding->Size);
+         drm_intel_bo *bo =
+            intel_bufferobj_buffer(brw, intel_bo,
+                                   binding->Offset,
+                                   size);
+         brw_create_buffer_surface(brw, bo, binding->Offset,
+                                   size,
+                                   &ssbo_surf_offsets[i]);
+      }
+   }
+
+   if (shader->NumUniformBlocks || shader->NumShaderStorageBlocks)
+      brw->ctx.NewDriverState |= BRW_NEW_SURFACES;
+}
+
+static void
+brw_upload_wm_ubo_surfaces(struct brw_context *brw)
+{
+   struct gl_context *ctx = &brw->ctx;
+   /* _NEW_PROGRAM */
+   struct gl_shader_program *prog = ctx->_Shader->_CurrentFragmentProgram;
+
+   if (!prog)
+      return;
+
+   /* BRW_NEW_FS_PROG_DATA */
+   brw_upload_ubo_surfaces(brw, prog->_LinkedShaders[MESA_SHADER_FRAGMENT],
+                           &brw->wm.base, brw->wm.base.prog_data);
+}
+
+const struct brw_tracked_state brw_wm_ubo_surfaces = {
+   .dirty = {
+      .mesa = _NEW_PROGRAM,
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP |
+             BRW_NEW_FS_PROG_DATA |
+             BRW_NEW_UNIFORM_BUFFER,
+   },
+   .emit = brw_upload_wm_ubo_surfaces,
+};
+
+static void
+brw_upload_cs_ubo_surfaces(struct brw_context *brw)
+{
+   struct gl_context *ctx = &brw->ctx;
+   /* _NEW_PROGRAM */
+   struct gl_shader_program *prog =
+      ctx->_Shader->CurrentProgram[MESA_SHADER_COMPUTE];
+
+   if (!prog)
+      return;
+
+   /* BRW_NEW_CS_PROG_DATA */
+   brw_upload_ubo_surfaces(brw, prog->_LinkedShaders[MESA_SHADER_COMPUTE],
+                           &brw->cs.base, brw->cs.base.prog_data);
+}
+
+const struct brw_tracked_state brw_cs_ubo_surfaces = {
+   .dirty = {
+      .mesa = _NEW_PROGRAM,
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP |
+             BRW_NEW_CS_PROG_DATA |
+             BRW_NEW_UNIFORM_BUFFER,
+   },
+   .emit = brw_upload_cs_ubo_surfaces,
+};
+
+void
+brw_upload_abo_surfaces(struct brw_context *brw,
+                        struct gl_linked_shader *shader,
+                        struct brw_stage_state *stage_state,
+                        struct brw_stage_prog_data *prog_data)
+{
+   struct gl_context *ctx = &brw->ctx;
+   uint32_t *surf_offsets =
+      &stage_state->surf_offset[prog_data->binding_table.abo_start];
+
+   if (shader && shader->NumAtomicBuffers) {
+      for (unsigned i = 0; i < shader->NumAtomicBuffers; i++) {
+         struct gl_atomic_buffer_binding *binding =
+            &ctx->AtomicBufferBindings[shader->AtomicBuffers[i]->Binding];
+         struct intel_buffer_object *intel_bo =
+            intel_buffer_object(binding->BufferObject);
+         drm_intel_bo *bo = intel_bufferobj_buffer(
+            brw, intel_bo, binding->Offset, intel_bo->Base.Size - binding->Offset);
+
+         brw_emit_buffer_surface_state(brw, &surf_offsets[i], bo,
+                                       binding->Offset, BRW_SURFACEFORMAT_RAW,
+                                       bo->size - binding->Offset, 1, true);
+      }
+
+      brw->ctx.NewDriverState |= BRW_NEW_SURFACES;
+   }
+}
+
+static void
+brw_upload_wm_abo_surfaces(struct brw_context *brw)
+{
+   struct gl_context *ctx = &brw->ctx;
+   /* _NEW_PROGRAM */
+   struct gl_shader_program *prog = ctx->_Shader->_CurrentFragmentProgram;
+
+   if (prog) {
+      /* BRW_NEW_FS_PROG_DATA */
+      brw_upload_abo_surfaces(brw, prog->_LinkedShaders[MESA_SHADER_FRAGMENT],
+                              &brw->wm.base, brw->wm.base.prog_data);
+   }
+}
+
+const struct brw_tracked_state brw_wm_abo_surfaces = {
+   .dirty = {
+      .mesa = _NEW_PROGRAM,
+      .brw = BRW_NEW_ATOMIC_BUFFER |
+             BRW_NEW_BLORP |
+             BRW_NEW_BATCH |
+             BRW_NEW_FS_PROG_DATA,
+   },
+   .emit = brw_upload_wm_abo_surfaces,
+};
+
+static void
+brw_upload_cs_abo_surfaces(struct brw_context *brw)
+{
+   struct gl_context *ctx = &brw->ctx;
+   /* _NEW_PROGRAM */
+   struct gl_shader_program *prog =
+      ctx->_Shader->CurrentProgram[MESA_SHADER_COMPUTE];
+
+   if (prog) {
+      /* BRW_NEW_CS_PROG_DATA */
+      brw_upload_abo_surfaces(brw, prog->_LinkedShaders[MESA_SHADER_COMPUTE],
+                              &brw->cs.base, brw->cs.base.prog_data);
+   }
+}
+
+const struct brw_tracked_state brw_cs_abo_surfaces = {
+   .dirty = {
+      .mesa = _NEW_PROGRAM,
+      .brw = BRW_NEW_ATOMIC_BUFFER |
+             BRW_NEW_BLORP |
+             BRW_NEW_BATCH |
+             BRW_NEW_CS_PROG_DATA,
+   },
+   .emit = brw_upload_cs_abo_surfaces,
+};
+
+static void
+brw_upload_cs_image_surfaces(struct brw_context *brw)
+{
+   struct gl_context *ctx = &brw->ctx;
+   /* _NEW_PROGRAM */
+   struct gl_shader_program *prog =
+      ctx->_Shader->CurrentProgram[MESA_SHADER_COMPUTE];
+
+   if (prog) {
+      /* BRW_NEW_CS_PROG_DATA, BRW_NEW_IMAGE_UNITS, _NEW_TEXTURE */
+      brw_upload_image_surfaces(brw, prog->_LinkedShaders[MESA_SHADER_COMPUTE],
+                                &brw->cs.base, brw->cs.base.prog_data);
+   }
+}
+
+const struct brw_tracked_state brw_cs_image_surfaces = {
+   .dirty = {
+      .mesa = _NEW_TEXTURE | _NEW_PROGRAM,
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP |
+             BRW_NEW_CS_PROG_DATA |
+             BRW_NEW_IMAGE_UNITS
+   },
+   .emit = brw_upload_cs_image_surfaces,
+};
+
+static uint32_t
+get_image_format(struct brw_context *brw, mesa_format format, GLenum access)
+{
+   const struct gen_device_info *devinfo = &brw->screen->devinfo;
+   uint32_t hw_format = brw_format_for_mesa_format(format);
+   if (access == GL_WRITE_ONLY) {
+      return hw_format;
+   } else if (isl_has_matching_typed_storage_image_format(devinfo, hw_format)) {
+      /* Typed surface reads support a very limited subset of the shader
+       * image formats.  Translate it into the closest format the
+       * hardware supports.
+       */
+      return isl_lower_storage_image_format(devinfo, hw_format);
+   } else {
+      /* The hardware doesn't actually support a typed format that we can use
+       * so we have to fall back to untyped read/write messages.
+       */
+      return BRW_SURFACEFORMAT_RAW;
+   }
+}
+
+static void
+update_default_image_param(struct brw_context *brw,
+                           struct gl_image_unit *u,
+                           unsigned surface_idx,
+                           struct brw_image_param *param)
+{
+   memset(param, 0, sizeof(*param));
+   param->surface_idx = surface_idx;
+   /* Set the swizzling shifts to all-ones to effectively disable swizzling --
+    * See emit_address_calculation() in brw_fs_surface_builder.cpp for a more
+    * detailed explanation of these parameters.
+    */
+   param->swizzling[0] = 0xff;
+   param->swizzling[1] = 0xff;
+}
+
+static void
+update_buffer_image_param(struct brw_context *brw,
+                          struct gl_image_unit *u,
+                          unsigned surface_idx,
+                          struct brw_image_param *param)
+{
+   struct gl_buffer_object *obj = u->TexObj->BufferObject;
+   const uint32_t size = MIN2((uint32_t)u->TexObj->BufferSize, obj->Size);
+   update_default_image_param(brw, u, surface_idx, param);
+
+   param->size[0] = size / _mesa_get_format_bytes(u->_ActualFormat);
+   param->stride[0] = _mesa_get_format_bytes(u->_ActualFormat);
+}
+
+static void
+update_texture_image_param(struct brw_context *brw,
+                           struct gl_image_unit *u,
+                           unsigned surface_idx,
+                           struct brw_image_param *param)
+{
+   struct intel_mipmap_tree *mt = intel_texture_object(u->TexObj)->mt;
+
+   update_default_image_param(brw, u, surface_idx, param);
+
+   param->size[0] = minify(mt->logical_width0, u->Level);
+   param->size[1] = minify(mt->logical_height0, u->Level);
+   param->size[2] = (!u->Layered ? 1 :
+                     u->TexObj->Target == GL_TEXTURE_CUBE_MAP ? 6 :
+                     u->TexObj->Target == GL_TEXTURE_3D ?
+                     minify(mt->logical_depth0, u->Level) :
+                     mt->logical_depth0);
+
+   intel_miptree_get_image_offset(mt, u->Level, u->_Layer,
+                                  &param->offset[0],
+                                  &param->offset[1]);
+
+   param->stride[0] = mt->cpp;
+   param->stride[1] = mt->pitch / mt->cpp;
+   param->stride[2] =
+      brw_miptree_get_horizontal_slice_pitch(brw, mt, u->Level);
+   param->stride[3] =
+      brw_miptree_get_vertical_slice_pitch(brw, mt, u->Level);
+
+   if (mt->tiling == I915_TILING_X) {
+      /* An X tile is a rectangular block of 512x8 bytes. */
+      param->tiling[0] = _mesa_logbase2(512 / mt->cpp);
+      param->tiling[1] = _mesa_logbase2(8);
+
+      if (brw->has_swizzling) {
+         /* Right shifts required to swizzle bits 9 and 10 of the memory
+          * address with bit 6.
+          */
+         param->swizzling[0] = 3;
+         param->swizzling[1] = 4;
+      }
+   } else if (mt->tiling == I915_TILING_Y) {
+      /* The layout of a Y-tiled surface in memory isn't really fundamentally
+       * different to the layout of an X-tiled surface, we simply pretend that
+       * the surface is broken up in a number of smaller 16Bx32 tiles, each
+       * one arranged in X-major order just like is the case for X-tiling.
+       */
+      param->tiling[0] = _mesa_logbase2(16 / mt->cpp);
+      param->tiling[1] = _mesa_logbase2(32);
+
+      if (brw->has_swizzling) {
+         /* Right shift required to swizzle bit 9 of the memory address with
+          * bit 6.
+          */
+         param->swizzling[0] = 3;
+      }
+   }
+
+   /* 3D textures are arranged in 2D in memory with 2^lod slices per row.  The
+    * address calculation algorithm (emit_address_calculation() in
+    * brw_fs_surface_builder.cpp) handles this as a sort of tiling with
+    * modulus equal to the LOD.
+    */
+   param->tiling[2] = (u->TexObj->Target == GL_TEXTURE_3D ? u->Level :
+                       0);
+}
+
+static void
+update_image_surface(struct brw_context *brw,
+                     struct gl_image_unit *u,
+                     GLenum access,
+                     unsigned surface_idx,
+                     uint32_t *surf_offset,
+                     struct brw_image_param *param)
+{
+   if (_mesa_is_image_unit_valid(&brw->ctx, u)) {
+      struct gl_texture_object *obj = u->TexObj;
+      const unsigned format = get_image_format(brw, u->_ActualFormat, access);
+
+      if (obj->Target == GL_TEXTURE_BUFFER) {
+         struct intel_buffer_object *intel_obj =
+            intel_buffer_object(obj->BufferObject);
+         const unsigned texel_size = (format == BRW_SURFACEFORMAT_RAW ? 1 :
+                                      _mesa_get_format_bytes(u->_ActualFormat));
+
+         brw_emit_buffer_surface_state(
+            brw, surf_offset, intel_obj->buffer, obj->BufferOffset,
+            format, intel_obj->Base.Size, texel_size,
+            access != GL_READ_ONLY);
+
+         update_buffer_image_param(brw, u, surface_idx, param);
+
+      } else {
+         struct intel_texture_object *intel_obj = intel_texture_object(obj);
+         struct intel_mipmap_tree *mt = intel_obj->mt;
+
+         if (format == BRW_SURFACEFORMAT_RAW) {
+            brw_emit_buffer_surface_state(
+               brw, surf_offset, mt->bo, mt->offset,
+               format, mt->bo->size - mt->offset, 1 /* pitch */,
+               access != GL_READ_ONLY);
+
+         } else {
+            const unsigned num_layers = (!u->Layered ? 1 :
+                                         obj->Target == GL_TEXTURE_CUBE_MAP ? 6 :
+                                         mt->logical_depth0);
+
+            struct isl_view view = {
+               .format = format,
+               .base_level = obj->MinLevel + u->Level,
+               .levels = 1,
+               .base_array_layer = obj->MinLayer + u->_Layer,
+               .array_len = num_layers,
+               .swizzle = ISL_SWIZZLE_IDENTITY,
+               .usage = ISL_SURF_USAGE_STORAGE_BIT,
+            };
+
+            const int surf_index = surf_offset - &brw->wm.base.surf_offset[0];
+            const int flags =
+               mt->fast_clear_state == INTEL_FAST_CLEAR_STATE_RESOLVED ?
+               INTEL_AUX_BUFFER_DISABLED : 0;
+            brw_emit_surface_state(brw, mt, flags, mt->target, view,
+                                   surface_state_infos[brw->gen].tex_mocs,
+                                   surf_offset, surf_index,
+                                   I915_GEM_DOMAIN_SAMPLER,
+                                   access == GL_READ_ONLY ? 0 :
+                                             I915_GEM_DOMAIN_SAMPLER);
+         }
+
+         update_texture_image_param(brw, u, surface_idx, param);
+      }
+
+   } else {
+      brw->vtbl.emit_null_surface_state(brw, 1, 1, 1, surf_offset);
+      update_default_image_param(brw, u, surface_idx, param);
+   }
+}
+
+void
+brw_upload_image_surfaces(struct brw_context *brw,
+                          struct gl_linked_shader *shader,
+                          struct brw_stage_state *stage_state,
+                          struct brw_stage_prog_data *prog_data)
+{
+   struct gl_context *ctx = &brw->ctx;
+
+   if (shader && shader->NumImages) {
+      for (unsigned i = 0; i < shader->NumImages; i++) {
+         struct gl_image_unit *u = &ctx->ImageUnits[shader->ImageUnits[i]];
+         const unsigned surf_idx = prog_data->binding_table.image_start + i;
+
+         update_image_surface(brw, u, shader->ImageAccess[i],
+                              surf_idx,
+                              &stage_state->surf_offset[surf_idx],
+                              &prog_data->image_param[i]);
+      }
+
+      brw->ctx.NewDriverState |= BRW_NEW_SURFACES;
+      /* This may have changed the image metadata dependent on the context
+       * image unit state and passed to the program as uniforms, make sure
+       * that push and pull constants are reuploaded.
+       */
+      brw->NewGLState |= _NEW_PROGRAM_CONSTANTS;
+   }
+}
+
+static void
+brw_upload_wm_image_surfaces(struct brw_context *brw)
+{
+   struct gl_context *ctx = &brw->ctx;
+   /* BRW_NEW_FRAGMENT_PROGRAM */
+   struct gl_shader_program *prog = ctx->_Shader->_CurrentFragmentProgram;
+
+   if (prog) {
+      /* BRW_NEW_FS_PROG_DATA, BRW_NEW_IMAGE_UNITS, _NEW_TEXTURE */
+      brw_upload_image_surfaces(brw, prog->_LinkedShaders[MESA_SHADER_FRAGMENT],
+                                &brw->wm.base, brw->wm.base.prog_data);
+   }
+}
+
+const struct brw_tracked_state brw_wm_image_surfaces = {
+   .dirty = {
+      .mesa = _NEW_TEXTURE,
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP |
+             BRW_NEW_FRAGMENT_PROGRAM |
+             BRW_NEW_FS_PROG_DATA |
+             BRW_NEW_IMAGE_UNITS
+   },
+   .emit = brw_upload_wm_image_surfaces,
+};
+
+void
+gen4_init_vtable_surface_functions(struct brw_context *brw)
+{
+   brw->vtbl.update_renderbuffer_surface = gen4_update_renderbuffer_surface;
+   brw->vtbl.emit_null_surface_state = brw_emit_null_surface_state;
+}
+
+void
+gen6_init_vtable_surface_functions(struct brw_context *brw)
+{
+   gen4_init_vtable_surface_functions(brw);
+   brw->vtbl.update_renderbuffer_surface = brw_update_renderbuffer_surface;
+}
+
+static void
+brw_upload_cs_work_groups_surface(struct brw_context *brw)
+{
+   struct gl_context *ctx = &brw->ctx;
+   /* _NEW_PROGRAM */
+   struct gl_shader_program *prog =
+      ctx->_Shader->CurrentProgram[MESA_SHADER_COMPUTE];
+   /* BRW_NEW_CS_PROG_DATA */
+   const struct brw_cs_prog_data *cs_prog_data =
+      brw_cs_prog_data(brw->cs.base.prog_data);
+
+   if (prog && cs_prog_data->uses_num_work_groups) {
+      const unsigned surf_idx =
+         cs_prog_data->binding_table.work_groups_start;
+      uint32_t *surf_offset = &brw->cs.base.surf_offset[surf_idx];
+      drm_intel_bo *bo;
+      uint32_t bo_offset;
+
+      if (brw->compute.num_work_groups_bo == NULL) {
+         bo = NULL;
+         intel_upload_data(brw,
+                           (void *)brw->compute.num_work_groups,
+                           3 * sizeof(GLuint),
+                           sizeof(GLuint),
+                           &bo,
+                           &bo_offset);
+      } else {
+         bo = brw->compute.num_work_groups_bo;
+         bo_offset = brw->compute.num_work_groups_offset;
+      }
+
+      brw_emit_buffer_surface_state(brw, surf_offset,
+                                    bo, bo_offset,
+                                    BRW_SURFACEFORMAT_RAW,
+                                    3 * sizeof(GLuint), 1, true);
+      brw->ctx.NewDriverState |= BRW_NEW_SURFACES;
+   }
+}
+
+const struct brw_tracked_state brw_cs_work_groups_surface = {
+   .dirty = {
+      .brw = BRW_NEW_BLORP |
+             BRW_NEW_CS_PROG_DATA |
+             BRW_NEW_CS_WORK_GROUPS
+   },
+   .emit = brw_upload_cs_work_groups_surface,
+};

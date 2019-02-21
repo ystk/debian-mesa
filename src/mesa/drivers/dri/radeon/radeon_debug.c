@@ -27,15 +27,15 @@
  *      Pauli Nieminen <suokkos@gmail.com>
  */
 
-#include "utils.h"
+#include "util/debug.h"
 
-#include "radeon_debug.h"
 #include "radeon_common_context.h"
+#include "radeon_debug.h"
 
 #include <stdarg.h>
 #include <stdio.h>
 
-static const struct dri_debug_control debug_control[] = {
+static const struct debug_control debug_control[] = {
 	{"fall", RADEON_FALLBACKS},
 	{"tex", RADEON_TEXTURE},
 	{"ioctl", RADEON_IOCTL},
@@ -61,7 +61,7 @@ radeon_debug_type_t radeon_enabled_debug_types;
 
 void radeon_init_debug(void)
 {
-	radeon_enabled_debug_types = driParseDebugString(getenv("RADEON_DEBUG"), debug_control);
+	radeon_enabled_debug_types = parse_debug_string(getenv("RADEON_DEBUG"), debug_control);
 
 	radeon_enabled_debug_types |= RADEON_GENERAL;
 }
@@ -93,6 +93,8 @@ void _radeon_print(const radeon_debug_type_t type,
 	   const char* message,
 	   ...)
 {
+	va_list values;
+
 	GET_CURRENT_CONTEXT(ctx);
 	if (ctx) {
 		radeonContextPtr radeon = RADEON_CONTEXT(ctx);
@@ -100,7 +102,6 @@ void _radeon_print(const radeon_debug_type_t type,
 		if (radeon->debug.indent_depth)
 			fprintf(stderr, "%s", radeon->debug.indent);
 	}
-	va_list values;
 	va_start( values, message );
 	vfprintf(stderr, message, values);
 	va_end( values );

@@ -4,20 +4,20 @@
 
 #include "main/mm.h"
 #include "math/m_vector.h"
-#include "texmem.h"
 #include "tnl/t_context.h"
 #include "main/colormac.h"
 
-#include "radeon_debug.h"
 #include "radeon_screen.h"
+#include "radeon_debug.h"
 #include "radeon_drm.h"
 #include "dri_util.h"
 #include "tnl/t_vertex.h"
+#include "swrast/s_context.h"
 
-#include "dri_metaops.h"
 struct radeon_context;
 
-#include "radeon_bocs_wrapper.h"
+#include "radeon_bo_gem.h"
+#include "radeon_cs_gem.h"
 
 /* This union is used to avoid warnings/miscompilation
    with float to uint32_t casts due to strict-aliasing */
@@ -80,19 +80,25 @@ typedef struct radeon_context *radeonContextPtr;
 
 struct radeon_renderbuffer
 {
-	struct gl_renderbuffer base;
+	struct swrast_renderbuffer base;
+
 	struct radeon_bo *bo;
 	unsigned int cpp;
 	/* unsigned int offset; */
 	unsigned int pitch;
+
+	struct radeon_bo *map_bo;
+	GLbitfield map_mode;
+	int map_x, map_y, map_w, map_h;
+	int map_pitch;
+	void *map_buffer;
 
 	uint32_t draw_offset; /* FBO */
 	/* boo Xorg 6.8.2 compat */
 	int has_surface;
 
 	GLuint pf_pending;  /**< sequence number of pending flip */
-	GLuint vbl_pending;   /**< vblank sequence number of pending flip */
-	__DRIdrawablePrivate *dPriv;
+	__DRIdrawable *dPriv;
 };
 
 struct radeon_framebuffer
@@ -100,47 +106,22 @@ struct radeon_framebuffer
 	struct gl_framebuffer base;
 
 	struct radeon_renderbuffer *color_rb[2];
-
-	GLuint vbl_waited;
-
-	/* buffer swap */
-	int64_t swap_ust;
-	int64_t swap_missed_ust;
-
-	GLuint swap_count;
-	GLuint swap_missed_count;
-
-	/* Drawable page flipping state */
-	GLboolean pf_active;
-	GLint pf_current_page;
-	GLint pf_num_pages;
-
 };
 
 
 struct radeon_colorbuffer_state {
-	GLuint clear;
 	int roundEnable;
 	struct gl_renderbuffer *rb;
 	uint32_t draw_offset; /* offset into color renderbuffer - FBOs */
 };
 
 struct radeon_depthbuffer_state {
-	GLuint clear;
 	struct gl_renderbuffer *rb;
 };
 
 struct radeon_scissor_state {
 	drm_clip_rect_t rect;
 	GLboolean enabled;
-
-	GLuint numClipRects;	/* Cliprects active */
-	GLuint numAllocedClipRects;	/* Cliprects available */
-	drm_clip_rect_t *pClipRects;
-};
-
-struct radeon_stencilbuffer_state {
-	GLuint clear;		/* rb3d_stencilrefmask value */
 };
 
 struct radeon_state_atom {
@@ -152,8 +133,8 @@ struct radeon_state_atom {
         GLuint *cmd;		/* one or more cmd's */
 	GLuint *lastcmd;		/* one or more cmd's */
 	GLboolean dirty;	/* dirty-mark in emit_state_list */
-        int (*check) (GLcontext *, struct radeon_state_atom *atom); /* is this state active? */
-        void (*emit) (GLcontext *, struct radeon_state_atom *atom);
+        int (*check) (struct gl_context *, struct radeon_state_atom *atom); /* is this state active? */
+        void (*emit) (struct gl_context *, struct radeon_state_atom *atom);
 };
 
 struct radeon_hw_state {
@@ -168,8 +149,13 @@ struct radeon_hw_state {
 /* Texture related */
 typedef struct _radeon_texture_image radeon_texture_image;
 
+
+/**
+ * This is a subclass of swrast_texture_image since we use swrast
+ * for software fallback rendering.
+ */
 struct _radeon_texture_image {
-	struct gl_texture_image base;
+	struct swrast_texture_image base;
 
 	/**
 	 * If mt != 0, the image is stored in hardware format in the
@@ -181,13 +167,11 @@ struct _radeon_texture_image {
 	 */
 	struct _radeon_mipmap_tree *mt;
 	struct radeon_bo *bo;
-
-	int mtlevel; /** if mt != 0, this is the image's level in the mipmap tree */
-	int mtface; /** if mt != 0, this is the image's face in the mipmap tree */
+	GLboolean used_as_render_target;
 };
 
 
-static INLINE radeon_texture_image *get_radeon_texture_image(struct gl_texture_image *image)
+static inline radeon_texture_image *get_radeon_texture_image(struct gl_texture_image *image)
 {
 	return (radeon_texture_image*)image;
 }
@@ -226,32 +210,10 @@ struct radeon_tex_obj {
 	GLuint pp_border_color;
 	GLuint pp_cubic_faces;	/* cube face 1,2,3,4 log2 sizes */
 
-        GLuint pp_txfilter_1;	/*  r300 */
-
-	/* r700 texture states */
-	GLuint SQ_TEX_RESOURCE0;
-	GLuint SQ_TEX_RESOURCE1;
-	GLuint SQ_TEX_RESOURCE2;
-	GLuint SQ_TEX_RESOURCE3;
-	GLuint SQ_TEX_RESOURCE4;
-	GLuint SQ_TEX_RESOURCE5;
-	GLuint SQ_TEX_RESOURCE6;
-
-	GLuint SQ_TEX_SAMPLER0;
-	GLuint SQ_TEX_SAMPLER1;
-	GLuint SQ_TEX_SAMPLER2;
-
-	GLuint TD_PS_SAMPLER0_BORDER_RED;
-	GLuint TD_PS_SAMPLER0_BORDER_GREEN;
-	GLuint TD_PS_SAMPLER0_BORDER_BLUE;
-	GLuint TD_PS_SAMPLER0_BORDER_ALPHA;
-
 	GLboolean border_fallback;
-
-
 };
 
-static INLINE radeonTexObj* radeon_tex_obj(struct gl_texture_object *texObj)
+static inline radeonTexObj* radeon_tex_obj(struct gl_texture_object *texObj)
 {
 	return (radeonTexObj*)texObj;
 }
@@ -307,7 +269,7 @@ struct radeon_dma {
          * flush must be called before non-active vertex allocations can be
          * performed.
          */
-        void (*flush) (GLcontext *);
+        void (*flush) (struct gl_context *);
 };
 
 /* radeon_swtcl.c
@@ -328,6 +290,7 @@ struct radeon_swtcl_info {
 	GLuint vertex_attr_count;
 
 	GLuint emit_prediction;
+        struct radeon_bo *bo;
 };
 
 #define RADEON_MAX_AOS_ARRAYS		16
@@ -353,7 +316,7 @@ struct radeon_prim {
 	GLuint prim;
 };
 
-static INLINE GLuint radeonPackColor(GLuint cpp,
+static inline GLuint radeonPackColor(GLuint cpp,
                                      GLubyte r, GLubyte g,
                                      GLubyte b, GLubyte a)
 {
@@ -379,17 +342,6 @@ struct radeon_store {
 	int elts_start;
 };
 
-struct radeon_dri_mirror {
-	__DRIcontextPrivate *context;	/* DRI context */
-	__DRIscreenPrivate *screen;	/* DRI screen */
-
-	drm_context_t hwContext;
-	drm_hw_lock_t *hwLock;
-	int hwLockCount;
-	int fd;
-	int drmMinor;
-};
-
 typedef void (*radeon_tri_func) (radeonContextPtr,
 				 radeonVertex *,
 				 radeonVertex *, radeonVertex *);
@@ -404,7 +356,6 @@ struct radeon_state {
 	struct radeon_colorbuffer_state color;
 	struct radeon_depthbuffer_state depth;
 	struct radeon_scissor_state scissor;
-	struct radeon_stencilbuffer_state stencil;
 };
 
 /**
@@ -422,7 +373,8 @@ struct radeon_cmdbuf {
 };
 
 struct radeon_context {
-   GLcontext *glCtx;
+   struct gl_context glCtx;             /**< base class, must be first */
+   __DRIcontext *driContext;               /* DRI context */
    radeonScreenPtr radeonScreen;	/* Screen private DRI data */
 
    /* Texture object bookkeeping
@@ -440,16 +392,10 @@ struct radeon_context {
    GLuint TclFallback;
    GLuint Fallback;
    GLuint NewGLState;
-   DECLARE_RENDERINPUTS(tnl_index_bitset);	/* index of bits for last tnl_install_attrs */
+   GLbitfield64 tnl_index_bitset;	/* index of bits for last tnl_install_attrs */
 
-   /* Drawable, cliprect and scissor information */
-   GLuint numClipRects;	/* Cliprects for the draw buffer */
-   drm_clip_rect_t *pClipRects;
+   /* Drawable information */
    unsigned int lastStamp;
-   drm_radeon_sarea_t *sarea;	/* Private SAREA data */
-
-   /* Mirrors of some DRI state */
-   struct radeon_dri_mirror dri;
 
    /* Busy waiting */
    GLuint do_usleeps;
@@ -471,11 +417,10 @@ struct radeon_context {
    struct radeon_debug debug;
 
   drm_clip_rect_t fboRect;
-  GLboolean constant_cliprect; /* use for FBO or DRI2 rendering */
   GLboolean front_cliprects;
 
    /**
-    * Set if rendering has occured to the drawable's front buffer.
+    * Set if rendering has occurred to the drawable's front buffer.
     *
     * This is used in the DRI2 case to detect that glFlush should also copy
     * the contents of the fake front buffer to the real front buffer.
@@ -499,96 +444,78 @@ struct radeon_context {
     */
    GLboolean is_front_buffer_reading;
 
-   struct dri_metaops meta;
-
    struct {
 	struct radeon_query_object *current;
 	struct radeon_state_atom queryobj;
    } query;
 
    struct {
-	   void (*get_lock)(radeonContextPtr radeon);
-	   void (*update_viewport_offset)(GLcontext *ctx);
-	   void (*emit_cs_header)(struct radeon_cs *cs, radeonContextPtr rmesa);
-	   void (*swtcl_flush)(GLcontext *ctx, uint32_t offset);
-	   void (*pre_emit_atoms)(radeonContextPtr rmesa);
+	   void (*swtcl_flush)(struct gl_context *ctx, uint32_t offset);
 	   void (*pre_emit_state)(radeonContextPtr rmesa);
-	   void (*fallback)(GLcontext *ctx, GLuint bit, GLboolean mode);
-	   void (*free_context)(GLcontext *ctx);
+	   void (*fallback)(struct gl_context *ctx, GLuint bit, GLboolean mode);
+	   void (*free_context)(struct gl_context *ctx);
 	   void (*emit_query_finish)(radeonContextPtr radeon);
-	   void (*update_scissor)(GLcontext *ctx);
+	   void (*update_scissor)(struct gl_context *ctx);
+	   unsigned (*check_blit)(mesa_format mesa_format, uint32_t dst_pitch);
+	   unsigned (*blit)(struct gl_context *ctx,
+                        struct radeon_bo *src_bo,
+                        intptr_t src_offset,
+                        mesa_format src_mesaformat,
+                        unsigned src_pitch,
+                        unsigned src_width,
+                        unsigned src_height,
+                        unsigned src_x_offset,
+                        unsigned src_y_offset,
+                        struct radeon_bo *dst_bo,
+                        intptr_t dst_offset,
+                        mesa_format dst_mesaformat,
+                        unsigned dst_pitch,
+                        unsigned dst_width,
+                        unsigned dst_height,
+                        unsigned dst_x_offset,
+                        unsigned dst_y_offset,
+                        unsigned reg_width,
+                        unsigned reg_height,
+                        unsigned flip_y);
+	   unsigned (*is_format_renderable)(mesa_format mesa_format);
+	   GLboolean (*revalidate_all_buffers)(struct gl_context *ctx);
    } vtbl;
 };
 
-#define RADEON_CONTEXT(glctx) ((radeonContextPtr)(ctx->DriverCtx))
-
-static inline __DRIdrawablePrivate* radeon_get_drawable(radeonContextPtr radeon)
+static inline radeonContextPtr RADEON_CONTEXT(struct gl_context *ctx)
 {
-	return radeon->dri.context->driDrawablePriv;
+	return (radeonContextPtr) ctx;
 }
 
-static inline __DRIdrawablePrivate* radeon_get_readable(radeonContextPtr radeon)
+static inline __DRIdrawable* radeon_get_drawable(radeonContextPtr radeon)
 {
-	return radeon->dri.context->driReadablePriv;
+	return radeon->driContext->driDrawablePriv;
 }
 
-/**
- * This function takes a float and packs it into a uint32_t
- */
-static INLINE uint32_t radeonPackFloat32(float fl)
+static inline __DRIdrawable* radeon_get_readable(radeonContextPtr radeon)
 {
-	union {
-		float fl;
-		uint32_t u;
-	} u;
-
-	u.fl = fl;
-	return u.u;
+	return radeon->driContext->driReadablePriv;
 }
 
-/* This is probably wrong for some values, I need to test this
- * some more.  Range checking would be a good idea also..
- *
- * But it works for most things.  I'll fix it later if someone
- * else with a better clue doesn't
- */
-static INLINE uint32_t radeonPackFloat24(float f)
-{
-	float mantissa;
-	int exponent;
-	uint32_t float24 = 0;
+extern const char const *radeonVendorString;
 
-	if (f == 0.0)
-		return 0;
-
-	mantissa = frexpf(f, &exponent);
-
-	/* Handle -ve */
-	if (mantissa < 0) {
-		float24 |= (1 << 23);
-		mantissa = mantissa * -1.0;
-	}
-	/* Handle exponent, bias of 63 */
-	exponent += 62;
-	float24 |= (exponent << 16);
-	/* Kill 7 LSB of mantissa */
-	float24 |= (radeonPackFloat32(mantissa) & 0x7FFFFF) >> 7;
-
-	return float24;
-}
+const char *radeonGetRendererString(radeonScreenPtr radeonScreen);
 
 GLboolean radeonInitContext(radeonContextPtr radeon,
+                            gl_api api,
 			    struct dd_function_table* functions,
-			    const __GLcontextModes * glVisual,
-			    __DRIcontextPrivate * driContextPriv,
+			    const struct gl_config * glVisual,
+			    __DRIcontext * driContextPriv,
 			    void *sharedContextPrivate);
 
 void radeonCleanupContext(radeonContextPtr radeon);
-GLboolean radeonUnbindContext(__DRIcontextPrivate * driContextPriv);
-void radeon_update_renderbuffers(__DRIcontext *context, __DRIdrawable *drawable);
-GLboolean radeonMakeCurrent(__DRIcontextPrivate * driContextPriv,
-			    __DRIdrawablePrivate * driDrawPriv,
-			    __DRIdrawablePrivate * driReadPriv);
-extern void radeonDestroyContext(__DRIcontextPrivate * driContextPriv);
+GLboolean radeonUnbindContext(__DRIcontext * driContextPriv);
+void radeon_update_renderbuffers(__DRIcontext *context, __DRIdrawable *drawable,
+				 GLboolean front_only);
+GLboolean radeonMakeCurrent(__DRIcontext * driContextPriv,
+			    __DRIdrawable * driDrawPriv,
+			    __DRIdrawable * driReadPriv);
+extern void radeonDestroyContext(__DRIcontext * driContextPriv);
+void radeon_prepare_render(radeonContextPtr radeon);
 
 #endif

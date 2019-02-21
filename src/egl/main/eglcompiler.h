@@ -1,64 +1,46 @@
+/**************************************************************************
+ *
+ * Copyright 2009-2010 Chia-I Wu <olvaffe@gmail.com>
+ * Copyright 2010 LunarG, Inc.
+ * All Rights Reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sub license, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial portions
+ * of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ *
+ **************************************************************************/
+
+
 #ifndef EGLCOMPILER_INCLUDED
 #define EGLCOMPILER_INCLUDED
 
-
-/**
- * Get standard integer types
- */
-#if (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L)
-#  include <stdint.h>
-#elif defined(_MSC_VER)
-   typedef __int8             int8_t;
-   typedef unsigned __int8    uint8_t;
-   typedef __int16            int16_t;
-   typedef unsigned __int16   uint16_t;
-#  ifndef __eglplatform_h_
-     typedef __int32            int32_t;
-#  endif
-   typedef unsigned __int32   uint32_t;
-   typedef __int64            int64_t;
-   typedef unsigned __int64   uint64_t;
-
-#  if defined(_WIN64)
-     typedef __int64            intptr_t;
-     typedef unsigned __int64   uintptr_t;
-#  else
-     typedef __int32            intptr_t;
-     typedef unsigned __int32   uintptr_t;
-#  endif
-
-#  define INT64_C(__val) __val##i64
-#  define UINT64_C(__val) __val##ui64
-#else
-/* hope the best instead of adding a bunch of ifdef's */
-#  include <stdint.h>
+#ifdef __cplusplus
+extern "C" {
 #endif
 
+#define STATIC_ASSERT(COND) \
+   do { \
+      (void) sizeof(char [1 - 2*!(COND)]); \
+   } while (0)
 
-/**
- * Function inlining
- */
-#if defined(__GNUC__)
-#  define INLINE __inline__
-#elif defined(__MSC__)
-#  define INLINE __inline
-#elif defined(_MSC_VER)
-#  define INLINE __inline
-#elif defined(__ICL)
-#  define INLINE __inline
-#elif defined(__INTEL_COMPILER)
-#  define INLINE inline
-#elif defined(__WATCOMC__) && (__WATCOMC__ >= 1100)
-#  define INLINE __inline
-#elif defined(__SUNPRO_C) && defined(__C99FEATURES__)
-#  define INLINE inline
-#  define __inline inline
-#  define __inline__ inline
-#elif (__STDC_VERSION__ >= 199901L) /* C99 */
-#  define INLINE inline
-#else
-#  define INLINE
+#ifdef __cplusplus
+}
 #endif
-
 
 #endif /* EGLCOMPILER_INCLUDED */

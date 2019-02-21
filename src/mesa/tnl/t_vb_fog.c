@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  6.5
  *
  * Copyright (C) 1999-2006  Brian Paul   All Rights Reserved.
  *
@@ -17,18 +16,18 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  *
  * Authors:
- *    Keith Whitwell <keith@tungstengraphics.com>
+ *    Keith Whitwell <keithw@vmware.com>
  */
 
 
+#include "c99_math.h"
 #include "main/glheader.h"
-#include "main/colormac.h"
-#include "main/context.h"
 #include "main/macros.h"
 #include "main/imports.h"
 #include "main/mtypes.h"
@@ -46,8 +45,8 @@ struct fog_stage_data {
 #define FOG_STAGE_DATA(stage) ((struct fog_stage_data *)stage->privatePtr)
 
 #define FOG_EXP_TABLE_SIZE 256
-#define FOG_MAX (10.0)
-#define EXP_FOG_MAX .0006595
+#define FOG_MAX (10.0F)
+#define EXP_FOG_MAX .0006595F
 #define FOG_INCR (FOG_MAX/FOG_EXP_TABLE_SIZE)
 static GLfloat exp_table[FOG_EXP_TABLE_SIZE];
 static GLfloat inited = 0;
@@ -55,7 +54,7 @@ static GLfloat inited = 0;
 #if 1
 #define NEG_EXP( result, narg )						\
 do {									\
-   GLfloat f = (GLfloat) (narg * (1.0/FOG_INCR));			\
+   GLfloat f = (GLfloat) (narg * (1.0F / FOG_INCR));			\
    GLint k = (GLint) f;							\
    if (k > FOG_EXP_TABLE_SIZE-2) 					\
       result = (GLfloat) EXP_FOG_MAX;					\
@@ -79,7 +78,7 @@ init_static_data( void )
    GLfloat f = 0.0F;
    GLint i = 0;
    for ( ; i < FOG_EXP_TABLE_SIZE ; i++, f += FOG_INCR) {
-      exp_table[i] = EXPF(-f);
+      exp_table[i] = expf(-f);
    }
    inited = 1;
 }
@@ -95,7 +94,7 @@ init_static_data( void )
  * Fog blend factors are in the range [0,1].
  */
 static void
-compute_fog_blend_factors(GLcontext *ctx, GLvector4f *out, const GLvector4f *in)
+compute_fog_blend_factors(struct gl_context *ctx, GLvector4f *out, const GLvector4f *in)
 {
    GLfloat end  = ctx->Fog.End;
    GLfloat *v = in->start;
@@ -141,7 +140,7 @@ compute_fog_blend_factors(GLcontext *ctx, GLvector4f *out, const GLvector4f *in)
 
 
 static GLboolean
-run_fog_stage(GLcontext *ctx, struct tnl_pipeline_stage *stage)
+run_fog_stage(struct gl_context *ctx, struct tnl_pipeline_stage *stage)
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    struct vertex_buffer *VB = &tnl->vb;
@@ -156,7 +155,7 @@ run_fog_stage(GLcontext *ctx, struct tnl_pipeline_stage *stage)
       GLuint i;
       GLfloat *coord;
       /* Fog is computed from vertex or fragment Z values */
-      /* source = VB->ObjPtr or VB->EyePtr coords */
+      /* source = VB->AttribPtr[_TNL_ATTRIB_POS] or VB->EyePtr coords */
       /* dest = VB->AttribPtr[_TNL_ATTRIB_FOG] = fog stage private storage */
       VB->AttribPtr[_TNL_ATTRIB_FOG] = &store->fogcoord;
 
@@ -176,17 +175,18 @@ run_fog_stage(GLcontext *ctx, struct tnl_pipeline_stage *stage)
 	 /* Full eye coords weren't required, just calculate the
 	  * eye Z values.
 	  */
-	 _mesa_dotprod_tab[VB->ObjPtr->size]( (GLfloat *) input->data,
-					      4 * sizeof(GLfloat),
-					      VB->ObjPtr, plane );
+	 _mesa_dotprod_tab[VB->AttribPtr[_TNL_ATTRIB_POS]->size]
+	    ( (GLfloat *) input->data,
+	      4 * sizeof(GLfloat),
+	      VB->AttribPtr[_TNL_ATTRIB_POS], plane );
 
-	 input->count = VB->ObjPtr->count;
+	 input->count = VB->AttribPtr[_TNL_ATTRIB_POS]->count;
 
 	 /* make sure coords are really positive
 	    NOTE should avoid going through array twice */
 	 coord = input->start;
 	 for (i = 0; i < input->count; i++) {
-	    *coord = FABSF(*coord);
+	    *coord = fabsf(*coord);
 	    STRIDE_F(coord, input->stride);
 	 }
       }
@@ -201,7 +201,7 @@ run_fog_stage(GLcontext *ctx, struct tnl_pipeline_stage *stage)
 	 input->count = VB->EyePtr->count;
 	 coord = VB->EyePtr->start;
 	 for (i = 0 ; i < VB->EyePtr->count; i++) {
-	    input->data[i][0] = FABSF(coord[2]);
+	    input->data[i][0] = fabsf(coord[2]);
 	    STRIDE_F(coord, VB->EyePtr->stride);
 	 }
       }
@@ -213,7 +213,7 @@ run_fog_stage(GLcontext *ctx, struct tnl_pipeline_stage *stage)
       /* input->count may be one if glFogCoord was only called once
        * before glBegin.  But we need to compute fog for all vertices.
        */
-      input->count = VB->ObjPtr->count;
+      input->count = VB->AttribPtr[_TNL_ATTRIB_POS]->count;
 
       VB->AttribPtr[_TNL_ATTRIB_FOG] = &store->fogcoord;  /* dest data */
    }
@@ -227,7 +227,6 @@ run_fog_stage(GLcontext *ctx, struct tnl_pipeline_stage *stage)
       VB->AttribPtr[_TNL_ATTRIB_FOG] = input;
    }
 
-   VB->FogCoordPtr = VB->AttribPtr[_TNL_ATTRIB_FOG];
    return GL_TRUE;
 }
 
@@ -236,11 +235,11 @@ run_fog_stage(GLcontext *ctx, struct tnl_pipeline_stage *stage)
 /* Called the first time stage->run() is invoked.
  */
 static GLboolean
-alloc_fog_data(GLcontext *ctx, struct tnl_pipeline_stage *stage)
+alloc_fog_data(struct gl_context *ctx, struct tnl_pipeline_stage *stage)
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    struct fog_stage_data *store;
-   stage->privatePtr = MALLOC(sizeof(*store));
+   stage->privatePtr = malloc(sizeof(*store));
    store = FOG_STAGE_DATA(stage);
    if (!store)
       return GL_FALSE;
@@ -260,7 +259,7 @@ free_fog_data(struct tnl_pipeline_stage *stage)
    struct fog_stage_data *store = FOG_STAGE_DATA(stage);
    if (store) {
       _mesa_vector4f_free( &store->fogcoord );
-      FREE( store );
+      free( store );
       stage->privatePtr = NULL;
    }
 }

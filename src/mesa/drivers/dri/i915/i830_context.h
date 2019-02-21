@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2003 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -34,17 +34,18 @@
 #define I830_FALLBACK_COLORMASK		 0x2000
 #define I830_FALLBACK_STENCIL		 0x4000
 #define I830_FALLBACK_STIPPLE		 0x8000
-#define I830_FALLBACK_LOGICOP		 0x10000
+#define I830_FALLBACK_LOGICOP		 0x20000
+#define I830_FALLBACK_DRAW_OFFSET	 0x200000
 
 #define I830_UPLOAD_CTX              0x1
 #define I830_UPLOAD_BUFFERS          0x2
 #define I830_UPLOAD_STIPPLE          0x4
 #define I830_UPLOAD_INVARIENT        0x8
 #define I830_UPLOAD_RASTER_RULES     0x10
-#define I830_UPLOAD_TEX(i)           (0x10<<(i))
-#define I830_UPLOAD_TEXBLEND(i)      (0x100<<(i))
-#define I830_UPLOAD_TEX_ALL          (0x0f0)
-#define I830_UPLOAD_TEXBLEND_ALL     (0xf00)
+#define I830_UPLOAD_TEX(i)           (0x0100<<(i))
+#define I830_UPLOAD_TEXBLEND(i)      (0x1000<<(i))
+#define I830_UPLOAD_TEX_ALL          (0x0f00)
+#define I830_UPLOAD_TEXBLEND_ALL     (0xf000)
 
 /* State structure offsets - these will probably disappear.
  */
@@ -54,10 +55,10 @@
 #define I830_DESTREG_DBUFADDR1 3
 #define I830_DESTREG_DV0 4
 #define I830_DESTREG_DV1 5
-#define I830_DESTREG_SENABLE 6
-#define I830_DESTREG_SR0 7
-#define I830_DESTREG_SR1 8
-#define I830_DESTREG_SR2 9
+#define I830_DESTREG_SR0 6
+#define I830_DESTREG_SR1 7
+#define I830_DESTREG_SR2 8
+#define I830_DESTREG_SENABLE 9
 #define I830_DESTREG_DRAWRECT0 10
 #define I830_DESTREG_DRAWRECT1 11
 #define I830_DESTREG_DRAWRECT2 12
@@ -130,7 +131,7 @@ struct i830_hw_state
     * be from a PBO or FBO.  Will have to do this for draw and depth for
     * FBO's...
     */
-   dri_bo *tex_buffer[I830_TEX_UNITS];
+   drm_intel_bo *tex_buffer[I830_TEX_UNITS];
    GLuint tex_offset[I830_TEX_UNITS];
 
    GLuint emitted;              /* I810_UPLOAD_* */
@@ -142,9 +143,9 @@ struct i830_context
    struct intel_context intel;
 
    GLuint lodbias_tm0s3[MAX_TEXTURE_UNITS];
-     DECLARE_RENDERINPUTS(last_index_bitset);
+   GLbitfield64 last_index_bitset;
 
-   struct i830_hw_state meta, initial, state, *current;
+   struct i830_hw_state state;
 };
 
 
@@ -176,9 +177,14 @@ i830_state_draw_region(struct intel_context *intel,
                        struct intel_region *depth_region);
 /* i830_context.c
  */
-extern GLboolean
-i830CreateContext(const __GLcontextModes * mesaVis,
-                  __DRIcontextPrivate * driContextPriv,
+extern bool
+i830CreateContext(int api,
+                  const struct gl_config * mesaVis,
+                  __DRIcontext * driContextPriv,
+                  unsigned major_version,
+                  unsigned minor_version,
+                  uint32_t flags,
+                  unsigned *error,
                   void *sharedContextPrivate);
 
 /* i830_tex.c, i830_texstate.c
@@ -204,18 +210,14 @@ extern void i830InitStateFuncs(struct dd_function_table *functions);
 extern void i830EmitState(struct i830_context *i830);
 
 extern void i830InitState(struct i830_context *i830);
-extern void i830_update_provoking_vertex(GLcontext *ctx);
-
-/* i830_metaops.c
- */
-extern void i830InitMetaFuncs(struct i830_context *i830);
+extern void i830_update_provoking_vertex(struct gl_context *ctx);
 
 /*======================================================================
  * Inline conversion functions.  These are better-typed than the
  * macros used previously:
  */
-static INLINE struct i830_context *
-i830_context(GLcontext * ctx)
+static inline struct i830_context *
+i830_context(struct gl_context * ctx)
 {
    return (struct i830_context *) ctx;
 }

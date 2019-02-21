@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  6.5.3
  *
  * Copyright (C) 1999-2007  Brian Paul   All Rights Reserved.
  *
@@ -17,12 +16,13 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  *
  * Authors:
- *    Keith Whitwell <keith@tungstengraphics.com>
+ *    Keith Whitwell <keithw@vmware.com>
  */
 
 #include "main/glheader.h"
@@ -35,7 +35,7 @@
 #include "t_vp_build.h"
 #include "t_vertex.h"
 
-void _tnl_install_pipeline( GLcontext *ctx,
+void _tnl_install_pipeline( struct gl_context *ctx,
 			    const struct tnl_pipeline_stage **stages )
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
@@ -47,7 +47,7 @@ void _tnl_install_pipeline( GLcontext *ctx,
     */
    for (i = 0 ; i < MAX_PIPELINE_STAGES && stages[i] ; i++) {
       struct tnl_pipeline_stage *s = &tnl->pipeline.stages[i];
-      MEMCPY(s, stages[i], sizeof(*s));
+      memcpy(s, stages[i], sizeof(*s));
       if (s->create)
 	 s->create(ctx, s);
    }
@@ -55,7 +55,7 @@ void _tnl_install_pipeline( GLcontext *ctx,
    tnl->pipeline.nr_stages = i;
 }
 
-void _tnl_destroy_pipeline( GLcontext *ctx )
+void _tnl_destroy_pipeline( struct gl_context *ctx )
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    GLuint i;
@@ -71,7 +71,7 @@ void _tnl_destroy_pipeline( GLcontext *ctx )
 
 
 
-static GLuint check_input_changes( GLcontext *ctx )
+static GLuint check_input_changes( struct gl_context *ctx )
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    GLuint i;
@@ -85,20 +85,16 @@ static GLuint check_input_changes( GLcontext *ctx )
       }
    }
 
-   if (tnl->pipeline.input_changes &&
-      tnl->Driver.NotifyInputChanges) 
-      tnl->Driver.NotifyInputChanges( ctx, tnl->pipeline.input_changes );
-
    return tnl->pipeline.input_changes;
 }
 
 
-static GLuint check_output_changes( GLcontext *ctx )
+static GLuint check_output_changes( struct gl_context *ctx )
 {
 #if 0
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    
-   for (i = 0; i < VERT_RESULT_MAX; i++) {
+   for (i = 0; i < VARYING_SLOT_MAX; i++) {
       if (tnl->vb.ResultPtr[i]->size != tnl->last_result_size[i] ||
 	  tnl->vb.ResultPtr[i]->stride != tnl->last_result_stride[i]) {
 	 tnl->last_result_size[i] = tnl->vb.ResultPtr[i]->size;
@@ -116,8 +112,86 @@ static GLuint check_output_changes( GLcontext *ctx )
 #endif
 }
 
+/**
+ * START/END_FAST_MATH macros:
+ *
+ * START_FAST_MATH: Set x86 FPU to faster, 32-bit precision mode (and save
+ *                  original mode to a temporary).
+ * END_FAST_MATH: Restore x86 FPU to original mode.
+ */
+#if defined(__GNUC__) && defined(__i386__)
+/*
+ * Set the x86 FPU control word to guarentee only 32 bits of precision
+ * are stored in registers.  Allowing the FPU to store more introduces
+ * differences between situations where numbers are pulled out of memory
+ * vs. situations where the compiler is able to optimize register usage.
+ *
+ * In the worst case, we force the compiler to use a memory access to
+ * truncate the float, by specifying the 'volatile' keyword.
+ */
+/* Hardware default: All exceptions masked, extended double precision,
+ * round to nearest (IEEE compliant):
+ */
+#define DEFAULT_X86_FPU		0x037f
+/* All exceptions masked, single precision, round to nearest:
+ */
+#define FAST_X86_FPU		0x003f
+/* The fldcw instruction will cause any pending FP exceptions to be
+ * raised prior to entering the block, and we clear any pending
+ * exceptions before exiting the block.  Hence, asm code has free
+ * reign over the FPU while in the fast math block.
+ */
+#if defined(NO_FAST_MATH)
+#define START_FAST_MATH(x)						\
+do {									\
+   static GLuint mask = DEFAULT_X86_FPU;				\
+   __asm__ ( "fnstcw %0" : "=m" (*&(x)) );				\
+   __asm__ ( "fldcw %0" : : "m" (mask) );				\
+} while (0)
+#else
+#define START_FAST_MATH(x)						\
+do {									\
+   static GLuint mask = FAST_X86_FPU;					\
+   __asm__ ( "fnstcw %0" : "=m" (*&(x)) );				\
+   __asm__ ( "fldcw %0" : : "m" (mask) );				\
+} while (0)
+#endif
+/* Restore original FPU mode, and clear any exceptions that may have
+ * occurred in the FAST_MATH block.
+ */
+#define END_FAST_MATH(x)						\
+do {									\
+   __asm__ ( "fnclex ; fldcw %0" : : "m" (*&(x)) );			\
+} while (0)
 
-void _tnl_run_pipeline( GLcontext *ctx )
+#elif defined(_MSC_VER) && defined(_M_IX86)
+#define DEFAULT_X86_FPU		0x037f /* See GCC comments above */
+#define FAST_X86_FPU		0x003f /* See GCC comments above */
+#if defined(NO_FAST_MATH)
+#define START_FAST_MATH(x) do {\
+	static GLuint mask = DEFAULT_X86_FPU;\
+	__asm fnstcw word ptr [x]\
+	__asm fldcw word ptr [mask]\
+} while(0)
+#else
+#define START_FAST_MATH(x) do {\
+	static GLuint mask = FAST_X86_FPU;\
+	__asm fnstcw word ptr [x]\
+	__asm fldcw word ptr [mask]\
+} while(0)
+#endif
+#define END_FAST_MATH(x) do {\
+	__asm fnclex\
+	__asm fldcw word ptr [x]\
+} while(0)
+
+#else
+#define START_FAST_MATH(x)  x = 0
+#define END_FAST_MATH(x)  (void)(x)
+#endif
+
+
+void _tnl_run_pipeline( struct gl_context *ctx )
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    unsigned short __tmp;
@@ -150,7 +224,17 @@ void _tnl_run_pipeline( GLcontext *ctx )
 	 _tnl_notify_pipeline_output_change( ctx );
    }
 
+#ifndef _OPENMP
+   /* Don't adjust FPU precision mode in case multiple threads are to be used.
+    * This would require that the additional threads also changed the FPU mode
+    * which is quite a mess as this had to be done in all parallelized sections;
+    * otherwise the master thread and all other threads are running in different
+    * modes, producing inconsistent results.
+    * Note that all x64 implementations don't define/use START_FAST_MATH, so
+    * this is "hack" is only used in i386 mode
+    */
    START_FAST_MATH(__tmp);
+#endif
 
    for (i = 0; i < tnl->pipeline.nr_stages ; i++) {
       struct tnl_pipeline_stage *s = &tnl->pipeline.stages[i];
@@ -158,7 +242,9 @@ void _tnl_run_pipeline( GLcontext *ctx )
 	 break;
    }
 
+#ifndef _OPENMP
    END_FAST_MATH(__tmp);
+#endif
 }
 
 

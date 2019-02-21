@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -27,7 +27,8 @@
 
 
 #include "main/context.h"
-#include "shader/prog_print.h"
+#include "main/debug_output.h"
+#include "program/prog_print.h"
 
 #include "pipe/p_state.h"
 #include "pipe/p_shader_tokens.h"
@@ -45,15 +46,24 @@
 int ST_DEBUG = 0;
 
 static const struct debug_named_value st_debug_flags[] = {
-   { "mesa",     DEBUG_MESA },
-   { "tgsi",     DEBUG_TGSI },
-   { "pipe",     DEBUG_PIPE },
-   { "tex",      DEBUG_TEX },
-   { "fallback", DEBUG_FALLBACK },
-   { "screen",   DEBUG_SCREEN },
-   { "query",    DEBUG_QUERY },
-   {NULL, 0}
+   { "mesa",     DEBUG_MESA, NULL },
+   { "tgsi",     DEBUG_TGSI, NULL },
+   { "constants",DEBUG_CONSTANTS, NULL },
+   { "pipe",     DEBUG_PIPE, NULL },
+   { "tex",      DEBUG_TEX, NULL },
+   { "fallback", DEBUG_FALLBACK, NULL },
+   { "screen",   DEBUG_SCREEN, NULL },
+   { "query",    DEBUG_QUERY, NULL },
+   { "draw",     DEBUG_DRAW, NULL },
+   { "buffer",   DEBUG_BUFFER, NULL },
+   { "wf",       DEBUG_WIREFRAME, NULL },
+   { "precompile",  DEBUG_PRECOMPILE, NULL },
+   { "gremedy",  DEBUG_GREMEDY, "Enable GREMEDY debug extensions" },
+   { "noreadpixcache", DEBUG_NOREADPIXCACHE, NULL },
+   DEBUG_NAMED_VALUE_END
 };
+
+DEBUG_GET_ONCE_FLAGS_OPTION(st_debug, "ST_DEBUG", st_debug_flags, 0)
 #endif
 
 
@@ -61,7 +71,7 @@ void
 st_debug_init(void)
 {
 #ifdef DEBUG
-   ST_DEBUG = debug_get_flags_option("ST_DEBUG", st_debug_flags, 0 );
+   ST_DEBUG = debug_get_option_st_debug();
 #endif
 }
 
@@ -75,7 +85,7 @@ void
 st_print_current(void)
 {
    GET_CURRENT_CONTEXT(ctx);
-   struct st_context *st = ctx->st;
+   struct st_context *st = st_context(ctx);
 
 #if 0
    int i;
@@ -86,13 +96,90 @@ st_print_current(void)
    }
 #endif
 
-   tgsi_dump( st->vp->state.tokens, 0 );
+   if (st->vp->variants)
+      tgsi_dump( st->vp->variants[0].tgsi.tokens, 0 );
    if (st->vp->Base.Base.Parameters)
       _mesa_print_parameter_list(st->vp->Base.Base.Parameters);
 
-   tgsi_dump( st->fp->state.tokens, 0 );
+   tgsi_dump(st->fp->tgsi.tokens, 0);
    if (st->fp->Base.Base.Parameters)
       _mesa_print_parameter_list(st->fp->Base.Base.Parameters);
 }
 
 
+/**
+ * Installed as pipe_debug_callback when GL_DEBUG_OUTPUT is enabled.
+ */
+static void
+st_debug_message(void *data,
+                 unsigned *id,
+                 enum pipe_debug_type ptype,
+                 const char *fmt,
+                 va_list args)
+{
+   struct st_context *st = data;
+   enum mesa_debug_source source;
+   enum mesa_debug_type type;
+   enum mesa_debug_severity severity;
+
+   switch (ptype) {
+   case PIPE_DEBUG_TYPE_OUT_OF_MEMORY:
+      source = MESA_DEBUG_SOURCE_API;
+      type = MESA_DEBUG_TYPE_ERROR;
+      severity = MESA_DEBUG_SEVERITY_MEDIUM;
+      break;
+   case PIPE_DEBUG_TYPE_ERROR:
+      source = MESA_DEBUG_SOURCE_API;
+      type = MESA_DEBUG_TYPE_ERROR;
+      severity = MESA_DEBUG_SEVERITY_MEDIUM;
+      break;
+   case PIPE_DEBUG_TYPE_SHADER_INFO:
+      source = MESA_DEBUG_SOURCE_SHADER_COMPILER;
+      type = MESA_DEBUG_TYPE_OTHER;
+      severity = MESA_DEBUG_SEVERITY_NOTIFICATION;
+      break;
+   case PIPE_DEBUG_TYPE_PERF_INFO:
+      source = MESA_DEBUG_SOURCE_API;
+      type = MESA_DEBUG_TYPE_PERFORMANCE;
+      severity = MESA_DEBUG_SEVERITY_NOTIFICATION;
+      break;
+   case PIPE_DEBUG_TYPE_INFO:
+      source = MESA_DEBUG_SOURCE_API;
+      type = MESA_DEBUG_TYPE_OTHER;
+      severity = MESA_DEBUG_SEVERITY_NOTIFICATION;
+      break;
+   case PIPE_DEBUG_TYPE_FALLBACK:
+      source = MESA_DEBUG_SOURCE_API;
+      type = MESA_DEBUG_TYPE_PERFORMANCE;
+      severity = MESA_DEBUG_SEVERITY_NOTIFICATION;
+      break;
+   case PIPE_DEBUG_TYPE_CONFORMANCE:
+      source = MESA_DEBUG_SOURCE_API;
+      type = MESA_DEBUG_TYPE_OTHER;
+      severity = MESA_DEBUG_SEVERITY_NOTIFICATION;
+      break;
+   default:
+      unreachable("invalid debug type");
+   }
+   _mesa_gl_vdebug(st->ctx, id, source, type, severity, fmt, args);
+}
+
+void
+st_update_debug_callback(struct st_context *st)
+{
+   struct pipe_context *pipe = st->pipe;
+
+   if (!pipe->set_debug_callback)
+      return;
+
+   if (_mesa_get_debug_state_int(st->ctx, GL_DEBUG_OUTPUT)) {
+      struct pipe_debug_callback cb;
+      memset(&cb, 0, sizeof(cb));
+      cb.async = !_mesa_get_debug_state_int(st->ctx, GL_DEBUG_OUTPUT_SYNCHRONOUS);
+      cb.debug_message = st_debug_message;
+      cb.data = st;
+      pipe->set_debug_callback(pipe, &cb);
+   } else {
+      pipe->set_debug_callback(pipe, NULL);
+   }
+}

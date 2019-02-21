@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  6.1
  *
  * Copyright (C) 1999-2004  Brian Paul   All Rights Reserved.
  *
@@ -17,9 +16,10 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 /*
@@ -183,11 +183,11 @@ static int test_transform_function( transform_func func, int psize,
       return 0;
    }
 
-   mat->m = (GLfloat *) ALIGN_MALLOC( 16 * sizeof(GLfloat), 16 );
+   mat->m = _mesa_align_malloc( 16 * sizeof(GLfloat), 16 );
    mat->type = mtypes[mtype];
 
    m = mat->m;
-   ASSERT( ((long)m & 15) == 0 );
+   assert( ((long)m & 15) == 0 );
 
    init_matrix( m );
 
@@ -206,7 +206,7 @@ static int test_transform_function( transform_func func, int psize,
          case VAR:
             break;
          default:
-            ASSERT(0);
+            assert(0);
             return 0;
          }
       }
@@ -254,18 +254,18 @@ static int test_transform_function( transform_func func, int psize,
    for ( i = 0 ; i < TEST_COUNT ; i++ ) {
       for ( j = 0 ; j < 4 ; j++ ) {
          if ( significand_match( d[i][j], r[i][j] ) < REQUIRED_PRECISION ) {
-            _mesa_printf("-----------------------------\n" );
-            _mesa_printf("(i = %i, j = %i)\n", i, j );
-            _mesa_printf("%f \t %f \t [diff = %e - %i bit missed]\n",
+            printf("-----------------------------\n" );
+            printf("(i = %i, j = %i)\n", i, j );
+            printf("%f \t %f \t [diff = %e - %i bit missed]\n",
 		    d[i][0], r[i][0], r[i][0]-d[i][0],
 		    MAX_PRECISION - significand_match( d[i][0], r[i][0] ) );
-            _mesa_printf("%f \t %f \t [diff = %e - %i bit missed]\n",
+            printf("%f \t %f \t [diff = %e - %i bit missed]\n",
 		    d[i][1], r[i][1], r[i][1]-d[i][1],
 		    MAX_PRECISION - significand_match( d[i][1], r[i][1] ) );
-            _mesa_printf("%f \t %f \t [diff = %e - %i bit missed]\n",
+            printf("%f \t %f \t [diff = %e - %i bit missed]\n",
 		    d[i][2], r[i][2], r[i][2]-d[i][2],
 		    MAX_PRECISION - significand_match( d[i][2], r[i][2] ) );
-            _mesa_printf("%f \t %f \t [diff = %e - %i bit missed]\n",
+            printf("%f \t %f \t [diff = %e - %i bit missed]\n",
 		    d[i][3], r[i][3], r[i][3]-d[i][3],
 		    MAX_PRECISION - significand_match( d[i][3], r[i][3] ) );
             return 0;
@@ -273,7 +273,7 @@ static int test_transform_function( transform_func func, int psize,
       }
    }
 
-   ALIGN_FREE( mat->m );
+   _mesa_align_free( mat->m );
    return 1;
 }
 
@@ -285,26 +285,26 @@ void _math_test_all_transform_functions( char *description )
 
    if ( first_time ) {
       first_time = 0;
-      mesa_profile = _mesa_getenv( "MESA_PROFILE" );
+      mesa_profile = getenv( "MESA_PROFILE" );
    }
 
 #ifdef RUN_DEBUG_BENCHMARK
    if ( mesa_profile ) {
       if ( !counter_overhead ) {
 	 INIT_COUNTER();
-	 _mesa_printf("counter overhead: %lu cycles\n\n", counter_overhead );
+	 printf("counter overhead: %lu cycles\n\n", counter_overhead );
       }
-      _mesa_printf("transform results after hooking in %s functions:\n", description );
+      printf("transform results after hooking in %s functions:\n", description );
    }
 #endif
 
 #ifdef RUN_DEBUG_BENCHMARK
    if ( mesa_profile ) {
-      _mesa_printf("\n" );
+      printf("\n" );
       for ( psize = 1 ; psize <= 4 ; psize++ ) {
-	 _mesa_printf(" p%d\t", psize );
+	 printf(" p%d\t", psize );
       }
-      _mesa_printf("\n--------------------------------------------------------\n" );
+      printf("\n--------------------------------------------------------\n" );
    }
 #endif
 
@@ -315,23 +315,23 @@ void _math_test_all_transform_functions( char *description )
 
 	 if ( test_transform_function( func, psize, mtype, cycles ) == 0 ) {
 	    char buf[100];
-	    _mesa_sprintf(buf, "_mesa_transform_tab[0][%d][%s] failed test (%s)",
-		     psize, mstrings[mtype], description );
-	    _mesa_problem( NULL, buf );
+	    sprintf(buf, "_mesa_transform_tab[0][%d][%s] failed test (%s)",
+		    psize, mstrings[mtype], description );
+	    _mesa_problem( NULL, "%s", buf );
 	 }
 #ifdef RUN_DEBUG_BENCHMARK
 	 if ( mesa_profile )
-	    _mesa_printf(" %li\t", benchmark_tab[psize-1][mtype] );
+	    printf(" %li\t", benchmark_tab[psize-1][mtype] );
 #endif
       }
 #ifdef RUN_DEBUG_BENCHMARK
       if ( mesa_profile )
-	 _mesa_printf(" | [%s]\n", mstrings[mtype] );
+	 printf(" | [%s]\n", mstrings[mtype] );
 #endif
    }
 #ifdef RUN_DEBUG_BENCHMARK
    if ( mesa_profile )
-      _mesa_printf( "\n" );
+      printf( "\n" );
 #endif
 }
 

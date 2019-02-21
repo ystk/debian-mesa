@@ -35,7 +35,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 /*
  * Authors:
  *   Gareth Hughes <gareth@valinux.com>
- *   Keith Whitwell <keith@tungstengraphics.com>
+ *   Keith Whitwell <keithw@vmware.com>
  *   Kevin E. Martin <martin@valinux.com>
  *   Nicolai Haehnle <prefect_@gmx.net>
  */
@@ -47,10 +47,8 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "dri_util.h"
 #include "drm.h"
 #include "radeon_drm.h"
-#include "texmem.h"
 #include "main/macros.h"
 #include "main/mtypes.h"
-#include "main/colormac.h"
 #include "radeon_screen.h"
 
 #include "radeon_common.h"
@@ -59,8 +57,6 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 struct r100_context;
 typedef struct r100_context r100ContextRec;
 typedef struct r100_context *r100ContextPtr;
-
-#include "radeon_lock.h"
 
 
 
@@ -419,7 +415,6 @@ struct r100_context {
 	GLuint NeedTexMatrix;
 	GLuint TexMatColSwap;
 	GLmatrix tmpmat[RADEON_MAX_TEXTURE_UNITS];
-	GLuint last_ReallyEnabled;
 
 	/* radeon_tcl.c
 	 */
@@ -430,7 +425,6 @@ struct r100_context {
 	struct r100_swtcl_info swtcl;
 
 	GLboolean using_hyperz;
-	GLboolean texmicrotile;
 
 	/* Performance counters
 	 */
@@ -445,15 +439,25 @@ struct r100_context {
 };
 
 
-#define R100_CONTEXT(ctx)		((r100ContextPtr)(ctx->DriverCtx))
+static inline r100ContextPtr
+R100_CONTEXT(struct gl_context *ctx)
+{
+   return (r100ContextPtr) ctx;
+}
+
 
 
 #define RADEON_OLD_PACKETS 1
 
-extern GLboolean r100CreateContext( const __GLcontextModes *glVisual,
-				    __DRIcontextPrivate *driContextPriv,
+extern GLboolean r100CreateContext( gl_api api,
+				    const struct gl_config *glVisual,
+				    __DRIcontext *driContextPriv,
+				    unsigned major_version,
+				    unsigned minor_version,
+				    uint32_t flags,
+                                    bool notify_reset,
+				    unsigned *error,
 				    void *sharedContextPrivate);
-  
 
 
 #endif				/* __RADEON_CONTEXT_H__ */

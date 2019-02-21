@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2007-2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2007-2008 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -28,18 +28,27 @@
 #ifndef TGSI_DUMP_H
 #define TGSI_DUMP_H
 
+#include "pipe/p_compiler.h"
+#include "pipe/p_defines.h"
 #include "pipe/p_shader_tokens.h"
+
+#include <stdio.h>
 
 #if defined __cplusplus
 extern "C" {
 #endif
 
-void
+#define TGSI_DUMP_FLOAT_AS_HEX (1 << 0)
+
+bool
 tgsi_dump_str(
    const struct tgsi_token *tokens,
    uint flags,
    char *str,
    size_t size);
+
+void
+tgsi_dump_to_file(const struct tgsi_token *tokens, uint flags, FILE *file);
 
 void
 tgsi_dump(
@@ -49,10 +58,18 @@ tgsi_dump(
 struct tgsi_full_immediate;
 struct tgsi_full_instruction;
 struct tgsi_full_declaration;
+struct tgsi_full_property;
 
 void
 tgsi_dump_immediate(
    const struct tgsi_full_immediate *imm );
+
+void
+tgsi_dump_instruction_str(
+   const struct tgsi_full_instruction *inst,
+   uint instno,
+   char *str,
+   size_t size);
 
 void
 tgsi_dump_instruction(
@@ -62,6 +79,10 @@ tgsi_dump_instruction(
 void
 tgsi_dump_declaration(
    const struct tgsi_full_declaration *decl );
+
+void
+tgsi_dump_property(
+   const struct tgsi_full_property *prop );
 
 #if defined __cplusplus
 }

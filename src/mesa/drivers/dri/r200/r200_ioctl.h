@@ -29,16 +29,16 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 /*
  * Authors:
- *   Keith Whitwell <keith@tungstengraphics.com>
+ *   Keith Whitwell <keithw@vmware.com>
  */
 
 #ifndef __R200_IOCTL_H__
 #define __R200_IOCTL_H__
 
-#include "main/simple_list.h"
-#include "radeon_dri.h"
+#include "util/simple_list.h"
 
-#include "radeon_bocs_wrapper.h"
+#include "radeon_bo_gem.h"
+#include "radeon_cs_gem.h"
 
 #include "xf86drm.h"
 #include "drm.h"
@@ -54,7 +54,7 @@ extern void r200EmitVbufPrim( r200ContextPtr rmesa,
 				GLuint primitive,
 				GLuint vertex_nr );
 
-extern void r200FlushElts(GLcontext *ctx);
+extern void r200FlushElts(struct gl_context *ctx);
 
 extern GLushort *r200AllocEltsOpenEnded( r200ContextPtr rmesa,
 					   GLuint primitive,
@@ -63,17 +63,6 @@ extern GLushort *r200AllocEltsOpenEnded( r200ContextPtr rmesa,
 extern void r200EmitAOS(r200ContextPtr rmesa, GLuint nr, GLuint offset);
 
 extern void r200InitIoctlFuncs( struct dd_function_table *functions );
-
-extern void *r200AllocateMemoryMESA( __DRIscreen *screen, GLsizei size, GLfloat readfreq,
-				   GLfloat writefreq, GLfloat priority );
-extern void r200FreeMemoryMESA( __DRIscreen *screen, GLvoid *pointer );
-extern GLuint r200GetMemoryOffsetMESA( __DRIscreen *screen, const GLvoid *pointer );
-
-extern GLboolean r200IsGartMemory( r200ContextPtr rmesa, const GLvoid *pointer,
-				   GLint size );
-
-extern GLuint r200GartOffsetFromVirtual( r200ContextPtr rmesa, 
-					 const GLvoid *pointer );
 
 void r200SetUpAtomList( r200ContextPtr rmesa );
 
@@ -86,10 +75,10 @@ void r200SetUpAtomList( r200ContextPtr rmesa );
 #define R200_NEWPRIM( rmesa )			\
 do {						\
    if ( rmesa->radeon.dma.flush )			\
-      rmesa->radeon.dma.flush( rmesa->radeon.glCtx );	\
+      rmesa->radeon.dma.flush( &rmesa->radeon.glCtx );	\
 } while (0)
 
-/* Can accomodate several state changes and primitive changes without
+/* Can accommodate several state changes and primitive changes without
  * actually firing the buffer.
  */
 #define R200_STATECHANGE( rmesa, ATOM )			\
@@ -113,7 +102,7 @@ do {								\
    memcpy( rmesa->hw.ATOM.lastcmd, rmesa->hw.ATOM.cmd,	\
 	   rmesa->hw.ATOM.cmd_size * 4)
 
-static INLINE int R200_DB_STATECHANGE( 
+static inline int R200_DB_STATECHANGE( 
    r200ContextPtr rmesa,
    struct radeon_state_atom *atom )
 {
@@ -155,23 +144,13 @@ static inline uint32_t cmdpacket3(int cmd_type)
 }
 
 #define OUT_BATCH_PACKET3(packet, num_extra) do {	      \
-    if (!b_l_rmesa->radeonScreen->kernel_mm) {		      \
-      OUT_BATCH(cmdpacket3(RADEON_CMD_PACKET3));				      \
-      OUT_BATCH(CP_PACKET3((packet), (num_extra)));	      \
-    } else {						      \
-      OUT_BATCH(CP_PACKET2);				      \
-      OUT_BATCH(CP_PACKET3((packet), (num_extra)));	      \
-    }							      \
+    OUT_BATCH(CP_PACKET2);				      \
+    OUT_BATCH(CP_PACKET3((packet), (num_extra)));	      \
   } while(0)
 
 #define OUT_BATCH_PACKET3_CLIP(packet, num_extra) do {	      \
-    if (!b_l_rmesa->radeonScreen->kernel_mm) {		      \
-      OUT_BATCH(cmdpacket3(RADEON_CMD_PACKET3_CLIP));	      \
-      OUT_BATCH(CP_PACKET3((packet), (num_extra)));	      \
-    } else {						      \
-      OUT_BATCH(CP_PACKET2);				      \
-      OUT_BATCH(CP_PACKET3((packet), (num_extra)));	      \
-    }							      \
+    OUT_BATCH(CP_PACKET2);				      \
+    OUT_BATCH(CP_PACKET3((packet), (num_extra)));	      \
   } while(0)
 
 

@@ -23,13 +23,13 @@
  *
  **********************************************************/
 
-#include "pipe/p_inlines.h"
+#include "util/u_inlines.h"
 #include "pipe/p_defines.h"
 #include "util/u_math.h"
-#include "util/u_memory.h"
 #include "tgsi/tgsi_parse.h"
 
 #include "svga_context.h"
+#include "svga_resource_buffer.h"
 
 /***********************************************************************
  * Constant buffers 
@@ -46,20 +46,52 @@ struct svga_constbuf
 
 static void svga_set_constant_buffer(struct pipe_context *pipe,
                                      uint shader, uint index,
-                                     const struct pipe_constant_buffer *buf)
+                                     const struct pipe_constant_buffer *cb)
 {
+   struct svga_screen *svgascreen = svga_screen(pipe->screen);
    struct svga_context *svga = svga_context(pipe);
+   struct pipe_resource *buf = cb ? cb->buffer : NULL;
+   unsigned buffer_size = 0;
+
+   if (cb) {
+      buffer_size = cb->buffer_size;
+      if (cb->user_buffer) {
+         buf = svga_user_buffer_create(pipe->screen,
+                                       (void *) cb->user_buffer,
+                                       cb->buffer_size,
+                                       PIPE_BIND_CONSTANT_BUFFER);
+      }
+   }
 
    assert(shader < PIPE_SHADER_TYPES);
-   assert(index == 0);
+   assert(index < ARRAY_SIZE(svga->curr.constbufs[shader]));
+   assert(index < svgascreen->max_const_buffers);
+   (void) svgascreen;
 
-   pipe_buffer_reference( &svga->curr.cb[shader],
-                          buf->buffer );
+   pipe_resource_reference(&svga->curr.constbufs[shader][index].buffer, buf);
+
+   /* Make sure the constant buffer size to be updated is within the
+    * limit supported by the device.
+    */
+   svga->curr.constbufs[shader][index].buffer_size =
+      MIN2(buffer_size, SVGA_MAX_CONST_BUF_SIZE);
+
+   svga->curr.constbufs[shader][index].buffer_offset = cb ? cb->buffer_offset : 0;
+   svga->curr.constbufs[shader][index].user_buffer = NULL; /* not used */
 
    if (shader == PIPE_SHADER_FRAGMENT)
       svga->dirty |= SVGA_NEW_FS_CONST_BUFFER;
-   else
+   else if (shader == PIPE_SHADER_VERTEX)
       svga->dirty |= SVGA_NEW_VS_CONST_BUFFER;
+   else
+      svga->dirty |= SVGA_NEW_GS_CONST_BUFFER;
+
+   /* update bitmask of dirty const buffers */
+   svga->state.dirty_constbufs[shader] |= (1 << index);
+
+   if (cb && cb->user_buffer) {
+      pipe_resource_reference(&buf, NULL);
+   }
 }
 
 

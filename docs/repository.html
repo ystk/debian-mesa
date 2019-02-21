@@ -1,23 +1,29 @@
-<HTML>
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<html lang="en">
+<head>
+  <meta http-equiv="content-type" content="text/html; charset=utf-8">
+  <title>Code Repository</title>
+  <link rel="stylesheet" type="text/css" href="mesa.css">
+</head>
+<body>
 
-<TITLE>Code Repository</TITLE>
+<div class="header">
+  <h1>The Mesa 3D Graphics Library</h1>
+</div>
 
-<link rel="stylesheet" type="text/css" href="mesa.css"></head>
-
-<BODY>
+<iframe src="contents.html"></iframe>
+<div class="content">
 
 <h1>Code Repository</h1>
 
 <p>
-As of December 5, 2006, Mesa is using
-<a href="http://git.or.cz/"target="_parent">git</a>
+Mesa uses <a href="http://git-scm.com">git</a>
 as its source code management system.
-CVS was used previously.
-The old CVS repository should no longer be used.
 </p>
 
+<p>
 The master git repository is hosted on
-<a href="http://www.freedesktop.org" target="_parent">freedesktop.org</a>.
+<a href="http://www.freedesktop.org">freedesktop.org</a>.
 </p>
 
 <p>
@@ -29,13 +35,14 @@ You may access the repository either as an
 
 <p>
 You may also 
-<a href="http://gitweb.freedesktop.org/?p=mesa/mesa.git"
-target="_parent">browse the git repository</a>.
+<a href="http://cgit.freedesktop.org/mesa/mesa/"
+>browse the main Mesa git repository</a> and the
+<a href="http://cgit.freedesktop.org/mesa/demos"
+>Mesa demos and tests git repository</a>.
 </p>
 
 
-<a name="anonymous">
-<H2>Anonymous git Access</H2>
+<h2 id="anonymous">Anonymous git Access</h2>
 
 <p>
 To get the Mesa sources anonymously (read-only):
@@ -51,28 +58,49 @@ To get the Mesa sources anonymously (read-only):
     <pre>
     git pull origin
     </pre>
+<li>If you also want the Mesa demos/tests repository:
+    <pre>
+    git clone git://anongit.freedesktop.org/git/mesa/demos
+    </pre>
 </ol>
 
 
-<a name="developer">
-<H2>Developer git Access</H2>
+<h2 id="developer">Developer git Access</h2>
 
 <p>
-Mesa developers need to first have an account on
-<a href="http://www.freedesktop.org" target="_parent">freedesktop.org</a>.
-To get an account, please ask Brian or the other Mesa developers for
-permission.
-Then, if there are no objections, follow this
-<a href="http://www.freedesktop.org/wiki/AccountRequests" target="_parent">
-procedure</a>.
+If you wish to become a Mesa developer with git-write privilege, please
+follow this procedure:
 </p>
+<ol>
+<li>Subscribe to the
+<a href="http://lists.freedesktop.org/mailman/listinfo/mesa-dev">mesa-dev</a>
+mailing list.
+<li>Start contributing to the project by posting patches / review requests to
+the mesa-dev list.  Specifically,
+<ul>
+<li>Use <code>git send-mail</code> to post your patches to mesa-dev.
+<li>Wait for someone to review the code and give you a <code>Reviewed-by</code>
+statement.
+<li>You'll have to rely on another Mesa developer to push your initial patches
+after they've been reviewed.
+</ul>
+<li>After you've demonstrated the ability to write good code and have had
+a dozen or so patches accepted you can apply for an account.
+<li>Occasionally, but rarely, someone may be given a git account sooner, but
+only if they're being supervised by another Mesa developer at the same
+organization and planning to work in a limited area of the code or on a
+separate branch.
+<li>To apply for an account, follow
+<a href="http://www.freedesktop.org/wiki/AccountRequests">these directions</a>.
+It's also appreciated if you briefly describe what you intend to do (work
+on a particular driver, add a new extension, etc.) in the bugzilla record.
+</ol>
 
 <p>
 Once your account is established:
 </p>
 
 <ol>
-<li>Install the git software on your computer if needed.<br><br>
 <li>Get an initial, local copy of the repository with:
     <pre>
     git clone git+ssh://username@git.freedesktop.org/git/mesa/mesa
@@ -82,13 +110,17 @@ Once your account is established:
     <pre>
     git pull origin
     </pre>
+<li>If you also want the Mesa demos/tests repository:
+    <pre>
+    git clone git+ssh://username@git.freedesktop.org/git/mesa/demos
+    </pre>
 </ol>
 
 
-<H2>Windows Users</H2>
+<h2>Windows Users</h2>
 
 <p>
-If you're <a href="http://git.or.cz/gitwiki/WindowsInstall" target="_parent">
+If you're <a href="http://git.wiki.kernel.org/index.php/WindowsInstall">
 using git on Windows</a> you'll want to enable automatic CR/LF conversion in
 your local copy of the repository:
 </p>
@@ -106,8 +138,7 @@ Unix users don't need to set this option.
 <br>
 
 
-<a name="developer">
-<H2>Development Branches</H2>
+<h2>Development Branches</h2>
 
 <p>
 At any given time, there may be several active branches in Mesa's
@@ -125,8 +156,88 @@ Questions about branch status/activity should be posted to the
 mesa3d-dev mailing list.
 </p>
 
+<h2>Developer Git Tips</h2>
 
+<ol>
+<li>Setting up to edit the master branch
+<p>
+If you try to do a pull by just saying<code> git pull </code>
+and git complains that you have not specified a
+branch, try:
+<pre>
+    git config branch.master.remote origin
+    git config branch.master.merge master
+</pre>
+<p>
+Otherwise, you have to say<code> git pull origin master </code>
+each time you do a pull.
+</p>
+<li>Small changes to master
+<p>
+If you are an experienced git user working on substantial modifications,
+you are probably
+working on a separate branch and would rebase your branch prior to
+merging with master.
+But for small changes to the master branch itself,
+you also need to use the rebase feature in order to avoid an
+unnecessary and distracting branch in master.
+</p>
+<p>
+If it has been awhile since you've done the initial clone, try
+<pre>
+    git pull
+</pre>
+<p>
+to get the latest files before you start working.
+</p>
+<p>
+Make your changes and use
+<pre>
+    git add &lt;files to commit&gt;
+    git commit
+</pre>
+<p>
+to get your changes ready to push back into the fd.o repository.
+</p>
+<p>
+It is possible (and likely) that someone has changed master since
+you did your last pull.  Even if your changes do not conflict with
+their changes, git will make a fast-forward 
+merge branch, branching from the point in time
+where you did your last pull and merging it to a point after the other changes.
+</p>
+<p>
+To avoid this, 
+<pre>
+    git pull --rebase
+    git push
+</pre>
+<p>
+If you are familiar with CVS or similar system, this is similar to doing a
+<code> cvs update </code> in order to update your source tree to
+the current repository state, instead of the time you did the last update.
+(CVS doesn't work like git in this respect, but this is easiest way
+to explain it.)
+<br>
+In any case, your repository now looks like you made your changes after
+all the other changes.
+</p>
+<p>
+If the rebase resulted in conflicts or changes that could affect
+the proper operation of your changes, you'll need to investigate
+those before doing the push.
+</p>
+<p>
+If you want the rebase action to be the default action, then
+<pre>
+    git config branch.master.rebase true
+    git config --global branch.autosetuprebase=always
+</pre>
+<p>
+See <a href="http://www.eecs.harvard.edu/~cduan/technical/git/">Understanding Git Conceptually</a> for a fairly clear explanation about all of this.
+</p>
+</ol>
+
+</div>
 </body>
 </html>
-
-

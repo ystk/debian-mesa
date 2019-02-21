@@ -26,69 +26,16 @@
 #ifndef SVGA_TGSI_H
 #define SVGA_TGSI_H
 
-#include "pipe/p_state.h"
+#include "pipe/p_compiler.h"
+#include "svga3d_reg.h"
 
-#include "svga_hw_reg.h"
 
-struct svga_fragment_shader;
-struct svga_vertex_shader;
+#define MAX_VGPU10_ADDR_REGS 2
+
+struct svga_compile_key;
+struct svga_context;
 struct svga_shader;
-struct tgsi_shader_info;
-struct tgsi_token;
-
-
-struct svga_vs_compile_key
-{
-   ubyte need_prescale:1;
-   ubyte allow_psiz:1;
-   unsigned zero_stride_vertex_elements;
-   ubyte num_zero_stride_vertex_elements:6;
-};
-
-struct svga_fs_compile_key
-{
-   boolean light_twoside:1;
-   boolean front_cw:1;
-   boolean white_fragments:1;
-   ubyte num_textures;
-   ubyte num_unnormalized_coords;
-   struct {
-      ubyte compare_mode       : 1;
-      ubyte compare_func       : 3;
-      ubyte unnormalized       : 1;
-
-      ubyte width_height_idx   : 7;
-
-      ubyte texture_target;
-   } tex[PIPE_MAX_SAMPLERS];
-};
-
-union svga_compile_key {
-   struct svga_vs_compile_key vkey;
-   struct svga_fs_compile_key fkey;
-};
-
-struct svga_shader_result
-{
-   const struct svga_shader *shader;
-
-   /* Parameters used to generate this compilation result:
-    */
-   union svga_compile_key key;
-
-   /* Compiled shader tokens:
-    */
-   const unsigned *tokens;
-   unsigned nr_tokens;
-
-   /* SVGA Shader ID:
-    */
-   unsigned id;
-   
-   /* Next compilation result:
-    */
-   struct svga_shader_result *next;
-};
+struct svga_shader_variant;
 
 
 /* TGSI doesn't provide use with VS input semantics (they're actually
@@ -99,7 +46,7 @@ struct svga_shader_result
  * The real use of this information is matching vertex elements to
  * fragment shader inputs in the case where vertex shader is disabled.
  */
-static INLINE void svga_generate_vdecl_semantics( unsigned idx,
+static inline void svga_generate_vdecl_semantics( unsigned idx,
                                                   unsigned *usage,
                                                   unsigned *usage_index )
 {
@@ -115,26 +62,17 @@ static INLINE void svga_generate_vdecl_semantics( unsigned idx,
 
 
 
-static INLINE unsigned svga_vs_key_size( const struct svga_vs_compile_key *key )
-{
-   return sizeof *key;
-}
+struct svga_shader_variant *
+svga_tgsi_vgpu9_translate(struct svga_context *svga,
+                          const struct svga_shader *shader,
+                          const struct svga_compile_key *key, unsigned unit);
 
-static INLINE unsigned svga_fs_key_size( const struct svga_fs_compile_key *key )
-{
-   return (const char *)&key->tex[key->num_textures].texture_target -
-      (const char *)key;
-}
+struct svga_shader_variant *
+svga_tgsi_vgpu10_translate(struct svga_context *svga,
+                           const struct svga_shader *shader,
+                           const struct svga_compile_key *key,
+                           unsigned unit);
 
-struct svga_shader_result *
-svga_translate_fragment_program( const struct svga_fragment_shader *fs,
-                                 const struct svga_fs_compile_key *fkey );
-
-struct svga_shader_result *
-svga_translate_vertex_program( const struct svga_vertex_shader *fs,
-                               const struct svga_vs_compile_key *vkey );
-
-
-void svga_destroy_shader_result( struct svga_shader_result *result );
+boolean svga_shader_verify(const uint32_t *tokens, unsigned nr_tokens);
 
 #endif

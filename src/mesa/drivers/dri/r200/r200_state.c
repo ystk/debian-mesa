@@ -30,22 +30,26 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 /*
  * Authors:
- *   Keith Whitwell <keith@tungstengraphics.com>
+ *   Keith Whitwell <keithw@vmware.com>
  */
 
 #include "main/glheader.h"
 #include "main/imports.h"
 #include "main/api_arrayelt.h"
 #include "main/enums.h"
-#include "main/colormac.h"
 #include "main/light.h"
 #include "main/framebuffer.h"
+#include "main/fbobject.h"
+#include "main/stencil.h"
+#include "main/viewport.h"
 
 #include "swrast/swrast.h"
 #include "vbo/vbo.h"
 #include "tnl/tnl.h"
 #include "tnl/t_pipeline.h"
 #include "swrast_setup/swrast_setup.h"
+#include "drivers/common/meta.h"
+#include "util/bitscan.h"
 
 #include "radeon_common.h"
 #include "radeon_mipmap_tree.h"
@@ -57,14 +61,12 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "r200_swtcl.h"
 #include "r200_vertprog.h"
 
-#include "drirenderbuffer.h"
-
 
 /* =============================================================
  * Alpha blending
  */
 
-static void r200AlphaFunc( GLcontext *ctx, GLenum func, GLfloat ref )
+static void r200AlphaFunc( struct gl_context *ctx, GLenum func, GLfloat ref )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    int pp_misc = rmesa->hw.ctx.cmd[CTX_PP_MISC];
@@ -107,7 +109,7 @@ static void r200AlphaFunc( GLcontext *ctx, GLenum func, GLfloat ref )
    rmesa->hw.ctx.cmd[CTX_PP_MISC] = pp_misc;
 }
 
-static void r200BlendColor( GLcontext *ctx, const GLfloat cf[4] )
+static void r200BlendColor( struct gl_context *ctx, const GLfloat cf[4] )
 {
    GLubyte color[4];
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
@@ -116,8 +118,7 @@ static void r200BlendColor( GLcontext *ctx, const GLfloat cf[4] )
    CLAMPED_FLOAT_TO_UBYTE(color[1], cf[1]);
    CLAMPED_FLOAT_TO_UBYTE(color[2], cf[2]);
    CLAMPED_FLOAT_TO_UBYTE(color[3], cf[3]);
-   if (rmesa->radeon.radeonScreen->drmSupportsBlendColor)
-      rmesa->hw.ctx.cmd[CTX_RB3D_BLENDCOLOR] = radeonPackColor( 4, color[0], color[1], color[2], color[3] );
+   rmesa->hw.ctx.cmd[CTX_RB3D_BLENDCOLOR] = radeonPackColor( 4, color[0], color[1], color[2], color[3] );
 }
 
 /**
@@ -200,7 +201,7 @@ static int blend_factor( GLenum factor, GLboolean is_src )
  * and GL_FUNC_REVERSE_SUBTRACT will cause wrong results otherwise for
  * unknown reasons.
  */
-static void r200_set_blend_state( GLcontext * ctx )
+static void r200_set_blend_state( struct gl_context * ctx )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    GLuint cntl = rmesa->hw.ctx.cmd[CTX_RB3D_CNTL] &
@@ -215,41 +216,25 @@ static void r200_set_blend_state( GLcontext * ctx )
 
    R200_STATECHANGE( rmesa, ctx );
 
-   if (rmesa->radeon.radeonScreen->drmSupportsBlendColor) {
-      if (ctx->Color.ColorLogicOpEnabled) {
-         rmesa->hw.ctx.cmd[CTX_RB3D_CNTL] =  cntl | R200_ROP_ENABLE;
-         rmesa->hw.ctx.cmd[CTX_RB3D_ABLENDCNTL] = eqn | func;
-         rmesa->hw.ctx.cmd[CTX_RB3D_CBLENDCNTL] = eqn | func;
-         return;
-      } else if (ctx->Color.BlendEnabled) {
-         rmesa->hw.ctx.cmd[CTX_RB3D_CNTL] =  cntl | R200_ALPHA_BLEND_ENABLE | R200_SEPARATE_ALPHA_ENABLE;
-      }
-      else {
-         rmesa->hw.ctx.cmd[CTX_RB3D_CNTL] = cntl;
-         rmesa->hw.ctx.cmd[CTX_RB3D_ABLENDCNTL] = eqn | func;
-         rmesa->hw.ctx.cmd[CTX_RB3D_CBLENDCNTL] = eqn | func;
-         return;
-      }
+   if (ctx->Color.ColorLogicOpEnabled) {
+      rmesa->hw.ctx.cmd[CTX_RB3D_CNTL] =  cntl | R200_ROP_ENABLE;
+      rmesa->hw.ctx.cmd[CTX_RB3D_ABLENDCNTL] = eqn | func;
+      rmesa->hw.ctx.cmd[CTX_RB3D_CBLENDCNTL] = eqn | func;
+      return;
+   } else if (ctx->Color.BlendEnabled) {
+      rmesa->hw.ctx.cmd[CTX_RB3D_CNTL] =  cntl | R200_ALPHA_BLEND_ENABLE | R200_SEPARATE_ALPHA_ENABLE;
    }
    else {
-      if (ctx->Color.ColorLogicOpEnabled) {
-         rmesa->hw.ctx.cmd[CTX_RB3D_CNTL] =  cntl | R200_ROP_ENABLE;
-         rmesa->hw.ctx.cmd[CTX_RB3D_BLENDCNTL] = eqn | func;
-         return;
-      } else if (ctx->Color.BlendEnabled) {
-         rmesa->hw.ctx.cmd[CTX_RB3D_CNTL] =  cntl | R200_ALPHA_BLEND_ENABLE;
-      }
-      else {
-         rmesa->hw.ctx.cmd[CTX_RB3D_CNTL] = cntl;
-         rmesa->hw.ctx.cmd[CTX_RB3D_BLENDCNTL] = eqn | func;
-         return;
-      }
+      rmesa->hw.ctx.cmd[CTX_RB3D_CNTL] = cntl;
+      rmesa->hw.ctx.cmd[CTX_RB3D_ABLENDCNTL] = eqn | func;
+      rmesa->hw.ctx.cmd[CTX_RB3D_CBLENDCNTL] = eqn | func;
+      return;
    }
 
-   func = (blend_factor( ctx->Color.BlendSrcRGB, GL_TRUE ) << R200_SRC_BLEND_SHIFT) |
-      (blend_factor( ctx->Color.BlendDstRGB, GL_FALSE ) << R200_DST_BLEND_SHIFT);
+   func = (blend_factor( ctx->Color.Blend[0].SrcRGB, GL_TRUE ) << R200_SRC_BLEND_SHIFT) |
+      (blend_factor( ctx->Color.Blend[0].DstRGB, GL_FALSE ) << R200_DST_BLEND_SHIFT);
 
-   switch(ctx->Color.BlendEquationRGB) {
+   switch(ctx->Color.Blend[0].EquationRGB) {
    case GL_FUNC_ADD:
       eqn = R200_COMB_FCN_ADD_CLAMP;
       break;
@@ -276,19 +261,14 @@ static void r200_set_blend_state( GLcontext * ctx )
 
    default:
       fprintf( stderr, "[%s:%u] Invalid RGB blend equation (0x%04x).\n",
-         __FUNCTION__, __LINE__, ctx->Color.BlendEquationRGB );
+         __func__, __LINE__, ctx->Color.Blend[0].EquationRGB );
       return;
    }
 
-   if (!rmesa->radeon.radeonScreen->drmSupportsBlendColor) {
-      rmesa->hw.ctx.cmd[CTX_RB3D_BLENDCNTL] = eqn | func;
-      return;
-   }
+   funcA = (blend_factor( ctx->Color.Blend[0].SrcA, GL_TRUE ) << R200_SRC_BLEND_SHIFT) |
+      (blend_factor( ctx->Color.Blend[0].DstA, GL_FALSE ) << R200_DST_BLEND_SHIFT);
 
-   funcA = (blend_factor( ctx->Color.BlendSrcA, GL_TRUE ) << R200_SRC_BLEND_SHIFT) |
-      (blend_factor( ctx->Color.BlendDstA, GL_FALSE ) << R200_DST_BLEND_SHIFT);
-
-   switch(ctx->Color.BlendEquationA) {
+   switch(ctx->Color.Blend[0].EquationA) {
    case GL_FUNC_ADD:
       eqnA = R200_COMB_FCN_ADD_CLAMP;
       break;
@@ -315,7 +295,7 @@ static void r200_set_blend_state( GLcontext * ctx )
 
    default:
       fprintf( stderr, "[%s:%u] Invalid A blend equation (0x%04x).\n",
-         __FUNCTION__, __LINE__, ctx->Color.BlendEquationA );
+         __func__, __LINE__, ctx->Color.Blend[0].EquationA );
       return;
    }
 
@@ -324,13 +304,13 @@ static void r200_set_blend_state( GLcontext * ctx )
 
 }
 
-static void r200BlendEquationSeparate( GLcontext *ctx,
+static void r200BlendEquationSeparate( struct gl_context *ctx,
 				       GLenum modeRGB, GLenum modeA )
 {
       r200_set_blend_state( ctx );
 }
 
-static void r200BlendFuncSeparate( GLcontext *ctx,
+static void r200BlendFuncSeparate( struct gl_context *ctx,
 				     GLenum sfactorRGB, GLenum dfactorRGB,
 				     GLenum sfactorA, GLenum dfactorA )
 {
@@ -342,7 +322,7 @@ static void r200BlendFuncSeparate( GLcontext *ctx,
  * Depth testing
  */
 
-static void r200DepthFunc( GLcontext *ctx, GLenum func )
+static void r200DepthFunc( struct gl_context *ctx, GLenum func )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
 
@@ -377,23 +357,7 @@ static void r200DepthFunc( GLcontext *ctx, GLenum func )
    }
 }
 
-static void r200ClearDepth( GLcontext *ctx, GLclampd d )
-{
-   r200ContextPtr rmesa = R200_CONTEXT(ctx);
-   GLuint format = (rmesa->hw.ctx.cmd[CTX_RB3D_ZSTENCILCNTL] &
-		    R200_DEPTH_FORMAT_MASK);
-
-   switch ( format ) {
-   case R200_DEPTH_FORMAT_16BIT_INT_Z:
-      rmesa->radeon.state.depth.clear = d * 0x0000ffff;
-      break;
-   case R200_DEPTH_FORMAT_24BIT_INT_Z:
-      rmesa->radeon.state.depth.clear = d * 0x00ffffff;
-      break;
-   }
-}
-
-static void r200DepthMask( GLcontext *ctx, GLboolean flag )
+static void r200DepthMask( struct gl_context *ctx, GLboolean flag )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    R200_STATECHANGE( rmesa, ctx );
@@ -411,11 +375,11 @@ static void r200DepthMask( GLcontext *ctx, GLboolean flag )
  */
 
 
-static void r200Fogfv( GLcontext *ctx, GLenum pname, const GLfloat *param )
+static void r200Fogfv( struct gl_context *ctx, GLenum pname, const GLfloat *param )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    union { int i; float f; } c, d;
-   GLchan col[4];
+   GLubyte col[4];
    GLuint i;
 
    c.i = rmesa->hw.fog.cmd[FOG_C];
@@ -481,7 +445,7 @@ static void r200Fogfv( GLcontext *ctx, GLenum pname, const GLfloat *param )
       break;
    case GL_FOG_COLOR:
       R200_STATECHANGE( rmesa, ctx );
-      UNCLAMPED_FLOAT_TO_RGB_CHAN( col, ctx->Fog.Color );
+      _mesa_unclamped_float_rgba_to_ubyte(col, ctx->Fog.Color );
       i = radeonPackColor( 4, col[0], col[1], col[2], 0 );
       rmesa->hw.ctx.cmd[CTX_PP_FOG_COLOR] &= ~R200_FOG_COLOR_MASK;
       rmesa->hw.ctx.cmd[CTX_PP_FOG_COLOR] |= i;
@@ -527,7 +491,7 @@ static void r200Fogfv( GLcontext *ctx, GLenum pname, const GLfloat *param )
  * Culling
  */
 
-static void r200CullFace( GLcontext *ctx, GLenum unused )
+static void r200CullFace( struct gl_context *ctx, GLenum unused )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    GLuint s = rmesa->hw.set.cmd[SET_SE_CNTL];
@@ -564,9 +528,10 @@ static void r200CullFace( GLcontext *ctx, GLenum unused )
    }
 }
 
-static void r200FrontFace( GLcontext *ctx, GLenum mode )
+static void r200FrontFace( struct gl_context *ctx, GLenum mode )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
+   int cull_face = (mode == GL_CW) ? R200_FFACE_CULL_CW : R200_FFACE_CULL_CCW;
 
    R200_STATECHANGE( rmesa, set );
    rmesa->hw.set.cmd[SET_SE_CNTL] &= ~R200_FFACE_CULL_DIR_MASK;
@@ -575,27 +540,28 @@ static void r200FrontFace( GLcontext *ctx, GLenum mode )
    rmesa->hw.tcl.cmd[TCL_UCP_VERT_BLEND_CTL] &= ~R200_CULL_FRONT_IS_CCW;
 
    /* Winding is inverted when rendering to FBO */
-   if (ctx->DrawBuffer && ctx->DrawBuffer->Name)
-      mode = (mode == GL_CW) ? GL_CCW : GL_CW;
+   if (ctx->DrawBuffer && _mesa_is_user_fbo(ctx->DrawBuffer))
+      cull_face = (mode == GL_CCW) ? R200_FFACE_CULL_CW : R200_FFACE_CULL_CCW;
+   rmesa->hw.set.cmd[SET_SE_CNTL] |= cull_face;
 
-   switch ( mode ) {
-   case GL_CW:
-      rmesa->hw.set.cmd[SET_SE_CNTL] |= R200_FFACE_CULL_CW;
-      break;
-   case GL_CCW:
-      rmesa->hw.set.cmd[SET_SE_CNTL] |= R200_FFACE_CULL_CCW;
+   if ( mode == GL_CCW )
       rmesa->hw.tcl.cmd[TCL_UCP_VERT_BLEND_CTL] |= R200_CULL_FRONT_IS_CCW;
-      break;
-   }
 }
 
 /* =============================================================
  * Point state
  */
-static void r200PointSize( GLcontext *ctx, GLfloat size )
+static void r200PointSize( struct gl_context *ctx, GLfloat size )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    GLfloat *fcmd = (GLfloat *)rmesa->hw.ptp.cmd;
+
+   radeon_print(RADEON_STATE, RADEON_TRACE,
+       "%s(%p) size: %f, fixed point result: %d.%d (%d/16)\n",
+       __func__, ctx, size,
+       ((GLuint)(ctx->Point.Size * 16.0))/16,
+       (((GLuint)(ctx->Point.Size * 16.0))&15)*100/16,
+       ((GLuint)(ctx->Point.Size * 16.0))&15);
 
    R200_STATECHANGE( rmesa, cst );
    R200_STATECHANGE( rmesa, ptp );
@@ -606,7 +572,7 @@ static void r200PointSize( GLcontext *ctx, GLfloat size )
    fcmd[PTP_VPORT_SCALE_PTSIZE] = ctx->Point.Size;
 }
 
-static void r200PointParameter( GLcontext *ctx, GLenum pname, const GLfloat *params)
+static void r200PointParameter( struct gl_context *ctx, GLenum pname, const GLfloat *params)
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    GLfloat *fcmd = (GLfloat *)rmesa->hw.ptp.cmd;
@@ -674,7 +640,7 @@ static void r200PointParameter( GLcontext *ctx, GLenum pname, const GLfloat *par
 /* =============================================================
  * Line state
  */
-static void r200LineWidth( GLcontext *ctx, GLfloat widthf )
+static void r200LineWidth( struct gl_context *ctx, GLfloat widthf )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
 
@@ -695,7 +661,7 @@ static void r200LineWidth( GLcontext *ctx, GLfloat widthf )
    }
 }
 
-static void r200LineStipple( GLcontext *ctx, GLint factor, GLushort pattern )
+static void r200LineStipple( struct gl_context *ctx, GLint factor, GLushort pattern )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
 
@@ -708,7 +674,7 @@ static void r200LineStipple( GLcontext *ctx, GLint factor, GLushort pattern )
 /* =============================================================
  * Masks
  */
-static void r200ColorMask( GLcontext *ctx,
+static void r200ColorMask( struct gl_context *ctx,
 			   GLboolean r, GLboolean g,
 			   GLboolean b, GLboolean a )
 {
@@ -721,10 +687,10 @@ static void r200ColorMask( GLcontext *ctx,
    if (!rrb)
      return;
    mask = radeonPackColor( rrb->cpp,
-			   ctx->Color.ColorMask[RCOMP],
-			   ctx->Color.ColorMask[GCOMP],
-			   ctx->Color.ColorMask[BCOMP],
-			   ctx->Color.ColorMask[ACOMP] );
+			   ctx->Color.ColorMask[0][RCOMP],
+			   ctx->Color.ColorMask[0][GCOMP],
+			   ctx->Color.ColorMask[0][BCOMP],
+			   ctx->Color.ColorMask[0][ACOMP] );
 
 
    if (!(r && g && b && a))
@@ -746,8 +712,8 @@ static void r200ColorMask( GLcontext *ctx,
  * Polygon state
  */
 
-static void r200PolygonOffset( GLcontext *ctx,
-			       GLfloat factor, GLfloat units )
+static void r200PolygonOffset( struct gl_context *ctx,
+			       GLfloat factor, GLfloat units, GLfloat clamp )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    const GLfloat depthScale = 1.0F / ctx->DrawBuffer->_DepthMaxF;
@@ -757,22 +723,23 @@ static void r200PolygonOffset( GLcontext *ctx,
 /*    factor *= 2; */
 /*    constant *= 2; */
 
-/*    fprintf(stderr, "%s f:%f u:%f\n", __FUNCTION__, factor, constant); */
+/*    fprintf(stderr, "%s f:%f u:%f\n", __func__, factor, constant); */
 
    R200_STATECHANGE( rmesa, zbs );
    rmesa->hw.zbs.cmd[ZBS_SE_ZBIAS_FACTOR]   = factoru.ui32;
    rmesa->hw.zbs.cmd[ZBS_SE_ZBIAS_CONSTANT] = constant.ui32;
 }
 
-static void r200PolygonMode( GLcontext *ctx, GLenum face, GLenum mode )
+static void r200PolygonMode( struct gl_context *ctx, GLenum face, GLenum mode )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
-   GLboolean flag = (ctx->_TriangleCaps & DD_TRI_UNFILLED) != 0;
+   GLboolean unfilled = (ctx->Polygon.FrontMode != GL_FILL ||
+                         ctx->Polygon.BackMode != GL_FILL);
 
    /* Can't generally do unfilled via tcl, but some good special
     * cases work.
     */
-   TCL_FALLBACK( ctx, R200_TCL_FALLBACK_UNFILLED, flag);
+   TCL_FALLBACK( ctx, R200_TCL_FALLBACK_UNFILLED, unfilled);
    if (rmesa->radeon.TclFallback) {
       r200ChooseRenderState( ctx );
       r200ChooseVertexState( ctx );
@@ -791,7 +758,7 @@ static void r200PolygonMode( GLcontext *ctx, GLenum face, GLenum mode )
 /* Examine lighting and texture state to determine if separate specular
  * should be enabled.
  */
-static void r200UpdateSpecular( GLcontext *ctx )
+static void r200UpdateSpecular( struct gl_context *ctx )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    uint32_t p = rmesa->hw.ctx.cmd[CTX_PP_CNTL];
@@ -865,7 +832,7 @@ static void r200UpdateSpecular( GLcontext *ctx )
 /* Update on colormaterial, material emmissive/ambient,
  * lightmodel.globalambient
  */
-static void update_global_ambient( GLcontext *ctx )
+static void update_global_ambient( struct gl_context *ctx )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    float *fcmd = (float *)R200_DB_STATE( glt );
@@ -896,11 +863,11 @@ static void update_global_ambient( GLcontext *ctx )
  *    - light[p].colors
  *    - light[p].enabled
  */
-static void update_light_colors( GLcontext *ctx, GLuint p )
+static void update_light_colors( struct gl_context *ctx, GLuint p )
 {
    struct gl_light *l = &ctx->Light.Light[p];
 
-/*     fprintf(stderr, "%s\n", __FUNCTION__); */
+/*     fprintf(stderr, "%s\n", __func__); */
 
    if (l->Enabled) {
       r200ContextPtr rmesa = R200_CONTEXT(ctx);
@@ -914,7 +881,7 @@ static void update_light_colors( GLcontext *ctx, GLuint p )
    }
 }
 
-static void r200ColorMaterial( GLcontext *ctx, GLenum face, GLenum mode )
+static void r200ColorMaterial( struct gl_context *ctx, GLenum face, GLenum mode )
 {
       r200ContextPtr rmesa = R200_CONTEXT(ctx);
       GLuint light_model_ctl1 = rmesa->hw.tcl.cmd[TCL_LIGHT_MODEL_CTL_1];
@@ -928,7 +895,7 @@ static void r200ColorMaterial( GLcontext *ctx, GLenum face, GLenum mode )
 		   (0xf << R200_BACK_SPECULAR_SOURCE_SHIFT));
 
    if (ctx->Light.ColorMaterialEnabled) {
-      GLuint mask = ctx->Light.ColorMaterialBitmask;
+      GLuint mask = ctx->Light._ColorMaterialBitmask;
 
       if (mask & MAT_BIT_FRONT_EMISSION) {
 	 light_model_ctl1 |= (R200_LM1_SOURCE_VERTEX_COLOR_0 <<
@@ -1016,7 +983,7 @@ static void r200ColorMaterial( GLcontext *ctx, GLenum face, GLenum mode )
 
 }
 
-void r200UpdateMaterial( GLcontext *ctx )
+void r200UpdateMaterial( struct gl_context *ctx )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    GLfloat (*mat)[4] = ctx->Light.Material.Attrib;
@@ -1026,10 +993,10 @@ void r200UpdateMaterial( GLcontext *ctx )
 
    /* Might be possible and faster to update everything unconditionally? */
    if (ctx->Light.ColorMaterialEnabled)
-      mask &= ~ctx->Light.ColorMaterialBitmask;
+      mask &= ~ctx->Light._ColorMaterialBitmask;
 
    if (R200_DEBUG & RADEON_STATE)
-      fprintf(stderr, "%s\n", __FUNCTION__);
+      fprintf(stderr, "%s\n", __func__);
 
    if (mask & MAT_BIT_FRONT_EMISSION) {
       fcmd[MTL_EMMISSIVE_RED]   = mat[MAT_ATTRIB_FRONT_EMISSION][0];
@@ -1111,7 +1078,7 @@ void r200UpdateMaterial( GLcontext *ctx )
  * lighting space (model or eye), hence dependencies on _NEW_MODELVIEW
  * and _MESA_NEW_NEED_EYE_COORDS.
  */
-static void update_light( GLcontext *ctx )
+static void update_light( struct gl_context *ctx )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
 
@@ -1146,32 +1113,31 @@ static void update_light( GLcontext *ctx )
 
 
    if (ctx->Light.Enabled) {
-      GLint p;
-      for (p = 0 ; p < MAX_LIGHTS; p++) {
-	 if (ctx->Light.Light[p].Enabled) {
-	    struct gl_light *l = &ctx->Light.Light[p];
-	    GLfloat *fcmd = (GLfloat *)R200_DB_STATE( lit[p] );
+      GLbitfield mask = ctx->Light._EnabledLights;
+      while (mask) {
+         const int p = u_bit_scan(&mask);
+         struct gl_light *l = &ctx->Light.Light[p];
+         GLfloat *fcmd = (GLfloat *)R200_DB_STATE( lit[p] );
 
-	    if (l->EyePosition[3] == 0.0) {
-	       COPY_3FV( &fcmd[LIT_POSITION_X], l->_VP_inf_norm );
-	       COPY_3FV( &fcmd[LIT_DIRECTION_X], l->_h_inf_norm );
-	       fcmd[LIT_POSITION_W] = 0;
-	       fcmd[LIT_DIRECTION_W] = 0;
-	    } else {
-	       COPY_4V( &fcmd[LIT_POSITION_X], l->_Position );
-	       fcmd[LIT_DIRECTION_X] = -l->_NormSpotDirection[0];
-	       fcmd[LIT_DIRECTION_Y] = -l->_NormSpotDirection[1];
-	       fcmd[LIT_DIRECTION_Z] = -l->_NormSpotDirection[2];
-	       fcmd[LIT_DIRECTION_W] = 0;
-	    }
+         if (l->EyePosition[3] == 0.0) {
+            COPY_3FV( &fcmd[LIT_POSITION_X], l->_VP_inf_norm );
+            COPY_3FV( &fcmd[LIT_DIRECTION_X], l->_h_inf_norm );
+            fcmd[LIT_POSITION_W] = 0;
+            fcmd[LIT_DIRECTION_W] = 0;
+         } else {
+            COPY_4V( &fcmd[LIT_POSITION_X], l->_Position );
+            fcmd[LIT_DIRECTION_X] = -l->_NormSpotDirection[0];
+            fcmd[LIT_DIRECTION_Y] = -l->_NormSpotDirection[1];
+            fcmd[LIT_DIRECTION_Z] = -l->_NormSpotDirection[2];
+            fcmd[LIT_DIRECTION_W] = 0;
+         }
 
-	    R200_DB_STATECHANGE( rmesa, &rmesa->hw.lit[p] );
-	 }
+         R200_DB_STATECHANGE( rmesa, &rmesa->hw.lit[p] );
       }
    }
 }
 
-static void r200Lightfv( GLcontext *ctx, GLenum light,
+static void r200Lightfv( struct gl_context *ctx, GLenum light,
 			   GLenum pname, const GLfloat *params )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
@@ -1282,7 +1248,7 @@ static void r200Lightfv( GLcontext *ctx, GLenum light,
    }
 }
 
-static void r200UpdateLocalViewer ( GLcontext *ctx )
+static void r200UpdateLocalViewer ( struct gl_context *ctx )
 {
 /* It looks like for the texgen modes GL_SPHERE_MAP, GL_NORMAL_MAP and
    GL_REFLECTION_MAP we need R200_LOCAL_VIEWER set (fglrx does exactly that
@@ -1302,7 +1268,7 @@ static void r200UpdateLocalViewer ( GLcontext *ctx )
       rmesa->hw.tcl.cmd[TCL_LIGHT_MODEL_CTL_0] &= ~R200_LOCAL_VIEWER;
 }
 
-static void r200LightModelfv( GLcontext *ctx, GLenum pname,
+static void r200LightModelfv( struct gl_context *ctx, GLenum pname,
 				const GLfloat *param )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
@@ -1337,7 +1303,7 @@ static void r200LightModelfv( GLcontext *ctx, GLenum pname,
    }
 }
 
-static void r200ShadeModel( GLcontext *ctx, GLenum mode )
+static void r200ShadeModel( struct gl_context *ctx, GLenum mode )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    GLuint s = rmesa->hw.set.cmd[SET_SE_CNTL];
@@ -1378,7 +1344,7 @@ static void r200ShadeModel( GLcontext *ctx, GLenum mode )
  * User clip planes
  */
 
-static void r200ClipPlane( GLcontext *ctx, GLenum plane, const GLfloat *eq )
+static void r200ClipPlane( struct gl_context *ctx, GLenum plane, const GLfloat *eq )
 {
    GLint p = (GLint) plane - (GLint) GL_CLIP_PLANE0;
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
@@ -1391,21 +1357,20 @@ static void r200ClipPlane( GLcontext *ctx, GLenum plane, const GLfloat *eq )
    rmesa->hw.ucp[p].cmd[UCP_W] = ip[3];
 }
 
-static void r200UpdateClipPlanes( GLcontext *ctx )
+static void r200UpdateClipPlanes( struct gl_context *ctx )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
-   GLuint p;
+   GLbitfield mask = ctx->Transform.ClipPlanesEnabled;
 
-   for (p = 0; p < ctx->Const.MaxClipPlanes; p++) {
-      if (ctx->Transform.ClipPlanesEnabled & (1 << p)) {
-	 GLint *ip = (GLint *)ctx->Transform._ClipUserPlane[p];
+   while (mask) {
+      const int p = u_bit_scan(&mask);
+      GLint *ip = (GLint *)ctx->Transform._ClipUserPlane[p];
 
-	 R200_STATECHANGE( rmesa, ucp[p] );
-	 rmesa->hw.ucp[p].cmd[UCP_X] = ip[0];
-	 rmesa->hw.ucp[p].cmd[UCP_Y] = ip[1];
-	 rmesa->hw.ucp[p].cmd[UCP_Z] = ip[2];
-	 rmesa->hw.ucp[p].cmd[UCP_W] = ip[3];
-      }
+      R200_STATECHANGE( rmesa, ucp[p] );
+      rmesa->hw.ucp[p].cmd[UCP_X] = ip[0];
+      rmesa->hw.ucp[p].cmd[UCP_Y] = ip[1];
+      rmesa->hw.ucp[p].cmd[UCP_Z] = ip[2];
+      rmesa->hw.ucp[p].cmd[UCP_W] = ip[3];
    }
 }
 
@@ -1415,11 +1380,11 @@ static void r200UpdateClipPlanes( GLcontext *ctx )
  */
 
 static void
-r200StencilFuncSeparate( GLcontext *ctx, GLenum face, GLenum func,
+r200StencilFuncSeparate( struct gl_context *ctx, GLenum face, GLenum func,
                          GLint ref, GLuint mask )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
-   GLuint refmask = (((ctx->Stencil.Ref[0] & 0xff) << R200_STENCIL_REF_SHIFT) |
+   GLuint refmask = ((_mesa_get_stencil_ref(ctx, 0) << R200_STENCIL_REF_SHIFT) |
 		     ((ctx->Stencil.ValueMask[0] & 0xff) << R200_STENCIL_MASK_SHIFT));
 
    R200_STATECHANGE( rmesa, ctx );
@@ -1460,7 +1425,7 @@ r200StencilFuncSeparate( GLcontext *ctx, GLenum face, GLenum func,
 }
 
 static void
-r200StencilMaskSeparate( GLcontext *ctx, GLenum face, GLuint mask )
+r200StencilMaskSeparate( struct gl_context *ctx, GLenum face, GLuint mask )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
 
@@ -1471,7 +1436,7 @@ r200StencilMaskSeparate( GLcontext *ctx, GLenum face, GLuint mask )
 }
 
 static void
-r200StencilOpSeparate( GLcontext *ctx, GLenum face, GLenum fail,
+r200StencilOpSeparate( struct gl_context *ctx, GLenum face, GLenum fail,
                        GLenum zfail, GLenum zpass )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
@@ -1563,16 +1528,6 @@ r200StencilOpSeparate( GLcontext *ctx, GLenum face, GLenum fail,
    }
 }
 
-static void r200ClearStencil( GLcontext *ctx, GLint s )
-{
-   r200ContextPtr rmesa = R200_CONTEXT(ctx);
-
-   rmesa->radeon.state.stencil.clear =
-      ((GLuint) (ctx->Stencil.Clear & 0xff) |
-       (0xff << R200_STENCIL_MASK_SHIFT) |
-       ((ctx->Stencil.WriteMask[0] & 0xff) << R200_STENCIL_WRITEMASK_SHIFT));
-}
-
 
 /* =============================================================
  * Window position and viewport transformation
@@ -1582,15 +1537,14 @@ static void r200ClearStencil( GLcontext *ctx, GLint s )
  * Called when window size or position changes or viewport or depth range
  * state is changed.  We update the hardware viewport state here.
  */
-void r200UpdateWindow( GLcontext *ctx )
+void r200UpdateWindow( struct gl_context *ctx )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
-   __DRIdrawablePrivate *dPriv = radeon_get_drawable(&rmesa->radeon);
-   GLfloat xoffset = dPriv ? (GLfloat) dPriv->x : 0;
-   GLfloat yoffset = dPriv ? (GLfloat) dPriv->y + dPriv->h : 0;
-   const GLfloat *v = ctx->Viewport._WindowMap.m;
-   const GLboolean render_to_fbo = (ctx->DrawBuffer ? (ctx->DrawBuffer->Name != 0) : 0);
-   const GLfloat depthScale = 1.0F / ctx->DrawBuffer->_DepthMaxF;
+   __DRIdrawable *dPriv = radeon_get_drawable(&rmesa->radeon);
+   GLfloat xoffset = 0;
+   GLfloat yoffset = dPriv ? (GLfloat) dPriv->h : 0;
+   const GLboolean render_to_fbo = (ctx->DrawBuffer ? _mesa_is_user_fbo(ctx->DrawBuffer) : 0);
+   float scale[3], translate[3];
    GLfloat y_scale, y_bias;
 
    if (render_to_fbo) {
@@ -1601,12 +1555,13 @@ void r200UpdateWindow( GLcontext *ctx )
       y_bias = yoffset;
    }
 
-   float_ui32_type sx = { v[MAT_SX] };
-   float_ui32_type tx = { v[MAT_TX] + xoffset };
-   float_ui32_type sy = { v[MAT_SY] * y_scale };
-   float_ui32_type ty = { (v[MAT_TY] * y_scale) + y_bias };
-   float_ui32_type sz = { v[MAT_SZ] * depthScale };
-   float_ui32_type tz = { v[MAT_TZ] * depthScale };
+   _mesa_get_viewport_xform(ctx, 0, scale, translate);
+   float_ui32_type sx = { scale[0] };
+   float_ui32_type sy = { scale[1] * y_scale };
+   float_ui32_type sz = { scale[2] };
+   float_ui32_type tx = { translate[0] + xoffset };
+   float_ui32_type ty = { (translate[1] * y_scale) + y_bias };
+   float_ui32_type tz = { translate[2] };
 
    R200_STATECHANGE( rmesa, vpt );
 
@@ -1618,7 +1573,7 @@ void r200UpdateWindow( GLcontext *ctx )
    rmesa->hw.vpt.cmd[VPT_SE_VPORT_ZOFFSET] = tz.ui32;
 }
 
-void r200_vtbl_update_scissor( GLcontext *ctx )
+void r200_vtbl_update_scissor( struct gl_context *ctx )
 {
    r200ContextPtr r200 = R200_CONTEXT(ctx);
    unsigned x1, y1, x2, y2;
@@ -1635,8 +1590,8 @@ void r200_vtbl_update_scissor( GLcontext *ctx )
       rrb = radeon_get_colorbuffer(&r200->radeon);
       x1 = 0;
       y1 = 0;
-      x2 = rrb->base.Width - 1;
-      y2 = rrb->base.Height - 1;
+      x2 = rrb->base.Base.Width - 1;
+      y2 = rrb->base.Base.Height - 1;
    }
 
    R200_SET_STATE(r200, sci, SCI_XY_1, x1 | (y1 << 16));
@@ -1644,8 +1599,7 @@ void r200_vtbl_update_scissor( GLcontext *ctx )
 }
 
 
-static void r200Viewport( GLcontext *ctx, GLint x, GLint y,
-			    GLsizei width, GLsizei height )
+static void r200Viewport(struct gl_context *ctx)
 {
    /* Don't pipeline viewport changes, conflict with window offset
     * setting below.  Could apply deltas to rescue pipelined viewport
@@ -1653,91 +1607,19 @@ static void r200Viewport( GLcontext *ctx, GLint x, GLint y,
     */
    r200UpdateWindow( ctx );
 
-   radeon_viewport(ctx, x, y, width, height);
+   radeon_viewport(ctx);
 }
 
-static void r200DepthRange( GLcontext *ctx, GLclampd nearval,
-			      GLclampd farval )
+static void r200DepthRange(struct gl_context *ctx)
 {
    r200UpdateWindow( ctx );
 }
-
-void r200UpdateViewportOffset( GLcontext *ctx )
-{
-   r200ContextPtr rmesa = R200_CONTEXT(ctx);
-   __DRIdrawablePrivate *dPriv = radeon_get_drawable(&rmesa->radeon);
-   GLfloat xoffset = (GLfloat)dPriv->x;
-   GLfloat yoffset = (GLfloat)dPriv->y + dPriv->h;
-   const GLfloat *v = ctx->Viewport._WindowMap.m;
-
-   float_ui32_type tx;
-   float_ui32_type ty;
-
-   tx.f = v[MAT_TX] + xoffset;
-   ty.f = (- v[MAT_TY]) + yoffset;
-
-   if ( rmesa->hw.vpt.cmd[VPT_SE_VPORT_XOFFSET] != tx.ui32 ||
-	rmesa->hw.vpt.cmd[VPT_SE_VPORT_YOFFSET] != ty.ui32 )
-   {
-      /* Note: this should also modify whatever data the context reset
-       * code uses...
-       */
-      R200_STATECHANGE( rmesa, vpt );
-      rmesa->hw.vpt.cmd[VPT_SE_VPORT_XOFFSET] = tx.ui32;
-      rmesa->hw.vpt.cmd[VPT_SE_VPORT_YOFFSET] = ty.ui32;
-
-      /* update polygon stipple x/y screen offset */
-      {
-         GLuint stx, sty;
-         GLuint m = rmesa->hw.msc.cmd[MSC_RE_MISC];
-
-         m &= ~(R200_STIPPLE_X_OFFSET_MASK |
-                R200_STIPPLE_Y_OFFSET_MASK);
-
-         /* add magic offsets, then invert */
-         stx = 31 - ((dPriv->x - 1) & R200_STIPPLE_COORD_MASK);
-         sty = 31 - ((dPriv->y + dPriv->h - 1)
-                     & R200_STIPPLE_COORD_MASK);
-
-         m |= ((stx << R200_STIPPLE_X_OFFSET_SHIFT) |
-               (sty << R200_STIPPLE_Y_OFFSET_SHIFT));
-
-         if ( rmesa->hw.msc.cmd[MSC_RE_MISC] != m ) {
-            R200_STATECHANGE( rmesa, msc );
-	    rmesa->hw.msc.cmd[MSC_RE_MISC] = m;
-         }
-      }
-   }
-
-   radeonUpdateScissor( ctx );
-}
-
-
 
 /* =============================================================
  * Miscellaneous
  */
 
-static void r200ClearColor( GLcontext *ctx, const GLfloat c[4] )
-{
-   r200ContextPtr rmesa = R200_CONTEXT(ctx);
-   GLubyte color[4];
-   struct radeon_renderbuffer *rrb;
-
-   rrb = radeon_get_colorbuffer(&rmesa->radeon);
-   if (!rrb)
-     return;
-   CLAMPED_FLOAT_TO_UBYTE(color[0], c[0]);
-   CLAMPED_FLOAT_TO_UBYTE(color[1], c[1]);
-   CLAMPED_FLOAT_TO_UBYTE(color[2], c[2]);
-   CLAMPED_FLOAT_TO_UBYTE(color[3], c[3]);
-   rmesa->radeon.state.color.clear = radeonPackColor( rrb->cpp,
-                                             color[0], color[1],
-                                             color[2], color[3] );
-}
-
-
-static void r200RenderMode( GLcontext *ctx, GLenum mode )
+static void r200RenderMode( struct gl_context *ctx, GLenum mode )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    FALLBACK( rmesa, R200_FALLBACK_RENDER_MODE, (mode != GL_RENDER) );
@@ -1763,12 +1645,12 @@ static GLuint r200_rop_tab[] = {
    R200_ROP_SET,
 };
 
-static void r200LogicOpCode( GLcontext *ctx, GLenum opcode )
+static void r200LogicOpCode( struct gl_context *ctx, GLenum opcode )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    GLuint rop = (GLuint)opcode - GL_CLEAR;
 
-   ASSERT( rop < 16 );
+   assert( rop < 16 );
 
    R200_STATECHANGE( rmesa, msk );
    rmesa->hw.msk.cmd[MSK_RB3D_ROPCNTL] = r200_rop_tab[rop];
@@ -1778,14 +1660,14 @@ static void r200LogicOpCode( GLcontext *ctx, GLenum opcode )
  * State enable/disable
  */
 
-static void r200Enable( GLcontext *ctx, GLenum cap, GLboolean state )
+static void r200Enable( struct gl_context *ctx, GLenum cap, GLboolean state )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    GLuint p, flag;
 
    if ( R200_DEBUG & RADEON_STATE )
-      fprintf( stderr, "%s( %s = %s )\n", __FUNCTION__,
-	       _mesa_lookup_enum_by_nr( cap ),
+      fprintf( stderr, "%s( %s = %s )\n", __func__,
+	       _mesa_enum_to_string( cap ),
 	       state ? "GL_TRUE" : "GL_FALSE" );
 
    switch ( cap ) {
@@ -1968,11 +1850,8 @@ static void r200Enable( GLcontext *ctx, GLenum cap, GLboolean state )
    case GL_POINT_SPRITE_ARB:
       R200_STATECHANGE( rmesa, spr );
       if ( state ) {
-	 int i;
-	 for (i = 0; i < 6; i++) {
-	    rmesa->hw.spr.cmd[SPR_POINT_SPRITE_CNTL] |=
-		ctx->Point.CoordReplace[i] << (R200_PS_GEN_TEX_0_SHIFT + i);
-	 }
+	 rmesa->hw.spr.cmd[SPR_POINT_SPRITE_CNTL] |= R200_PS_GEN_TEX_MASK &
+            (ctx->Point.CoordReplace << R200_PS_GEN_TEX_0_SHIFT);
       } else {
 	 rmesa->hw.spr.cmd[SPR_POINT_SPRITE_CNTL] &= ~R200_PS_GEN_TEX_MASK;
       }
@@ -2140,8 +2019,6 @@ static void r200Enable( GLcontext *ctx, GLenum cap, GLboolean state )
 	    rmesa->hw.tex[unit].cmd[TEX_PP_TXFORMAT] &=
 		~(R200_TXFORMAT_ST_ROUTE_MASK | R200_TXFORMAT_LOOKUP_DISABLE);
 	    rmesa->hw.tex[unit].cmd[TEX_PP_TXFORMAT] |= unit << R200_TXFORMAT_ST_ROUTE_SHIFT;
-	    /* need to guard this with drmSupportsFragmentShader? Should never get here if
-	       we don't announce ATI_fs, right? */
 	    rmesa->hw.tex[unit].cmd[TEX_PP_TXMULTI_CTL] = 0;
          }
 	 R200_STATECHANGE( rmesa, cst );
@@ -2162,13 +2039,13 @@ static void r200Enable( GLcontext *ctx, GLenum cap, GLboolean state )
 }
 
 
-void r200LightingSpaceChange( GLcontext *ctx )
+void r200LightingSpaceChange( struct gl_context *ctx )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    GLboolean tmp;
 
    if (R200_DEBUG & RADEON_STATE)
-      fprintf(stderr, "%s %d BEFORE %x\n", __FUNCTION__, ctx->_NeedEyeCoords,
+      fprintf(stderr, "%s %d BEFORE %x\n", __func__, ctx->_NeedEyeCoords,
 	      rmesa->hw.tcl.cmd[TCL_LIGHT_MODEL_CTL_0]);
 
    if (ctx->_NeedEyeCoords)
@@ -2184,7 +2061,7 @@ void r200LightingSpaceChange( GLcontext *ctx )
    }
 
    if (R200_DEBUG & RADEON_STATE)
-      fprintf(stderr, "%s %d AFTER %x\n", __FUNCTION__, ctx->_NeedEyeCoords,
+      fprintf(stderr, "%s %d AFTER %x\n", __func__, ctx->_NeedEyeCoords,
 	      rmesa->hw.tcl.cmd[TCL_LIGHT_MODEL_CTL_0]);
 }
 
@@ -2219,7 +2096,7 @@ static void upload_matrix_t( r200ContextPtr rmesa, const GLfloat *src, int idx )
 }
 
 
-static void update_texturematrix( GLcontext *ctx )
+static void update_texturematrix( struct gl_context *ctx )
 {
    r200ContextPtr rmesa = R200_CONTEXT( ctx );
    GLuint tpc = rmesa->hw.tcg.cmd[TCG_TEX_PROC_CTL_0];
@@ -2227,14 +2104,14 @@ static void update_texturematrix( GLcontext *ctx )
    int unit;
 
    if (R200_DEBUG & RADEON_STATE)
-      fprintf(stderr, "%s before COMPSEL: %x\n", __FUNCTION__,
+      fprintf(stderr, "%s before COMPSEL: %x\n", __func__,
 	      rmesa->hw.vtx.cmd[VTX_TCL_OUTPUT_COMPSEL]);
 
    rmesa->TexMatEnabled = 0;
    rmesa->TexMatCompSel = 0;
 
    for (unit = 0 ; unit < ctx->Const.MaxTextureUnits; unit++) {
-      if (!ctx->Texture.Unit[unit]._ReallyEnabled)
+      if (!ctx->Texture.Unit[unit]._Current)
 	 continue;
 
       if (ctx->TextureMatrixStack[unit].Top->type != MATRIX_IDENTITY) {
@@ -2277,7 +2154,7 @@ static void update_texturematrix( GLcontext *ctx )
    }
 }
 
-static GLboolean r200ValidateBuffers(GLcontext *ctx)
+GLboolean r200ValidateBuffers(struct gl_context *ctx)
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    struct radeon_renderbuffer *rrb;
@@ -2285,7 +2162,7 @@ static GLboolean r200ValidateBuffers(GLcontext *ctx)
    int i, ret;
 
 	if (RADEON_DEBUG & RADEON_IOCTL)
-		fprintf(stderr, "%s\n", __FUNCTION__);
+		fprintf(stderr, "%s\n", __func__);
    radeon_cs_space_reset_bos(rmesa->radeon.cmdbuf.cs);
 
    rrb = radeon_get_colorbuffer(&rmesa->radeon);
@@ -2303,10 +2180,10 @@ static GLboolean r200ValidateBuffers(GLcontext *ctx)
 				       0, RADEON_GEM_DOMAIN_VRAM);
    }
 
-   for (i = 0; i < ctx->Const.MaxTextureImageUnits; ++i) {
+   for (i = 0; i < ctx->Const.Program[MESA_SHADER_FRAGMENT].MaxTextureImageUnits; ++i) {
       radeonTexObj *t;
 
-      if (!ctx->Texture.Unit[i]._ReallyEnabled)
+      if (!ctx->Texture.Unit[i]._Current)
 	 continue;
 
       t = radeon_tex_obj(ctx->Texture.Unit[i]._Current);
@@ -2327,15 +2204,15 @@ static GLboolean r200ValidateBuffers(GLcontext *ctx)
    return GL_TRUE;
 }
 
-GLboolean r200ValidateState( GLcontext *ctx )
+GLboolean r200ValidateState( struct gl_context *ctx )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    GLuint new_state = rmesa->radeon.NewGLState;
 
    if (new_state & _NEW_BUFFERS) {
-      _mesa_update_framebuffer(ctx);
+      _mesa_update_framebuffer(ctx, ctx->ReadBuffer, ctx->DrawBuffer);
       /* this updates the DrawBuffer's Width/Height if it's a FBO */
-      _mesa_update_draw_buffer_bounds(ctx);
+      _mesa_update_draw_buffer_bounds(ctx, ctx->DrawBuffer);
 
       R200_STATECHANGE(rmesa, ctx);
    }
@@ -2399,7 +2276,7 @@ GLboolean r200ValidateState( GLcontext *ctx )
 }
 
 
-static void r200InvalidateState( GLcontext *ctx, GLuint new_state )
+static void r200InvalidateState( struct gl_context *ctx, GLuint new_state )
 {
    _swrast_InvalidateState( ctx, new_state );
    _swsetup_InvalidateState( ctx, new_state );
@@ -2414,7 +2291,7 @@ static void r200InvalidateState( GLcontext *ctx, GLuint new_state )
  * Should map to inputs just like the generic vertex arrays for vertex progs.
  * In theory there could still be too many and we'd still need a fallback.
  */
-static GLboolean check_material( GLcontext *ctx )
+static GLboolean check_material( struct gl_context *ctx )
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    GLint i;
@@ -2429,13 +2306,13 @@ static GLboolean check_material( GLcontext *ctx )
    return GL_FALSE;
 }
 
-static void r200WrapRunPipeline( GLcontext *ctx )
+static void r200WrapRunPipeline( struct gl_context *ctx )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    GLboolean has_material;
 
    if (0)
-      fprintf(stderr, "%s, newstate: %x\n", __FUNCTION__, rmesa->radeon.NewGLState);
+      fprintf(stderr, "%s, newstate: %x\n", __func__, rmesa->radeon.NewGLState);
 
    /* Validate state:
     */
@@ -2459,12 +2336,18 @@ static void r200WrapRunPipeline( GLcontext *ctx )
 }
 
 
-static void r200PolygonStipple( GLcontext *ctx, const GLubyte *mask )
+static void r200PolygonStipple( struct gl_context *ctx, const GLubyte *mask )
 {
    r200ContextPtr r200 = R200_CONTEXT(ctx);
    GLint i;
 
    radeon_firevertices(&r200->radeon);
+
+   radeon_print(RADEON_STATE, RADEON_TRACE,
+		   "%s(%p) first 32 bits are %x.\n",
+		   __func__,
+		   ctx,
+		   *(uint32_t*)mask);
 
    R200_STATECHANGE(r200, stp);
 
@@ -2476,7 +2359,7 @@ static void r200PolygonStipple( GLcontext *ctx, const GLubyte *mask )
 }
 /* Initialize the driver's state functions.
  */
-void r200InitStateFuncs( struct dd_function_table *functions )
+void r200InitStateFuncs( radeonContextPtr radeon, struct dd_function_table *functions )
 {
    functions->UpdateState		= r200InvalidateState;
    functions->LightingSpaceChange	= r200LightingSpaceChange;
@@ -2484,14 +2367,14 @@ void r200InitStateFuncs( struct dd_function_table *functions )
    functions->DrawBuffer		= radeonDrawBuffer;
    functions->ReadBuffer		= radeonReadBuffer;
 
+   functions->CopyPixels                = _mesa_meta_CopyPixels;
+   functions->DrawPixels                = _mesa_meta_DrawPixels;
+   functions->ReadPixels                = radeonReadPixels;
+
    functions->AlphaFunc			= r200AlphaFunc;
    functions->BlendColor		= r200BlendColor;
    functions->BlendEquationSeparate	= r200BlendEquationSeparate;
    functions->BlendFuncSeparate		= r200BlendFuncSeparate;
-   functions->ClearColor		= r200ClearColor;
-   functions->ClearDepth		= r200ClearDepth;
-   functions->ClearIndex		= NULL;
-   functions->ClearStencil		= r200ClearStencil;
    functions->ClipPlane			= r200ClipPlane;
    functions->ColorMask			= r200ColorMask;
    functions->CullFace			= r200CullFace;
@@ -2501,8 +2384,6 @@ void r200InitStateFuncs( struct dd_function_table *functions )
    functions->Enable			= r200Enable;
    functions->Fogfv			= r200Fogfv;
    functions->FrontFace			= r200FrontFace;
-   functions->Hint			= NULL;
-   functions->IndexMask			= NULL;
    functions->LightModelfv		= r200LightModelfv;
    functions->Lightfv			= r200Lightfv;
    functions->LineStipple		= r200LineStipple;
@@ -2523,7 +2404,7 @@ void r200InitStateFuncs( struct dd_function_table *functions )
 }
 
 
-void r200InitTnlFuncs( GLcontext *ctx )
+void r200InitTnlFuncs( struct gl_context *ctx )
 {
    TNL_CONTEXT(ctx)->Driver.NotifyMaterialChange = r200UpdateMaterial;
    TNL_CONTEXT(ctx)->Driver.RunPipeline = r200WrapRunPipeline;

@@ -1,7 +1,6 @@
 
 /*
  * Mesa 3-D graphics library
- * Version:  5.1
  *
  * Copyright (C) 1999-2003  Brian Paul   All Rights Reserved.
  *
@@ -18,14 +17,16 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  *
  * Authors:
  *    Gareth Hughes
  */
 
+#include "c99_math.h"
 #include "main/glheader.h"
 #include "main/context.h"
 #include "main/macros.h"
@@ -165,13 +166,13 @@ static void ref_norm_transform_normalize( const GLmatrix *mat,
 	    /* Hmmm, don't know how we could test the precalculated
 	     * length case...
 	     */
-            scale = 1.0 / SQRTF( len );
+            scale = 1.0f / sqrtf(len);
 	    SCALE_SCALAR_3V( out[i], scale, t );
          } else {
             out[i][0] = out[i][1] = out[i][2] = 0;
          }
       } else {
-         scale = lengths[i];;
+         scale = lengths[i];
 	 SCALE_SCALAR_3V( out[i], scale, t );
       }
 
@@ -208,7 +209,7 @@ static int test_norm_function( normal_func func, int mtype, long *cycles )
 
    (void) cycles;
 
-   mat->m = (GLfloat *) ALIGN_MALLOC( 16 * sizeof(GLfloat), 16 );
+   mat->m = _mesa_align_malloc( 16 * sizeof(GLfloat), 16 );
    mat->inv = m = mat->m;
 
    init_matrix( m );
@@ -230,7 +231,7 @@ static int test_norm_function( normal_func func, int mtype, long *cycles )
          case VAR:
             break;
          default:
-            _mesa_exit(1);
+            exit(1);
          }
       }
    }
@@ -241,7 +242,7 @@ static int test_norm_function( normal_func func, int mtype, long *cycles )
       ASSIGN_3V( d2[i], 0.0, 0.0, 0.0 );
       for ( j = 0 ; j < 3 ; j++ )
          s[i][j] = rnd();
-      length[i] = 1 / SQRTF( LEN_SQUARED_3FV( s[i] ) );
+      length[i] = 1.0f / sqrtf( LEN_SQUARED_3FV( s[i] ) );
    }
 
    source->data = (GLfloat(*)[4]) s;
@@ -294,15 +295,15 @@ static int test_norm_function( normal_func func, int mtype, long *cycles )
    for ( i = 0 ; i < TEST_COUNT ; i++ ) {
       for ( j = 0 ; j < 3 ; j++ ) {
          if ( significand_match( d[i][j], r[i][j] ) < REQUIRED_PRECISION ) {
-            _mesa_printf( "-----------------------------\n" );
-            _mesa_printf( "(i = %i, j = %i)\n", i, j );
-            _mesa_printf( "%f \t %f \t [ratio = %e - %i bit missed]\n",
+            printf( "-----------------------------\n" );
+            printf( "(i = %i, j = %i)\n", i, j );
+            printf( "%f \t %f \t [ratio = %e - %i bit missed]\n",
 		    d[i][0], r[i][0], r[i][0]/d[i][0],
 		    MAX_PRECISION - significand_match( d[i][0], r[i][0] ) );
-            _mesa_printf( "%f \t %f \t [ratio = %e - %i bit missed]\n",
+            printf( "%f \t %f \t [ratio = %e - %i bit missed]\n",
 		    d[i][1], r[i][1], r[i][1]/d[i][1],
 		    MAX_PRECISION - significand_match( d[i][1], r[i][1] ) );
-            _mesa_printf( "%f \t %f \t [ratio = %e - %i bit missed]\n",
+            printf( "%f \t %f \t [ratio = %e - %i bit missed]\n",
 		    d[i][2], r[i][2], r[i][2]/d[i][2],
 		    MAX_PRECISION - significand_match( d[i][2], r[i][2] ) );
             return 0;
@@ -310,15 +311,15 @@ static int test_norm_function( normal_func func, int mtype, long *cycles )
 
          if ( norm_normalize_types[mtype] != 0 ) {
             if ( significand_match( d2[i][j], r2[i][j] ) < REQUIRED_PRECISION ) {
-               _mesa_printf( "------------------- precalculated length case ------\n" );
-               _mesa_printf( "(i = %i, j = %i)\n", i, j );
-               _mesa_printf( "%f \t %f \t [ratio = %e - %i bit missed]\n",
+               printf( "------------------- precalculated length case ------\n" );
+               printf( "(i = %i, j = %i)\n", i, j );
+               printf( "%f \t %f \t [ratio = %e - %i bit missed]\n",
 		       d2[i][0], r2[i][0], r2[i][0]/d2[i][0],
 		       MAX_PRECISION - significand_match( d2[i][0], r2[i][0] ) );
-               _mesa_printf( "%f \t %f \t [ratio = %e - %i bit missed]\n",
+               printf( "%f \t %f \t [ratio = %e - %i bit missed]\n",
 		       d2[i][1], r2[i][1], r2[i][1]/d2[i][1],
 		       MAX_PRECISION - significand_match( d2[i][1], r2[i][1] ) );
-               _mesa_printf( "%f \t %f \t [ratio = %e - %i bit missed]\n",
+               printf( "%f \t %f \t [ratio = %e - %i bit missed]\n",
 		       d2[i][2], r2[i][2], r2[i][2]/d2[i][2],
 		       MAX_PRECISION - significand_match( d2[i][2], r2[i][2] ) );
                return 0;
@@ -327,7 +328,7 @@ static int test_norm_function( normal_func func, int mtype, long *cycles )
       }
    }
 
-   ALIGN_FREE( mat->m );
+   _mesa_align_free( mat->m );
    return 1;
 }
 
@@ -339,18 +340,18 @@ void _math_test_all_normal_transform_functions( char *description )
 
    if ( first_time ) {
       first_time = 0;
-      mesa_profile = _mesa_getenv( "MESA_PROFILE" );
+      mesa_profile = getenv( "MESA_PROFILE" );
    }
 
 #ifdef RUN_DEBUG_BENCHMARK
    if ( mesa_profile ) {
       if ( !counter_overhead ) {
 	 INIT_COUNTER();
-	 _mesa_printf( "counter overhead: %ld cycles\n\n", counter_overhead );
+	 printf( "counter overhead: %ld cycles\n\n", counter_overhead );
       }
-      _mesa_printf( "normal transform results after hooking in %s functions:\n",
+      printf( "normal transform results after hooking in %s functions:\n",
 	      description );
-      _mesa_printf( "\n-------------------------------------------------------\n" );
+      printf( "\n-------------------------------------------------------\n" );
    }
 #endif
 
@@ -360,21 +361,21 @@ void _math_test_all_normal_transform_functions( char *description )
 
       if ( test_norm_function( func, mtype, cycles ) == 0 ) {
 	 char buf[100];
-	 _mesa_sprintf( buf, "_mesa_normal_tab[0][%s] failed test (%s)",
+	 sprintf( buf, "_mesa_normal_tab[0][%s] failed test (%s)",
 		  norm_strings[mtype], description );
-	 _mesa_problem( NULL, buf );
+	 _mesa_problem( NULL, "%s", buf );
       }
 
 #ifdef RUN_DEBUG_BENCHMARK
       if ( mesa_profile ) {
-	 _mesa_printf( " %li\t", benchmark_tab[mtype] );
-	 _mesa_printf( " | [%s]\n", norm_strings[mtype] );
+	 printf( " %li\t", benchmark_tab[mtype] );
+	 printf( " | [%s]\n", norm_strings[mtype] );
       }
 #endif
    }
 #ifdef RUN_DEBUG_BENCHMARK
    if ( mesa_profile ) {
-      _mesa_printf( "\n" );
+      printf( "\n" );
    }
 #endif
 }

@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2003 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -37,6 +37,8 @@
 #include "main/mtypes.h"
 #include "main/enums.h"
 
+#include "math/m_xform.h"
+
 #include "tnl/t_context.h"
 #include "tnl/t_vertex.h"
 #include "tnl/t_pipeline.h"
@@ -52,58 +54,53 @@
  * dma buffers.  Use strip/fan hardware primitives where possible.
  * Try to simulate missing primitives with indexed vertices.
  */
-#define HAVE_POINTS      0      /* Has it, but can't use because subpixel has to
-                                 * be adjusted for points on the INTEL/I845G
-                                 */
+#define HAVE_POINTS      1
 #define HAVE_LINES       1
 #define HAVE_LINE_STRIPS 1
 #define HAVE_TRIANGLES   1
 #define HAVE_TRI_STRIPS  1
-#define HAVE_TRI_STRIP_1 0      /* has it, template can't use it yet */
 #define HAVE_TRI_FANS    1
 #define HAVE_POLYGONS    1
-#define HAVE_QUADS       0
-#define HAVE_QUAD_STRIPS 0
 
 #define HAVE_ELTS        0
 
-static uint32_t hw_prim[GL_POLYGON + 1] = {
-   0,
-   PRIM3D_LINELIST,
-   PRIM3D_LINESTRIP,
-   PRIM3D_LINESTRIP,
-   PRIM3D_TRILIST,
-   PRIM3D_TRISTRIP,
-   PRIM3D_TRIFAN,
-   0,
-   0,
-   PRIM3D_POLY
+static const uint32_t hw_prim[GL_POLYGON + 1] = {
+   [GL_POINTS] = PRIM3D_POINTLIST,
+   [GL_LINES ] = PRIM3D_LINELIST,
+   [GL_LINE_LOOP] = PRIM3D_LINESTRIP,
+   [GL_LINE_STRIP] = PRIM3D_LINESTRIP,
+   [GL_TRIANGLES] = PRIM3D_TRILIST,
+   [GL_TRIANGLE_STRIP] = PRIM3D_TRISTRIP,
+   [GL_TRIANGLE_FAN] = PRIM3D_TRIFAN,
+   [GL_QUADS] = 0,
+   [GL_QUAD_STRIP] = 0,
+   [GL_POLYGON] = PRIM3D_POLY,
 };
 
 static const GLenum reduced_prim[GL_POLYGON + 1] = {
-   GL_POINTS,
-   GL_LINES,
-   GL_LINES,
-   GL_LINES,
-   GL_TRIANGLES,
-   GL_TRIANGLES,
-   GL_TRIANGLES,
-   GL_TRIANGLES,
-   GL_TRIANGLES,
-   GL_TRIANGLES
+   [GL_POINTS] = GL_POINTS,
+   [GL_LINES] = GL_LINES,
+   [GL_LINE_LOOP] = GL_LINES,
+   [GL_LINE_STRIP] = GL_LINES,
+   [GL_TRIANGLES] = GL_TRIANGLES,
+   [GL_TRIANGLE_STRIP] = GL_TRIANGLES,
+   [GL_TRIANGLE_FAN] = GL_TRIANGLES,
+   [GL_QUADS] = GL_TRIANGLES,
+   [GL_QUAD_STRIP] = GL_TRIANGLES,
+   [GL_POLYGON] = GL_TRIANGLES,
 };
 
 static const int scale_prim[GL_POLYGON + 1] = {
-   0,                           /* fallback case */
-   1,
-   2,
-   2,
-   1,
-   3,
-   3,
-   0,                           /* fallback case */
-   0,                           /* fallback case */
-   3
+   [GL_POINTS] = 1,
+   [GL_LINES] = 1,
+   [GL_LINE_LOOP] = 2,
+   [GL_LINE_STRIP] = 2,
+   [GL_TRIANGLES] = 1,
+   [GL_TRIANGLE_STRIP] = 3,
+   [GL_TRIANGLE_FAN] = 3,
+   [GL_QUADS] = 0,              /* fallback case */
+   [GL_QUAD_STRIP] = 0,         /* fallback case */
+   [GL_POLYGON] = 3,
 };
 
 
@@ -111,31 +108,37 @@ static void
 intelDmaPrimitive(struct intel_context *intel, GLenum prim)
 {
    if (0)
-      fprintf(stderr, "%s %s\n", __FUNCTION__, _mesa_lookup_enum_by_nr(prim));
+      fprintf(stderr, "%s %s\n", __func__, _mesa_enum_to_string(prim));
    INTEL_FIREVERTICES(intel);
    intel->vtbl.reduced_primitive_state(intel, reduced_prim[prim]);
    intel_set_prim(intel, hw_prim[prim]);
 }
 
-static INLINE GLuint intel_get_vb_max(struct intel_context *intel)
+#define INTEL_NO_VBO_STATE_RESERVED 1500
+
+static inline GLuint intel_get_vb_max(struct intel_context *intel)
 {
    GLuint ret;
 
-   if (intel->intelScreen->no_vbo)
-      ret = intel->batch->size - 1500;
-   else
+   if (intel->intelScreen->no_vbo) {
+      ret = intel->batch.bo->size - INTEL_NO_VBO_STATE_RESERVED;
+   } else
       ret = INTEL_VB_SIZE;
    ret /= (intel->vertex_size * 4);
    return ret;
 }
 
-static INLINE GLuint intel_get_current_max(struct intel_context *intel)
+static inline GLuint intel_get_current_max(struct intel_context *intel)
 {
+   GLuint ret;
 
-   if (intel->intelScreen->no_vbo)
-      return intel_get_vb_max(intel);
-   else
-      return (INTEL_VB_SIZE - intel->prim.current_offset) / (intel->vertex_size * 4);
+   if (intel->intelScreen->no_vbo) {
+      ret = intel_batchbuffer_space(intel);
+      ret = ret <= INTEL_NO_VBO_STATE_RESERVED ? 0 : ret - INTEL_NO_VBO_STATE_RESERVED;
+   } else
+      ret = (INTEL_VB_SIZE - intel->prim.current_offset);
+
+   return ret / (intel->vertex_size * 4);
 }
 
 #define LOCAL_VARS struct intel_context *intel = intel_context(ctx)
@@ -164,7 +167,7 @@ do {						\
 
 /* Heuristic to choose between the two render paths:  
  */
-static GLboolean
+static bool
 choose_render(struct intel_context *intel, struct vertex_buffer *VB)
 {
    int vertsz = intel->vertex_size;
@@ -207,14 +210,14 @@ choose_render(struct intel_context *intel, struct vertex_buffer *VB)
               cost_render, cost_fallback);
 
    if (cost_render > cost_fallback)
-      return GL_FALSE;
+      return false;
 
-   return GL_TRUE;
+   return true;
 }
 
 
 static GLboolean
-intel_run_render(GLcontext * ctx, struct tnl_pipeline_stage *stage)
+intel_run_render(struct gl_context * ctx, struct tnl_pipeline_stage *stage)
 {
    struct intel_context *intel = intel_context(ctx);
    TNLcontext *tnl = TNL_CONTEXT(ctx);
@@ -227,7 +230,7 @@ intel_run_render(GLcontext * ctx, struct tnl_pipeline_stage *stage)
     */
    if (intel->RenderIndex != 0 ||
        !intel_validate_render(ctx, VB) || !choose_render(intel, VB)) {
-      return GL_TRUE;
+      return true;
    }
 
    tnl->clipspace.new_inputs |= VERT_BIT_POS;
@@ -243,14 +246,14 @@ intel_run_render(GLcontext * ctx, struct tnl_pipeline_stage *stage)
          continue;
 
       intel_render_tab_verts[prim & PRIM_MODE_MASK] (ctx, start,
-                                                     start + length, prim);
+                                                     length, prim);
    }
 
    tnl->Driver.Render.Finish(ctx);
 
    INTEL_FIREVERTICES(intel);
 
-   return GL_FALSE;             /* finished the pipe */
+   return false;             /* finished the pipe */
 }
 
 static const struct tnl_pipeline_stage _intel_render_stage = {
@@ -264,7 +267,6 @@ static const struct tnl_pipeline_stage _intel_render_stage = {
 
 const struct tnl_pipeline_stage *intel_pipeline[] = {
    &_tnl_vertex_transform_stage,
-   &_tnl_vertex_cull_stage,
    &_tnl_normal_transform_stage,
    &_tnl_lighting_stage,
    &_tnl_fog_coordinate_stage,

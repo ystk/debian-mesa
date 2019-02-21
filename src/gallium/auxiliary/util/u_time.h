@@ -1,6 +1,6 @@
 /**************************************************************************
  *
- * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2008 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -29,7 +29,7 @@
  * @file
  * OS independent time-manipulation functions.
  * 
- * @author Jose Fonseca <jrfonseca@tungstengraphics.com>
+ * @author Jose Fonseca <jfonseca@vmware.com>
  */
 
 #ifndef U_TIME_H_
@@ -38,15 +38,7 @@
 
 #include "pipe/p_config.h"
 
-#if defined(PIPE_OS_LINUX) || defined(PIPE_OS_BSD) || defined(PIPE_OS_SOLARIS) || defined(PIPE_OS_APPLE)
-#include <time.h> /* timeval */
-#include <unistd.h> /* usleep */
-#endif
-
-#if defined(PIPE_OS_HAIKU)
-#include <sys/time.h> /* timeval */
-#include <unistd.h>
-#endif
+#include "os/os_time.h"
 
 #include "pipe/p_compiler.h"
 
@@ -63,43 +55,92 @@ extern "C" {
  */
 struct util_time 
 {
-#if defined(PIPE_OS_LINUX) || defined(PIPE_OS_BSD) || defined(PIPE_OS_SOLARIS) || defined(PIPE_OS_APPLE) || defined(PIPE_OS_HAIKU)
-   struct timeval tv;
-#else
    int64_t counter;
-#endif
 };
    
 
-void 
-util_time_get(struct util_time *t);
+PIPE_DEPRECATED
+static inline void
+util_time_get(struct util_time *t)
+{
+   t->counter = os_time_get();
+}
 
-void 
+
+/**
+ * Return t2 = t1 + usecs
+ */
+PIPE_DEPRECATED
+static inline void
 util_time_add(const struct util_time *t1,
               int64_t usecs,
-              struct util_time *t2);
+              struct util_time *t2)
+{
+   t2->counter = t1->counter + usecs;
+}
 
-uint64_t
-util_time_micros( void );
 
-int64_t
+/**
+ * Return difference between times, in microseconds
+ */
+PIPE_DEPRECATED
+static inline int64_t
 util_time_diff(const struct util_time *t1, 
-               const struct util_time *t2);
+               const struct util_time *t2)
+{
+   return t2->counter - t1->counter;
+}
+
+
+/**
+ * Compare two time values.
+ *
+ * Not publicly available because it does not take in account wrap-arounds.
+ * Use util_time_timeout instead.
+ */
+static inline int
+_util_time_compare(const struct util_time *t1,
+                   const struct util_time *t2)
+{
+   if (t1->counter < t2->counter)
+      return -1;
+   else if(t1->counter > t2->counter)
+      return 1;
+   else
+      return 0;
+}
+
 
 /**
  * Returns non-zero when the timeout expires.
  */
-boolean 
+PIPE_DEPRECATED
+static inline boolean
 util_time_timeout(const struct util_time *start, 
                   const struct util_time *end,
-                  const struct util_time *curr);
+                  const struct util_time *curr)
+{
+   return os_time_timeout(start->counter, end->counter, curr->counter);
+}
 
-#if defined(PIPE_OS_LINUX) || defined(PIPE_OS_BSD) || defined(PIPE_OS_SOLARIS) || defined(PIPE_OS_APPLE) || defined(PIPE_OS_HAIKU)
-#define util_time_sleep usleep
-#else
-void
-util_time_sleep(unsigned usecs);
-#endif
+
+/**
+ * Return current time in microseconds
+ */
+PIPE_DEPRECATED
+static inline int64_t
+util_time_micros(void)
+{
+   return os_time_get();
+}
+
+
+PIPE_DEPRECATED
+static inline void
+util_time_sleep(int64_t usecs)
+{
+   os_time_sleep(usecs);
+}
 
 
 #ifdef	__cplusplus

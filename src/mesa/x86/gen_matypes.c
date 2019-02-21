@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  6.5.1
  *
  * Copyright (C) 1999-2006  Brian Paul   All Rights Reserved.
  *
@@ -17,9 +16,10 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  *
  * Authors:
  *    Gareth Hughes
@@ -31,6 +31,13 @@
  * This will be particularly useful when developing new x86 asm code for
  * Mesa, including lighting, clipping, texture image conversion etc.
  */
+
+#ifndef __STDC_FORMAT_MACROS
+#define __STDC_FORMAT_MACROS
+#endif
+
+#include <stdio.h>
+#include <inttypes.h>
 
 #include "main/glheader.h"
 #include "main/mtypes.h"
@@ -47,7 +54,7 @@ do {									\
    printf( "\n" );							\
    printf( "/* ====================================================="	\
 	   "========\n" );						\
-   printf( " * Offsets for %s\n", x );					\
+   printf( " * Offsets for " x "\n" );					\
    printf( " */\n" );							\
    printf( "\n" );							\
 } while (0)
@@ -56,19 +63,42 @@ do {									\
 do {									\
    printf( "\n" );							\
    printf( "/*\n" );							\
-   printf( " * Flags for %s\n", x );					\
+   printf( " * Flags for " x "\n" );					\
    printf( " */\n" );							\
    printf( "\n" );							\
 } while (0)
 
-#define OFFSET( s, t, m )						\
-   printf( "#define %s\t%lu\n", s, (unsigned long) offsetof( t, m ) );
+#ifdef ASM_OFFSETS
 
-#define SIZEOF( s, t )							\
-   printf( "#define %s\t%lu\n", s, (unsigned long) sizeof(t) );
+/*
+ * Format the asm output in a special way that we can manipulate
+ * after the fact and turn into the final header for the target.
+ */
+
+#define DEFINE_UL( s, ul )						\
+   __asm__ __volatile__ ( "\n->" s " %0" : : "i" (ul) )
 
 #define DEFINE( s, d )							\
-   printf( "#define %s\t0x%x\n", s, d );
+   DEFINE_UL( s, d )
+
+#define printf( x )							\
+   __asm__ __volatile__ ( "\n->" x )
+
+#else
+
+#define DEFINE_UL( s, ul )						\
+   printf( "#define %s\t%lu\n", s, (unsigned long) (ul) );
+
+#define DEFINE( s, d )							\
+   printf( "#define %s\t0x%" PRIx64 "\n", s, (uint64_t) d );
+
+#endif
+
+#define OFFSET( s, t, m )						\
+   DEFINE_UL( s, offsetof( t, m ) )
+
+#define SIZEOF( s, t )							\
+   DEFINE_UL( s, sizeof(t) )
 
 
 
@@ -84,22 +114,20 @@ int main( int argc, char **argv )
    printf( "\n" );
 
 
-   /* GLcontext offsets:
+   /* struct gl_context offsets:
     */
-   OFFSET_HEADER( "GLcontext" );
+   OFFSET_HEADER( "struct gl_context" );
 
-   OFFSET( "CTX_DRIVER_CTX              ", GLcontext, DriverCtx );
    printf( "\n" );
-   OFFSET( "CTX_LIGHT_ENABLED           ", GLcontext, Light.Enabled );
-   OFFSET( "CTX_LIGHT_SHADE_MODEL       ", GLcontext, Light.ShadeModel );
-   OFFSET( "CTX_LIGHT_COLOR_MAT_FACE    ", GLcontext, Light.ColorMaterialFace );
-   OFFSET( "CTX_LIGHT_COLOR_MAT_MODE    ", GLcontext, Light.ColorMaterialMode );
-   OFFSET( "CTX_LIGHT_COLOR_MAT_MASK    ", GLcontext, Light.ColorMaterialBitmask );
-   OFFSET( "CTX_LIGHT_COLOR_MAT_ENABLED ", GLcontext, Light.ColorMaterialEnabled );
-   OFFSET( "CTX_LIGHT_ENABLED_LIST      ", GLcontext, Light.EnabledList );
-   OFFSET( "CTX_LIGHT_NEED_VERTS        ", GLcontext, Light._NeedVertices );
-   OFFSET( "CTX_LIGHT_FLAGS             ", GLcontext, Light._Flags );
-   OFFSET( "CTX_LIGHT_BASE_COLOR        ", GLcontext, Light._BaseColor );
+   OFFSET( "CTX_LIGHT_ENABLED           ", struct gl_context, Light.Enabled );
+   OFFSET( "CTX_LIGHT_SHADE_MODEL       ", struct gl_context, Light.ShadeModel );
+   OFFSET( "CTX_LIGHT_COLOR_MAT_FACE    ", struct gl_context, Light.ColorMaterialFace );
+   OFFSET( "CTX_LIGHT_COLOR_MAT_MODE    ", struct gl_context, Light.ColorMaterialMode );
+   OFFSET( "CTX_LIGHT_COLOR_MAT_MASK    ", struct gl_context, Light._ColorMaterialBitmask );
+   OFFSET( "CTX_LIGHT_COLOR_MAT_ENABLED ", struct gl_context, Light.ColorMaterialEnabled );
+   OFFSET( "CTX_LIGHT_ENABLED_LIGHTS    ", struct gl_context, Light._EnabledLights );
+   OFFSET( "CTX_LIGHT_NEED_VERTS        ", struct gl_context, Light._NeedVertices );
+   OFFSET( "CTX_LIGHT_BASE_COLOR        ", struct gl_context, Light._BaseColor );
 
 
    /* struct vertex_buffer offsets:
@@ -110,22 +138,22 @@ int main( int argc, char **argv )
    OFFSET( "VB_COUNT               ", struct vertex_buffer, Count );
    printf( "\n" );
    OFFSET( "VB_ELTS                ", struct vertex_buffer, Elts );
-   OFFSET( "VB_OBJ_PTR             ", struct vertex_buffer, ObjPtr );
+   OFFSET( "VB_OBJ_PTR             ", struct vertex_buffer, AttribPtr[_TNL_ATTRIB_POS] );
    OFFSET( "VB_EYE_PTR             ", struct vertex_buffer, EyePtr );
    OFFSET( "VB_CLIP_PTR            ", struct vertex_buffer, ClipPtr );
    OFFSET( "VB_PROJ_CLIP_PTR       ", struct vertex_buffer, NdcPtr );
    OFFSET( "VB_CLIP_OR_MASK        ", struct vertex_buffer, ClipOrMask );
    OFFSET( "VB_CLIP_MASK           ", struct vertex_buffer, ClipMask );
-   OFFSET( "VB_NORMAL_PTR          ", struct vertex_buffer, NormalPtr );
+   OFFSET( "VB_NORMAL_PTR          ", struct vertex_buffer, AttribPtr[_TNL_ATTRIB_NORMAL] );
    OFFSET( "VB_EDGE_FLAG           ", struct vertex_buffer, EdgeFlag );
-   OFFSET( "VB_TEX0_COORD_PTR      ", struct vertex_buffer, TexCoordPtr[0] );
-   OFFSET( "VB_TEX1_COORD_PTR      ", struct vertex_buffer, TexCoordPtr[1] );
-   OFFSET( "VB_TEX2_COORD_PTR      ", struct vertex_buffer, TexCoordPtr[2] );
-   OFFSET( "VB_TEX3_COORD_PTR      ", struct vertex_buffer, TexCoordPtr[3] );
-   OFFSET( "VB_INDEX_PTR           ", struct vertex_buffer, IndexPtr );
-   OFFSET( "VB_COLOR_PTR           ", struct vertex_buffer, ColorPtr );
-   OFFSET( "VB_SECONDARY_COLOR_PTR ", struct vertex_buffer, SecondaryColorPtr );
-   OFFSET( "VB_FOG_COORD_PTR       ", struct vertex_buffer, FogCoordPtr );
+   OFFSET( "VB_TEX0_COORD_PTR      ", struct vertex_buffer, AttribPtr[_TNL_ATTRIB_TEX0] );
+   OFFSET( "VB_TEX1_COORD_PTR      ", struct vertex_buffer, AttribPtr[_TNL_ATTRIB_TEX1] );
+   OFFSET( "VB_TEX2_COORD_PTR      ", struct vertex_buffer, AttribPtr[_TNL_ATTRIB_TEX2] );
+   OFFSET( "VB_TEX3_COORD_PTR      ", struct vertex_buffer, AttribPtr[_TNL_ATTRIB_TEX3] );
+   OFFSET( "VB_INDEX_PTR           ", struct vertex_buffer, AttribPtr[_TNL_ATTRIB_COLOR_INDEX] );
+   OFFSET( "VB_COLOR_PTR           ", struct vertex_buffer, AttribPtr[_TNL_ATTRIB_COLOR0] );
+   OFFSET( "VB_SECONDARY_COLOR_PTR ", struct vertex_buffer, AttribPtr[_TNL_ATTRIB_COLOR1] );
+   OFFSET( "VB_FOG_COORD_PTR       ", struct vertex_buffer, AttribPtr[_TNL_ATTRIB_FOG] );
    OFFSET( "VB_PRIMITIVE           ", struct vertex_buffer, Primitive );
    printf( "\n" );
 
@@ -180,8 +208,6 @@ int main( int argc, char **argv )
     */
    OFFSET_HEADER( "struct gl_light" );
 
-   OFFSET( "LIGHT_NEXT              ", struct gl_light, next );
-   OFFSET( "LIGHT_PREV              ", struct gl_light, prev );
    printf( "\n" );
    OFFSET( "LIGHT_AMBIENT           ", struct gl_light, Ambient );
    OFFSET( "LIGHT_DIFFUSE           ", struct gl_light, Diffuse );
@@ -204,7 +230,6 @@ int main( int argc, char **argv )
    OFFSET( "LIGHT_NORM_DIRECTION    ", struct gl_light, _NormSpotDirection );
    OFFSET( "LIGHT_VP_INF_SPOT_ATTEN ", struct gl_light, _VP_inf_spot_attenuation );
    printf( "\n" );
-   OFFSET( "LIGHT_SPOT_EXP_TABLE    ", struct gl_light, _SpotExpTable );
    OFFSET( "LIGHT_MAT_AMBIENT       ", struct gl_light, _MatAmbient );
    OFFSET( "LIGHT_MAT_DIFFUSE       ", struct gl_light, _MatDiffuse );
    OFFSET( "LIGHT_MAT_SPECULAR      ", struct gl_light, _MatSpecular );

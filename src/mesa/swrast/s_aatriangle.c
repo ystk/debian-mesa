@@ -1,6 +1,5 @@
 /*
  * Mesa 3-D graphics library
- * Version:  6.5.3
  *
  * Copyright (C) 1999-2007  Brian Paul   All Rights Reserved.
  *
@@ -17,9 +16,10 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * BRIAN PAUL BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
- * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 
@@ -30,10 +30,9 @@
 
 #include "main/glheader.h"
 #include "main/context.h"
-#include "main/colormac.h"
-#include "main/context.h"
 #include "main/macros.h"
 #include "main/imports.h"
+#include "main/state.h"
 #include "s_aatriangle.h"
 #include "s_context.h"
 #include "s_span.h"
@@ -44,7 +43,7 @@
  * vertices and the given Z values.
  * A point (x,y,z) lies on plane iff a*x+b*y+c*z+d = 0.
  */
-static INLINE void
+static inline void
 compute_plane(const GLfloat v0[], const GLfloat v1[], const GLfloat v2[],
               GLfloat z0, GLfloat z1, GLfloat z2, GLfloat plane[4])
 {
@@ -77,7 +76,7 @@ compute_plane(const GLfloat v0[], const GLfloat v1[], const GLfloat v2[],
 /*
  * Compute coefficients of a plane with a constant Z value.
  */
-static INLINE void
+static inline void
 constant_plane(GLfloat value, GLfloat plane[4])
 {
    plane[0] = 0.0;
@@ -99,10 +98,10 @@ do {					\
 /*
  * Solve plane equation for Z at (X,Y).
  */
-static INLINE GLfloat
+static inline GLfloat
 solve_plane(GLfloat x, GLfloat y, const GLfloat plane[4])
 {
-   ASSERT(plane[2] != 0.0F);
+   assert(plane[2] != 0.0F);
    return (plane[3] + plane[0] * x + plane[1] * y) / -plane[2];
 }
 
@@ -112,23 +111,9 @@ solve_plane(GLfloat x, GLfloat y, const GLfloat plane[4])
 
 
 /*
- * Return 1 / solve_plane().
- */
-static INLINE GLfloat
-solve_plane_recip(GLfloat x, GLfloat y, const GLfloat plane[4])
-{
-   const GLfloat denom = plane[3] + plane[0] * x + plane[1] * y;
-   if (denom == 0.0F)
-      return 0.0F;
-   else
-      return -plane[2] / denom;
-}
-
-
-/*
  * Solve plane and return clamped GLchan value.
  */
-static INLINE GLchan
+static inline GLchan
 solve_plane_chan(GLfloat x, GLfloat y, const GLfloat plane[4])
 {
    const GLfloat z = (plane[3] + plane[0] * x + plane[1] * y) / -plane[2];
@@ -144,13 +129,13 @@ solve_plane_chan(GLfloat x, GLfloat y, const GLfloat plane[4])
 }
 
 
-static INLINE GLfloat
+static inline GLfloat
 plane_dx(const GLfloat plane[4])
 {
    return -plane[0] / plane[2];
 }
 
-static INLINE GLfloat
+static inline GLfloat
 plane_dy(const GLfloat plane[4])
 {
    return -plane[1] / plane[2];
@@ -215,12 +200,7 @@ compute_coveragef(const GLfloat v0[3], const GLfloat v1[3],
    GLint stop = 4, i;
    GLfloat insideCount = 16.0F;
 
-#ifdef DEBUG
-   {
-      const GLfloat area = dx0 * dy1 - dx1 * dy0;
-      ASSERT(area >= 0.0);
-   }
-#endif
+   assert(dx0 * dy1 - dx1 * dy0 >= 0.0); /* area >= 0.0 */
 
    for (i = 0; i < stop; i++) {
       const GLfloat sx = x + samples[i][0];
@@ -268,121 +248,24 @@ compute_coveragef(const GLfloat v0[3], const GLfloat v1[3],
 
 
 
-/*
- * Compute how much (area) of the given pixel is inside the triangle.
- * Vertices MUST be specified in counter-clockwise order.
- * Return:  coverage in [0, 15].
- */
-static GLint
-compute_coveragei(const GLfloat v0[3], const GLfloat v1[3],
-                  const GLfloat v2[3], GLint winx, GLint winy)
-{
-   /* NOTE: 15 samples instead of 16. */
-   static const GLfloat samples[15][2] = {
-      /* start with the four corners */
-      { POS(0, 2), POS(0, 0) },
-      { POS(3, 3), POS(0, 2) },
-      { POS(0, 0), POS(3, 1) },
-      { POS(3, 1), POS(3, 3) },
-      /* continue with interior samples */
-      { POS(1, 1), POS(0, 1) },
-      { POS(2, 0), POS(0, 3) },
-      { POS(0, 3), POS(1, 3) },
-      { POS(1, 2), POS(1, 0) },
-      { POS(2, 3), POS(1, 2) },
-      { POS(3, 2), POS(1, 1) },
-      { POS(0, 1), POS(2, 2) },
-      { POS(1, 0), POS(2, 1) },
-      { POS(2, 1), POS(2, 3) },
-      { POS(3, 0), POS(2, 0) },
-      { POS(1, 3), POS(3, 0) }
-   };
-   const GLfloat x = (GLfloat) winx;
-   const GLfloat y = (GLfloat) winy;
-   const GLfloat dx0 = v1[0] - v0[0];
-   const GLfloat dy0 = v1[1] - v0[1];
-   const GLfloat dx1 = v2[0] - v1[0];
-   const GLfloat dy1 = v2[1] - v1[1];
-   const GLfloat dx2 = v0[0] - v2[0];
-   const GLfloat dy2 = v0[1] - v2[1];
-   GLint stop = 4, i;
-   GLint insideCount = 15;
-
-#ifdef DEBUG
-   {
-      const GLfloat area = dx0 * dy1 - dx1 * dy0;
-      ASSERT(area >= 0.0);
-   }
-#endif
-
-   for (i = 0; i < stop; i++) {
-      const GLfloat sx = x + samples[i][0];
-      const GLfloat sy = y + samples[i][1];
-      const GLfloat fx0 = sx - v0[0];
-      const GLfloat fy0 = sy - v0[1];
-      const GLfloat fx1 = sx - v1[0];
-      const GLfloat fy1 = sy - v1[1];
-      const GLfloat fx2 = sx - v2[0];
-      const GLfloat fy2 = sy - v2[1];
-      /* cross product determines if sample is inside or outside each edge */
-      GLfloat cross0 = (dx0 * fy0 - dy0 * fx0);
-      GLfloat cross1 = (dx1 * fy1 - dy1 * fx1);
-      GLfloat cross2 = (dx2 * fy2 - dy2 * fx2);
-      /* Check if the sample is exactly on an edge.  If so, let cross be a
-       * positive or negative value depending on the direction of the edge.
-       */
-      if (cross0 == 0.0F)
-         cross0 = dx0 + dy0;
-      if (cross1 == 0.0F)
-         cross1 = dx1 + dy1;
-      if (cross2 == 0.0F)
-         cross2 = dx2 + dy2;
-      if (cross0 < 0.0F || cross1 < 0.0F || cross2 < 0.0F) {
-         /* point is outside triangle */
-         insideCount--;
-         stop = 15;
-      }
-   }
-   if (stop == 4)
-      return 15;
-   else
-      return insideCount;
-}
-
-
 static void
-rgba_aa_tri(GLcontext *ctx,
+rgba_aa_tri(struct gl_context *ctx,
 	    const SWvertex *v0,
 	    const SWvertex *v1,
 	    const SWvertex *v2)
 {
 #define DO_Z
-#define DO_RGBA
 #include "s_aatritemp.h"
 }
 
 
 static void
-index_aa_tri(GLcontext *ctx,
-	     const SWvertex *v0,
-	     const SWvertex *v1,
-	     const SWvertex *v2)
-{
-#define DO_Z
-#define DO_ATTRIBS
-#define DO_INDEX
-#include "s_aatritemp.h"
-}
-
-
-static void
-general_aa_tri(GLcontext *ctx,
+general_aa_tri(struct gl_context *ctx,
                const SWvertex *v0,
                const SWvertex *v1,
                const SWvertex *v2)
 {
 #define DO_Z
-#define DO_RGBA
 #define DO_ATTRIBS
 #include "s_aatritemp.h"
 }
@@ -394,24 +277,21 @@ general_aa_tri(GLcontext *ctx,
  * appropriate antialiased triangle rasterizer function.
  */
 void
-_swrast_set_aa_triangle_function(GLcontext *ctx)
+_swrast_set_aa_triangle_function(struct gl_context *ctx)
 {
    SWcontext *swrast = SWRAST_CONTEXT(ctx);
 
-   ASSERT(ctx->Polygon.SmoothFlag);
+   assert(ctx->Polygon.SmoothFlag);
 
    if (ctx->Texture._EnabledCoordUnits != 0
-       || ctx->FragmentProgram._Current
+       || _swrast_use_fragment_program(ctx)
        || swrast->_FogEnabled
-       || NEED_SECONDARY_COLOR(ctx)) {
+       || _mesa_need_secondary_color(ctx)) {
       SWRAST_CONTEXT(ctx)->Triangle = general_aa_tri;
    }
-   else if (ctx->Visual.rgbMode) {
+   else {
       SWRAST_CONTEXT(ctx)->Triangle = rgba_aa_tri;
    }
-   else {
-      SWRAST_CONTEXT(ctx)->Triangle = index_aa_tri;
-   }
 
-   ASSERT(SWRAST_CONTEXT(ctx)->Triangle);
+   assert(SWRAST_CONTEXT(ctx)->Triangle);
 }

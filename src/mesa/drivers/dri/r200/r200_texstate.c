@@ -29,7 +29,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 /*
  * Authors:
- *   Keith Whitwell <keith@tungstengraphics.com>
+ *   Keith Whitwell <keithw@vmware.com>
  */
 
 #include "main/glheader.h"
@@ -49,97 +49,8 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "r200_tex.h"
 #include "r200_tcl.h"
 
-
-#define R200_TXFORMAT_A8        R200_TXFORMAT_I8
-#define R200_TXFORMAT_L8        R200_TXFORMAT_I8
-#define R200_TXFORMAT_AL88      R200_TXFORMAT_AI88
-#define R200_TXFORMAT_YCBCR     R200_TXFORMAT_YVYU422
-#define R200_TXFORMAT_YCBCR_REV R200_TXFORMAT_VYUY422
-#define R200_TXFORMAT_RGB_DXT1  R200_TXFORMAT_DXT1
-#define R200_TXFORMAT_RGBA_DXT1 R200_TXFORMAT_DXT1
-#define R200_TXFORMAT_RGBA_DXT3 R200_TXFORMAT_DXT23
-#define R200_TXFORMAT_RGBA_DXT5 R200_TXFORMAT_DXT45
-
-#define _COLOR(f) \
-    [ MESA_FORMAT_ ## f ] = { R200_TXFORMAT_ ## f, 0 }
-#define _COLOR_REV(f) \
-    [ MESA_FORMAT_ ## f ## _REV ] = { R200_TXFORMAT_ ## f, 0 }
-#define _ALPHA(f) \
-    [ MESA_FORMAT_ ## f ] = { R200_TXFORMAT_ ## f | R200_TXFORMAT_ALPHA_IN_MAP, 0 }
-#define _ALPHA_REV(f) \
-    [ MESA_FORMAT_ ## f ## _REV ] = { R200_TXFORMAT_ ## f | R200_TXFORMAT_ALPHA_IN_MAP, 0 }
-#define _YUV(f) \
-    [ MESA_FORMAT_ ## f ] = { R200_TXFORMAT_ ## f, R200_YUV_TO_RGB }
-#define _INVALID(f) \
-    [ MESA_FORMAT_ ## f ] = { 0xffffffff, 0 }
 #define VALID_FORMAT(f) ( ((f) <= MESA_FORMAT_RGBA_DXT5) \
-			     && (tx_table_be[f].format != 0xffffffff) )
-
-struct tx_table {
-   GLuint format, filter;
-};
-
-static const struct tx_table tx_table_be[] =
-{
-   [ MESA_FORMAT_RGBA8888 ] = { R200_TXFORMAT_ABGR8888 | R200_TXFORMAT_ALPHA_IN_MAP, 0 },
-   _ALPHA_REV(RGBA8888),
-   _ALPHA(ARGB8888),
-   _ALPHA_REV(ARGB8888),
-   _INVALID(RGB888),
-   _COLOR(RGB565),
-   _COLOR_REV(RGB565),
-   _ALPHA(ARGB4444),
-   _ALPHA_REV(ARGB4444),
-   _ALPHA(ARGB1555),
-   _ALPHA_REV(ARGB1555),
-   _ALPHA(AL88),
-   _ALPHA_REV(AL88),
-   _ALPHA(A8),
-   _COLOR(L8),
-   _ALPHA(I8),
-   _INVALID(CI8),
-   _YUV(YCBCR),
-   _YUV(YCBCR_REV),
-   _INVALID(RGB_FXT1),
-   _INVALID(RGBA_FXT1),
-   _COLOR(RGB_DXT1),
-   _ALPHA(RGBA_DXT1),
-   _ALPHA(RGBA_DXT3),
-   _ALPHA(RGBA_DXT5),
-};
-
-static const struct tx_table tx_table_le[] =
-{
-   _ALPHA(RGBA8888),
-   [ MESA_FORMAT_RGBA8888_REV ] = { R200_TXFORMAT_ABGR8888 | R200_TXFORMAT_ALPHA_IN_MAP, 0 },
-   _ALPHA(ARGB8888),
-   _ALPHA_REV(ARGB8888),
-   [ MESA_FORMAT_RGB888 ] = { R200_TXFORMAT_ARGB8888, 0 },
-   _COLOR(RGB565),
-   _COLOR_REV(RGB565),
-   _ALPHA(ARGB4444),
-   _ALPHA_REV(ARGB4444),
-   _ALPHA(ARGB1555),
-   _ALPHA_REV(ARGB1555),
-   _ALPHA(AL88),
-   _ALPHA_REV(AL88),
-   _ALPHA(A8),
-   _COLOR(L8),
-   _ALPHA(I8),
-   _INVALID(CI8),
-   _YUV(YCBCR),
-   _YUV(YCBCR_REV),
-   _INVALID(RGB_FXT1),
-   _INVALID(RGBA_FXT1),
-   _COLOR(RGB_DXT1),
-   _ALPHA(RGBA_DXT1),
-   _ALPHA(RGBA_DXT3),
-   _ALPHA(RGBA_DXT5),
-};
-
-#undef _COLOR
-#undef _ALPHA
-#undef _INVALID
+                             && (tx_table_be[f].format != 0xffffffff) )
 
 /* ================================================================
  * Texture combine functions
@@ -302,7 +213,7 @@ do {							\
  * Texture unit state management
  */
 
-static GLboolean r200UpdateTextureEnv( GLcontext *ctx, int unit, int slot, GLuint replaceargs )
+static GLboolean r200UpdateTextureEnv( struct gl_context *ctx, int unit, int slot, GLuint replaceargs )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    const struct gl_texture_unit *texUnit = &ctx->Texture.Unit[unit];
@@ -314,14 +225,8 @@ static GLboolean r200UpdateTextureEnv( GLcontext *ctx, int unit, int slot, GLuin
       ~(R200_TXA_DOT_ALPHA | R200_TXA_SCALE_MASK | R200_TXA_OUTPUT_REG_MASK |
 	R200_TXA_TFACTOR_SEL_MASK | R200_TXA_TFACTOR1_SEL_MASK);
 
-   /* texUnit->_Current can be NULL if and only if the texture unit is
-    * not actually enabled.
-    */
-   assert( (texUnit->_ReallyEnabled == 0)
-	   || (texUnit->_Current != NULL) );
-
    if ( R200_DEBUG & RADEON_TEXTURE ) {
-      fprintf( stderr, "%s( %p, %d )\n", __FUNCTION__, (void *)ctx, unit );
+      fprintf( stderr, "%s( %p, %d )\n", __func__, (void *)ctx, unit );
    }
 
    /* Set the texture environment state.  Isn't this nice and clean?
@@ -338,7 +243,7 @@ static GLboolean r200UpdateTextureEnv( GLcontext *ctx, int unit, int slot, GLuin
 			(unit << R200_TXA_TFACTOR_SEL_SHIFT) |
 			(replaceargs << R200_TXA_TFACTOR1_SEL_SHIFT);
 
-   if ( !texUnit->_ReallyEnabled ) {
+   if ( !texUnit->_Current ) {
       assert( unit == 0);
       color_combine = R200_TXC_ARG_A_ZERO | R200_TXC_ARG_B_ZERO
 	  | R200_TXC_ARG_C_DIFFUSE_COLOR | R200_TXC_OP_MADD;
@@ -727,69 +632,24 @@ static GLboolean r200UpdateTextureEnv( GLcontext *ctx, int unit, int slot, GLuin
    return GL_TRUE;
 }
 
-void r200SetTexOffset(__DRIcontext * pDRICtx, GLint texname,
-		      unsigned long long offset, GLint depth, GLuint pitch)
-{
-	r200ContextPtr rmesa = pDRICtx->driverPrivate;
-	struct gl_texture_object *tObj =
-	    _mesa_lookup_texture(rmesa->radeon.glCtx, texname);
-	radeonTexObjPtr t = radeon_tex_obj(tObj);
-
-	if (!tObj)
-		return;
-
-	t->image_override = GL_TRUE;
-
-	if (!offset)
-		return;
-
-	t->bo = NULL;
-	t->override_offset = offset;
-	t->pp_txpitch = pitch - 32;
-
-	switch (depth) {
-	case 32:
-		t->pp_txformat = tx_table_le[MESA_FORMAT_ARGB8888].format;
-		t->pp_txfilter |= tx_table_le[MESA_FORMAT_ARGB8888].filter;
-		break;
-	case 24:
-	default:
-		t->pp_txformat = tx_table_le[MESA_FORMAT_RGB888].format;
-		t->pp_txfilter |= tx_table_le[MESA_FORMAT_RGB888].filter;
-		break;
-	case 16:
-		t->pp_txformat = tx_table_le[MESA_FORMAT_RGB565].format;
-		t->pp_txfilter |= tx_table_le[MESA_FORMAT_RGB565].filter;
-		break;
-	}
-}
-
-void r200SetTexBuffer2(__DRIcontext *pDRICtx, GLint target, GLint glx_texture_format,
+void r200SetTexBuffer2(__DRIcontext *pDRICtx, GLint target, GLint texture_format,
 		       __DRIdrawable *dPriv)
 {
-	struct gl_texture_unit *texUnit;
 	struct gl_texture_object *texObj;
 	struct gl_texture_image *texImage;
 	struct radeon_renderbuffer *rb;
 	radeon_texture_image *rImage;
 	radeonContextPtr radeon;
-	r200ContextPtr rmesa;
 	struct radeon_framebuffer *rfb;
 	radeonTexObjPtr t;
 	uint32_t pitch_val;
-	uint32_t internalFormat, type, format;
-
-	type = GL_BGRA;
-	format = GL_UNSIGNED_BYTE;
-	internalFormat = (glx_texture_format == GLX_TEXTURE_FORMAT_RGB_EXT ? 3 : 4);
+	mesa_format texFormat;
 
 	radeon = pDRICtx->driverPrivate;
-	rmesa = pDRICtx->driverPrivate;
 
 	rfb = dPriv->driverPrivate;
-        texUnit = &radeon->glCtx->Texture.Unit[radeon->glCtx->Texture.CurrentUnit];
-	texObj = _mesa_select_tex_object(radeon->glCtx, texUnit, target);
-        texImage = _mesa_get_tex_image(radeon->glCtx, texObj, target, 0);
+	texObj = _mesa_get_current_tex_object(&radeon->glCtx, target);
+	texImage = _mesa_get_tex_image(&radeon->glCtx, texObj, target, 0);
 
 	rImage = get_radeon_texture_image(texImage);
 	t = radeon_tex_obj(texObj);
@@ -797,25 +657,14 @@ void r200SetTexBuffer2(__DRIcontext *pDRICtx, GLint target, GLint glx_texture_fo
     	    return;
     	}
 
-	radeon_update_renderbuffers(pDRICtx, dPriv);
-	/* back & depth buffer are useless free them right away */
-	rb = (void*)rfb->base.Attachment[BUFFER_DEPTH].Renderbuffer;
-	if (rb && rb->bo) {
-		radeon_bo_unref(rb->bo);
-        rb->bo = NULL;
-	}
-	rb = (void*)rfb->base.Attachment[BUFFER_BACK_LEFT].Renderbuffer;
-	if (rb && rb->bo) {
-		radeon_bo_unref(rb->bo);
-		rb->bo = NULL;
-	}
+	radeon_update_renderbuffers(pDRICtx, dPriv, GL_TRUE);
 	rb = rfb->color_rb[0];
 	if (rb->bo == NULL) {
 		/* Failed to BO for the buffer */
 		return;
 	}
-	
-	_mesa_lock_texture(radeon->glCtx, texObj);
+
+	_mesa_lock_texture(&radeon->glCtx, texObj);
 	if (t->bo) {
 		radeon_bo_unref(t->bo);
 		t->bo = NULL;
@@ -828,10 +677,6 @@ void r200SetTexBuffer2(__DRIcontext *pDRICtx, GLint target, GLint glx_texture_fo
 	radeon_miptree_unreference(&t->mt);
 	radeon_miptree_unreference(&rImage->mt);
 
-	_mesa_init_teximage_fields(radeon->glCtx, target, texImage,
-				   rb->base.Width, rb->base.Height, 1, 0, rb->cpp);
-	texImage->RowStride = rb->pitch / rb->cpp;
-
 	rImage->bo = rb->bo;
 	radeon_bo_ref(rImage->bo);
 	t->bo = rb->bo;
@@ -843,44 +688,69 @@ void r200SetTexBuffer2(__DRIcontext *pDRICtx, GLint target, GLint glx_texture_fo
 	pitch_val = rb->pitch;
 	switch (rb->cpp) {
 	case 4:
-		if (glx_texture_format == GLX_TEXTURE_FORMAT_RGB_EXT)
-			t->pp_txformat = tx_table_le[MESA_FORMAT_RGB888].format;
-		else
-			t->pp_txformat = tx_table_le[MESA_FORMAT_ARGB8888].format;
-		t->pp_txfilter |= tx_table_le[MESA_FORMAT_ARGB8888].filter;
+		if (texture_format == __DRI_TEXTURE_FORMAT_RGB) {
+			texFormat = MESA_FORMAT_BGR_UNORM8;
+			t->pp_txformat = tx_table_le[MESA_FORMAT_BGR_UNORM8].format;
+		}
+		else {
+			texFormat = MESA_FORMAT_B8G8R8A8_UNORM;
+			t->pp_txformat = tx_table_le[MESA_FORMAT_B8G8R8A8_UNORM].format;
+		}
+		t->pp_txfilter |= tx_table_le[MESA_FORMAT_B8G8R8A8_UNORM].filter;
 		break;
 	case 3:
 	default:
-		t->pp_txformat = tx_table_le[MESA_FORMAT_RGB888].format;
-		t->pp_txfilter |= tx_table_le[MESA_FORMAT_RGB888].filter;
+		texFormat = MESA_FORMAT_BGR_UNORM8;
+		t->pp_txformat = tx_table_le[MESA_FORMAT_BGR_UNORM8].format;
+		t->pp_txfilter |= tx_table_le[MESA_FORMAT_BGR_UNORM8].filter;
 		break;
 	case 2:
-		t->pp_txformat = tx_table_le[MESA_FORMAT_RGB565].format;
-		t->pp_txfilter |= tx_table_le[MESA_FORMAT_RGB565].filter;
+		texFormat = MESA_FORMAT_B5G6R5_UNORM;
+		t->pp_txformat = tx_table_le[MESA_FORMAT_B5G6R5_UNORM].format;
+		t->pp_txfilter |= tx_table_le[MESA_FORMAT_B5G6R5_UNORM].filter;
 		break;
 	}
-        t->pp_txsize = ((rb->base.Width - 1) << RADEON_TEX_USIZE_SHIFT)
-		   | ((rb->base.Height - 1) << RADEON_TEX_VSIZE_SHIFT);
-        t->pp_txformat |= R200_TXFORMAT_NON_POWER2;
-	t->pp_txpitch = pitch_val;
-        t->pp_txpitch -= 32;
+
+	_mesa_init_teximage_fields(&radeon->glCtx, texImage,
+				   rb->base.Base.Width, rb->base.Base.Height,
+				   1, 0,
+				   rb->cpp, texFormat);
+	rImage->base.RowStride = rb->pitch / rb->cpp;
+
+
+        t->pp_txsize = ((rb->base.Base.Width - 1) << RADEON_TEX_USIZE_SHIFT)
+		   | ((rb->base.Base.Height - 1) << RADEON_TEX_VSIZE_SHIFT);
+
+	if (target == GL_TEXTURE_RECTANGLE_NV) {
+		t->pp_txformat |= R200_TXFORMAT_NON_POWER2;
+		t->pp_txpitch = pitch_val;
+		t->pp_txpitch -= 32;
+	} else {
+		t->pp_txformat &= ~(R200_TXFORMAT_WIDTH_MASK |
+				    R200_TXFORMAT_HEIGHT_MASK |
+				    R200_TXFORMAT_CUBIC_MAP_ENABLE |
+				    R200_TXFORMAT_F5_WIDTH_MASK |
+				    R200_TXFORMAT_F5_HEIGHT_MASK);
+		t->pp_txformat |= ((texImage->WidthLog2 << R200_TXFORMAT_WIDTH_SHIFT) |
+				   (texImage->HeightLog2 << R200_TXFORMAT_HEIGHT_SHIFT));
+	}
 
 	t->validated = GL_TRUE;
-	_mesa_unlock_texture(radeon->glCtx, texObj);
+	_mesa_unlock_texture(&radeon->glCtx, texObj);
 	return;
 }
 
 
 void r200SetTexBuffer(__DRIcontext *pDRICtx, GLint target, __DRIdrawable *dPriv)
 {
-        r200SetTexBuffer2(pDRICtx, target, GLX_TEXTURE_FORMAT_RGBA_EXT, dPriv);
+        r200SetTexBuffer2(pDRICtx, target, __DRI_TEXTURE_FORMAT_RGBA, dPriv);
 }
 
 
 #define REF_COLOR 1
 #define REF_ALPHA 2
 
-static GLboolean r200UpdateAllTexEnv( GLcontext *ctx )
+static GLboolean r200UpdateAllTexEnv( struct gl_context *ctx )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    GLint i, j, currslot;
@@ -893,7 +763,7 @@ static GLboolean r200UpdateAllTexEnv( GLcontext *ctx )
 
    /* find highest used unit */
    for ( j = 0; j < R200_MAX_TEXTURE_UNITS; j++) {
-      if (ctx->Texture.Unit[j]._ReallyEnabled) {
+      if (ctx->Texture.Unit[j]._Current) {
 	 maxunitused = j;
       }
    }
@@ -922,7 +792,7 @@ static GLboolean r200UpdateAllTexEnv( GLcontext *ctx )
 
          nextunit[j] = currentnext;
 
-         if (!texUnit->_ReallyEnabled) {
+         if (!texUnit->_Current) {
 	 /* the not enabled stages are referenced "indirectly",
             must not cut off the lower stages */
 	    stageref[j] = REF_COLOR | REF_ALPHA;
@@ -994,8 +864,8 @@ static GLboolean r200UpdateAllTexEnv( GLcontext *ctx )
 
    /* don't enable texture sampling for units if the result is not used */
    for (i = 0; i < R200_MAX_TEXTURE_UNITS; i++) {
-      if (ctx->Texture.Unit[i]._ReallyEnabled && !texregfree[i])
-	 rmesa->state.texture.unit[i].unitneeded = ctx->Texture.Unit[i]._ReallyEnabled;
+      if (ctx->Texture.Unit[i]._Current && !texregfree[i])
+	 rmesa->state.texture.unit[i].unitneeded = 1 << _mesa_tex_target_to_index(ctx, ctx->Texture.Unit[i]._Current->Target);
       else rmesa->state.texture.unit[i].unitneeded = 0;
    }
 
@@ -1006,7 +876,7 @@ static GLboolean r200UpdateAllTexEnv( GLcontext *ctx )
    i = 0;
    while ((i <= maxunitused) && (i >= 0)) {
       /* only output instruction if the results are referenced */
-      if (ctx->Texture.Unit[i]._ReallyEnabled && stageref[i+1]) {
+      if (ctx->Texture.Unit[i]._Current && stageref[i+1]) {
          GLuint replaceunit = i;
 	 /* try to optimize GL_REPLACE away (only one level deep though) */
 	 if (	(ctx->Texture.Unit[i]._CurrentCombine->ModeRGB == GL_REPLACE) &&
@@ -1066,6 +936,7 @@ static GLboolean r200UpdateAllTexEnv( GLcontext *ctx )
 
 #define TEXOBJ_TXFORMAT_X_MASK (R200_DEPTH_LOG2_MASK |		\
                                 R200_TEXCOORD_MASK |		\
+                                R200_MIN_MIP_LEVEL_MASK |	\
                                 R200_CLAMP_Q_MASK | 		\
                                 R200_VOLUME_FILTER_MASK)
 
@@ -1080,7 +951,7 @@ static void disable_tex_obj_state( r200ContextPtr rmesa,
    R200_STATECHANGE( rmesa, ctx );
    rmesa->hw.ctx.cmd[CTX_PP_CNTL] &= ~(R200_TEX_0_ENABLE << unit);
    if (rmesa->radeon.TclFallback & (R200_TCL_FALLBACK_TEXGEN_0<<unit)) {
-      TCL_FALLBACK( rmesa->radeon.glCtx, (R200_TCL_FALLBACK_TEXGEN_0<<unit), GL_FALSE);
+      TCL_FALLBACK( &rmesa->radeon.glCtx, (R200_TCL_FALLBACK_TEXGEN_0<<unit), GL_FALSE);
    }
 
    /* Actually want to keep all units less than max active texture
@@ -1125,11 +996,9 @@ static void import_tex_obj_state( r200ContextPtr rmesa,
 
       R200_STATECHANGE( rmesa, cube[unit] );
       cube_cmd[CUBE_PP_CUBIC_FACES] = texobj->pp_cubic_faces;
-      if (rmesa->radeon.radeonScreen->drmSupportsFragShader) {
-	 /* that value is submitted twice. could change cube atom
-	    to not include that command when new drm is used */
-	 cmd[TEX_PP_CUBIC_FACES] = texobj->pp_cubic_faces;
-      }
+      /* that value is submitted twice. could change cube atom
+         to not include that command when new drm is used */
+      cmd[TEX_PP_CUBIC_FACES] = texobj->pp_cubic_faces;
    }
 
 }
@@ -1213,7 +1082,7 @@ static GLuint r200_need_dis_texgen(const GLbitfield texGenEnabled,
 /*
  * Returns GL_FALSE if fallback required.  
  */
-static GLboolean r200_validate_texgen( GLcontext *ctx, GLuint unit )
+static GLboolean r200_validate_texgen( struct gl_context *ctx, GLuint unit )
 {  
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    const struct gl_texture_unit *texUnit = &ctx->Texture.Unit[unit];
@@ -1242,7 +1111,7 @@ static GLboolean r200_validate_texgen( GLcontext *ctx, GLuint unit )
 						    (unit * 4));
 
    if (0) 
-      fprintf(stderr, "%s unit %d\n", __FUNCTION__, unit);
+      fprintf(stderr, "%s unit %d\n", __func__, unit);
 
    if (texUnit->TexGenEnabled & S_BIT) {
       mode = texUnit->GenS.Mode;
@@ -1395,7 +1264,7 @@ static GLboolean r200_validate_texgen( GLcontext *ctx, GLuint unit )
    return GL_TRUE;
 }
 
-void set_re_cntl_d3d( GLcontext *ctx, int unit, GLboolean use_d3d )
+void set_re_cntl_d3d( struct gl_context *ctx, int unit, GLboolean use_d3d )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
 
@@ -1421,6 +1290,7 @@ static void setup_hardware_state(r200ContextPtr rmesa, radeonTexObj *t)
 {
    const struct gl_texture_image *firstImage = t->base.Image[0][t->minLod];
    GLint log2Width, log2Height, log2Depth, texelBytes;
+   uint extra_size = 0;
 
    if ( t->bo ) {
        return;
@@ -1431,6 +1301,10 @@ static void setup_hardware_state(r200ContextPtr rmesa, radeonTexObj *t)
    log2Depth  = firstImage->DepthLog2;
    texelBytes = _mesa_get_format_bytes(firstImage->TexFormat);
 
+   radeon_print(RADEON_TEXTURE, RADEON_TRACE,
+	"%s(%p, tex %p) log2(w %d, h %d, d %d), texelBytes %d. format %d\n",
+	__func__, rmesa, t, log2Width, log2Height,
+	log2Depth, texelBytes, firstImage->TexFormat);
 
    if (!t->image_override) {
       if (VALID_FORMAT(firstImage->TexFormat)) {
@@ -1443,34 +1317,51 @@ static void setup_hardware_state(r200ContextPtr rmesa, radeonTexObj *t)
 	 
 	 t->pp_txformat |= table[ firstImage->TexFormat ].format;
 	 t->pp_txfilter |= table[ firstImage->TexFormat ].filter;
+
+
       } else {
 	 _mesa_problem(NULL, "unexpected texture format in %s",
-		       __FUNCTION__);
+		       __func__);
 	 return;
       }
    }
 
    t->pp_txfilter &= ~R200_MAX_MIP_LEVEL_MASK;
-   t->pp_txfilter |= (t->maxLod - t->minLod) << R200_MAX_MIP_LEVEL_SHIFT;
-	
+   t->pp_txfilter |= ((t->maxLod) << R200_MAX_MIP_LEVEL_SHIFT)
+	   & R200_MAX_MIP_LEVEL_MASK;
+
+   if ( t->pp_txfilter &
+		(R200_MIN_FILTER_NEAREST_MIP_NEAREST
+		 | R200_MIN_FILTER_NEAREST_MIP_LINEAR
+		 | R200_MIN_FILTER_LINEAR_MIP_NEAREST
+		 | R200_MIN_FILTER_LINEAR_MIP_LINEAR
+		 | R200_MIN_FILTER_ANISO_NEAREST_MIP_NEAREST
+		 | R200_MIN_FILTER_ANISO_NEAREST_MIP_LINEAR))
+		 extra_size = t->minLod;
+
    t->pp_txformat &= ~(R200_TXFORMAT_WIDTH_MASK |
 		       R200_TXFORMAT_HEIGHT_MASK |
 		       R200_TXFORMAT_CUBIC_MAP_ENABLE |
 		       R200_TXFORMAT_F5_WIDTH_MASK |
 		       R200_TXFORMAT_F5_HEIGHT_MASK);
-   t->pp_txformat |= ((log2Width << R200_TXFORMAT_WIDTH_SHIFT) |
-		      (log2Height << R200_TXFORMAT_HEIGHT_SHIFT));
+   t->pp_txformat |= (((log2Width + extra_size) << R200_TXFORMAT_WIDTH_SHIFT) |
+		      ((log2Height + extra_size)<< R200_TXFORMAT_HEIGHT_SHIFT));
    
    t->tile_bits = 0;
    
-   t->pp_txformat_x &= ~(R200_DEPTH_LOG2_MASK | R200_TEXCOORD_MASK);
+   t->pp_txformat_x &= ~(R200_DEPTH_LOG2_MASK | R200_TEXCOORD_MASK
+		   | R200_MIN_MIP_LEVEL_MASK);
+
+   t->pp_txformat_x |= (t->minLod << R200_MIN_MIP_LEVEL_SHIFT)
+	   & R200_MIN_MIP_LEVEL_MASK;
+
    if (t->base.Target == GL_TEXTURE_3D) {
       t->pp_txformat_x |= (log2Depth << R200_DEPTH_LOG2_SHIFT);
       t->pp_txformat_x |= R200_TEXCOORD_VOLUME;
 
    }
    else if (t->base.Target == GL_TEXTURE_CUBE_MAP) {
-      ASSERT(log2Width == log2Height);
+      assert(log2Width == log2Height);
       t->pp_txformat |= ((log2Width << R200_TXFORMAT_F5_WIDTH_SHIFT) |
 			 (log2Height << R200_TXFORMAT_F5_HEIGHT_SHIFT) |
 			 /* don't think we need this bit, if it exists at all - fglrx does not set it */
@@ -1491,7 +1382,7 @@ static void setup_hardware_state(r200ContextPtr rmesa, radeonTexObj *t)
        */
       t->pp_txformat_x |= R200_TEXCOORD_PROJ;
    }
-
+   /* FIXME: NPOT sizes, is it correct really? */
    t->pp_txsize = (((firstImage->Width - 1) << R200_PP_TX_WIDTHMASK_SHIFT)
 		   | ((firstImage->Height - 1) << R200_PP_TX_HEIGHTMASK_SHIFT));
 
@@ -1509,12 +1400,12 @@ static void setup_hardware_state(r200ContextPtr rmesa, radeonTexObj *t)
 
 }
 
-static GLboolean r200_validate_texture(GLcontext *ctx, struct gl_texture_object *texObj, int unit)
+static GLboolean r200_validate_texture(struct gl_context *ctx, struct gl_texture_object *texObj, int unit)
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    radeonTexObj *t = radeon_tex_obj(texObj);
 
-   if (!radeon_validate_texture_miptree(ctx, texObj))
+   if (!radeon_validate_texture_miptree(ctx, _mesa_get_samplerobj(ctx, unit), texObj))
       return GL_FALSE;
 
    r200_validate_texgen(ctx, unit);
@@ -1536,6 +1427,7 @@ static GLboolean r200_validate_texture(GLcontext *ctx, struct gl_texture_object 
    rmesa->hw.vtx.cmd[VTX_TCL_OUTPUT_VTXFMT_1] |= 4 << (unit * 3);
 
    rmesa->recheck_texgen[unit] = GL_TRUE;
+   r200TexUpdateParameters(ctx, unit);
    import_tex_obj_state( rmesa, unit, t );
 
    if (rmesa->recheck_texgen[unit]) {
@@ -1552,7 +1444,7 @@ static GLboolean r200_validate_texture(GLcontext *ctx, struct gl_texture_object 
    return !t->border_fallback;
 }
 
-static GLboolean r200UpdateTextureUnit(GLcontext *ctx, int unit)
+static GLboolean r200UpdateTextureUnit(struct gl_context *ctx, int unit)
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    GLuint unitneeded = rmesa->state.texture.unit[unit].unitneeded;
@@ -1576,7 +1468,7 @@ static GLboolean r200UpdateTextureUnit(GLcontext *ctx, int unit)
 }
 
 
-void r200UpdateTextureState( GLcontext *ctx )
+void r200UpdateTextureState( struct gl_context *ctx )
 {
    r200ContextPtr rmesa = R200_CONTEXT(ctx);
    GLboolean ok;
@@ -1591,7 +1483,10 @@ void r200UpdateTextureState( GLcontext *ctx )
    if (ctx->ATIFragmentShader._Enabled) {
       GLuint i;
       for (i = 0; i < R200_MAX_TEXTURE_UNITS; i++) {
-	 rmesa->state.texture.unit[i].unitneeded = ctx->Texture.Unit[i]._ReallyEnabled;
+         if (ctx->Texture.Unit[i]._Current)
+            rmesa->state.texture.unit[i].unitneeded = 1 << _mesa_tex_target_to_index(ctx, ctx->Texture.Unit[i]._Current->Target);
+         else
+            rmesa->state.texture.unit[i].unitneeded = 0;
       }
       ok = GL_TRUE;
    }

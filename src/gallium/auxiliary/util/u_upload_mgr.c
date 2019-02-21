@@ -30,8 +30,8 @@
  */
 
 #include "pipe/p_defines.h"
-#include "pipe/p_inlines.h"
-#include "pipe/p_screen.h"
+#include "util/u_inlines.h"
+#include "pipe/p_context.h"
 #include "util/u_memory.h"
 #include "util/u_math.h"
 
@@ -39,194 +39,251 @@
 
 
 struct u_upload_mgr {
-   struct pipe_screen *screen;
+   struct pipe_context *pipe;
 
-   unsigned default_size;
-   unsigned alignment;
-   unsigned usage;
+   unsigned default_size;  /* Minimum size of the upload buffer, in bytes. */
+   unsigned bind;          /* Bitmask of PIPE_BIND_* flags. */
+   enum pipe_resource_usage usage;
+   unsigned map_flags;     /* Bitmask of PIPE_TRANSFER_* flags. */
+   boolean map_persistent; /* If persistent mappings are supported. */
 
-   /* The active buffer:
-    */
-   struct pipe_buffer *buffer;
-   unsigned size;
-   unsigned offset;
+   struct pipe_resource *buffer;   /* Upload buffer. */
+   struct pipe_transfer *transfer; /* Transfer object for the upload buffer. */
+   uint8_t *map;    /* Pointer to the mapped upload buffer. */
+   unsigned offset; /* Aligned offset to the upload buffer, pointing
+                     * at the first unused byte. */
 };
 
 
-struct u_upload_mgr *u_upload_create( struct pipe_screen *screen,
-                                      unsigned default_size,
-                                      unsigned alignment,
-                                      unsigned usage )
+struct u_upload_mgr *
+u_upload_create(struct pipe_context *pipe, unsigned default_size,
+                unsigned bind, enum pipe_resource_usage usage)
 {
    struct u_upload_mgr *upload = CALLOC_STRUCT( u_upload_mgr );
+   if (!upload)
+      return NULL;
 
+   upload->pipe = pipe;
    upload->default_size = default_size;
-   upload->screen = screen;
-   upload->alignment = alignment;
+   upload->bind = bind;
    upload->usage = usage;
-   upload->buffer = NULL;
+
+   upload->map_persistent =
+      pipe->screen->get_param(pipe->screen,
+                              PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT);
+
+   if (upload->map_persistent) {
+      upload->map_flags = PIPE_TRANSFER_WRITE |
+                          PIPE_TRANSFER_PERSISTENT |
+                          PIPE_TRANSFER_COHERENT;
+   }
+   else {
+      upload->map_flags = PIPE_TRANSFER_WRITE |
+                          PIPE_TRANSFER_UNSYNCHRONIZED |
+                          PIPE_TRANSFER_FLUSH_EXPLICIT;
+   }
 
    return upload;
 }
 
 
-static INLINE enum pipe_error
-my_buffer_write(struct pipe_screen *screen,
-                struct pipe_buffer *buf,
-                unsigned offset, unsigned size, unsigned dirty_size,
-                const void *data)
+static void upload_unmap_internal(struct u_upload_mgr *upload, boolean destroying)
 {
-   uint8_t *map;
-   
-   assert(offset < buf->size);
-   assert(offset + size <= buf->size);
-   assert(dirty_size >= size);
-   assert(size);
+   if (!destroying && upload->map_persistent)
+      return;
 
-   map = pipe_buffer_map_range(screen, buf, offset, size, 
-                               PIPE_BUFFER_USAGE_CPU_WRITE |
-                               PIPE_BUFFER_USAGE_FLUSH_EXPLICIT |
-                               PIPE_BUFFER_USAGE_DISCARD |
-                               PIPE_BUFFER_USAGE_UNSYNCHRONIZED);
-   if (map == NULL) 
-      return PIPE_ERROR_OUT_OF_MEMORY;
+   if (upload->transfer) {
+      struct pipe_box *box = &upload->transfer->box;
 
-   memcpy(map + offset, data, size);
-   pipe_buffer_flush_mapped_range(screen, buf, offset, dirty_size);
-   pipe_buffer_unmap(screen, buf);
+      if (!upload->map_persistent && (int) upload->offset > box->x) {
+         pipe_buffer_flush_mapped_range(upload->pipe, upload->transfer,
+                                        box->x, upload->offset - box->x);
+      }
 
-   return PIPE_OK;
+      pipe_transfer_unmap(upload->pipe, upload->transfer);
+      upload->transfer = NULL;
+      upload->map = NULL;
+   }
 }
 
-/* Release old buffer.
- * 
- * This must usually be called prior to firing the command stream
- * which references the upload buffer, as many memory managers will
- * cause subsequent maps of a fired buffer to wait.
- *
- * Can improve this with a change to pipe_buffer_write to use the
- * DONT_WAIT bit, but for now, it's easiest just to grab a new buffer.
- */
-void u_upload_flush( struct u_upload_mgr *upload )
+
+void u_upload_unmap( struct u_upload_mgr *upload )
 {
-   pipe_buffer_reference( &upload->buffer, NULL );
-   upload->size = 0;
+   upload_unmap_internal(upload, FALSE);
+}
+
+
+static void u_upload_release_buffer(struct u_upload_mgr *upload)
+{
+   /* Unmap and unreference the upload buffer. */
+   upload_unmap_internal(upload, TRUE);
+   pipe_resource_reference( &upload->buffer, NULL );
 }
 
 
 void u_upload_destroy( struct u_upload_mgr *upload )
 {
-   u_upload_flush( upload );
+   u_upload_release_buffer( upload );
    FREE( upload );
 }
 
 
-static enum pipe_error 
-u_upload_alloc_buffer( struct u_upload_mgr *upload,
-                       unsigned min_size )
+static void
+u_upload_alloc_buffer(struct u_upload_mgr *upload,
+                      unsigned min_size)
 {
+   struct pipe_screen *screen = upload->pipe->screen;
+   struct pipe_resource buffer;
    unsigned size;
 
-   /* Release old buffer, if present:
+   /* Release the old buffer, if present:
     */
-   u_upload_flush( upload );
+   u_upload_release_buffer( upload );
 
    /* Allocate a new one: 
     */
    size = align(MAX2(upload->default_size, min_size), 4096);
 
-   upload->buffer = pipe_buffer_create( upload->screen,
-                                        upload->alignment,
-                                        upload->usage | PIPE_BUFFER_USAGE_CPU_WRITE,
-                                        size );
-   if (upload->buffer == NULL) 
-      goto fail;
-   
-   upload->size = size;
+   memset(&buffer, 0, sizeof buffer);
+   buffer.target = PIPE_BUFFER;
+   buffer.format = PIPE_FORMAT_R8_UNORM; /* want TYPELESS or similar */
+   buffer.bind = upload->bind;
+   buffer.usage = upload->usage;
+   buffer.width0 = size;
+   buffer.height0 = 1;
+   buffer.depth0 = 1;
+   buffer.array_size = 1;
 
-   upload->offset = 0;
-   return 0;
-
-fail:
-   if (upload->buffer)
-      pipe_buffer_reference( &upload->buffer, NULL );
-
-   return PIPE_ERROR_OUT_OF_MEMORY;
-}
-
-
-enum pipe_error u_upload_data( struct u_upload_mgr *upload,
-                               unsigned size,
-                               const void *data,
-                               unsigned *out_offset,
-                               struct pipe_buffer **outbuf )
-{
-   unsigned alloc_size = align( size, upload->alignment );
-   enum pipe_error ret = PIPE_OK;
-
-   if (upload->offset + alloc_size > upload->size) {
-      ret = u_upload_alloc_buffer( upload, alloc_size );
-      if (ret)
-         return ret;
+   if (upload->map_persistent) {
+      buffer.flags = PIPE_RESOURCE_FLAG_MAP_PERSISTENT |
+                     PIPE_RESOURCE_FLAG_MAP_COHERENT;
    }
 
-   /* Copy the data, using map_range if available:
-    */
-   ret = my_buffer_write( upload->screen, 
-                          upload->buffer,
-                          upload->offset,
-                          size, 
-                          alloc_size,
-                          data );
-   if (ret)
-      return ret;
+   upload->buffer = screen->resource_create(screen, &buffer);
+   if (upload->buffer == NULL)
+      return;
 
-   /* Emit the return values:
-    */
-   pipe_buffer_reference( outbuf, upload->buffer );
-   *out_offset = upload->offset;
-   upload->offset += alloc_size;
-   return PIPE_OK;
+   /* Map the new buffer. */
+   upload->map = pipe_buffer_map_range(upload->pipe, upload->buffer,
+                                       0, size, upload->map_flags,
+                                       &upload->transfer);
+   if (upload->map == NULL) {
+      upload->transfer = NULL;
+      pipe_resource_reference(&upload->buffer, NULL);
+      return;
+   }
+
+   upload->offset = 0;
 }
 
-
-/* As above, but upload the full contents of a buffer.  Useful for
- * uploading user buffers, avoids generating an explosion of GPU
- * buffers if you have an app that does lots of small vertex buffer
- * renders or DrawElements calls.
- */
-enum pipe_error u_upload_buffer( struct u_upload_mgr *upload,
-                                 unsigned offset,
-                                 unsigned size,
-                                 struct pipe_buffer *inbuf,
-                                 unsigned *out_offset,
-                                 struct pipe_buffer **outbuf )
+void
+u_upload_alloc(struct u_upload_mgr *upload,
+               unsigned min_out_offset,
+               unsigned size,
+               unsigned alignment,
+               unsigned *out_offset,
+               struct pipe_resource **outbuf,
+               void **ptr)
 {
-   enum pipe_error ret = PIPE_OK;
+   unsigned buffer_size = upload->buffer ? upload->buffer->width0 : 0;
+   unsigned offset;
+
+   min_out_offset = align(min_out_offset, alignment);
+
+   offset = align(upload->offset, alignment);
+   offset = MAX2(offset, min_out_offset);
+
+   /* Make sure we have enough space in the upload buffer
+    * for the sub-allocation.
+    */
+   if (unlikely(!upload->buffer || offset + size > buffer_size)) {
+      u_upload_alloc_buffer(upload, min_out_offset + size);
+
+      if (unlikely(!upload->buffer)) {
+         *out_offset = ~0;
+         pipe_resource_reference(outbuf, NULL);
+         *ptr = NULL;
+         return;
+      }
+
+      offset = min_out_offset;
+      buffer_size = upload->buffer->width0;
+   }
+
+   if (unlikely(!upload->map)) {
+      upload->map = pipe_buffer_map_range(upload->pipe, upload->buffer,
+                                          offset,
+                                          buffer_size - offset,
+                                          upload->map_flags,
+					  &upload->transfer);
+      if (unlikely(!upload->map)) {
+         upload->transfer = NULL;
+         *out_offset = ~0;
+         pipe_resource_reference(outbuf, NULL);
+         *ptr = NULL;
+         return;
+      }
+
+      upload->map -= offset;
+   }
+
+   assert(offset < buffer_size);
+   assert(offset + size <= buffer_size);
+   assert(size);
+
+   /* Emit the return values: */
+   *ptr = upload->map + offset;
+   pipe_resource_reference(outbuf, upload->buffer);
+   *out_offset = offset;
+
+   upload->offset = offset + size;
+}
+
+void u_upload_data(struct u_upload_mgr *upload,
+                   unsigned min_out_offset,
+                   unsigned size,
+                   unsigned alignment,
+                   const void *data,
+                   unsigned *out_offset,
+                   struct pipe_resource **outbuf)
+{
+   uint8_t *ptr;
+
+   u_upload_alloc(upload, min_out_offset, size, alignment,
+                  out_offset, outbuf,
+                  (void**)&ptr);
+   if (ptr)
+      memcpy(ptr, data, size);
+}
+
+/* XXX: Remove. It's basically a CPU fallback of resource_copy_region. */
+void u_upload_buffer(struct u_upload_mgr *upload,
+                     unsigned min_out_offset,
+                     unsigned offset,
+                     unsigned size,
+                     unsigned alignment,
+                     struct pipe_resource *inbuf,
+                     unsigned *out_offset,
+                     struct pipe_resource **outbuf)
+{
+   struct pipe_transfer *transfer = NULL;
    const char *map = NULL;
 
-   map = (const char *)pipe_buffer_map( 
-      upload->screen, inbuf, PIPE_BUFFER_USAGE_CPU_READ );
+   map = (const char *)pipe_buffer_map_range(upload->pipe,
+                                             inbuf,
+                                             offset, size,
+                                             PIPE_TRANSFER_READ,
+                                             &transfer);
 
-   if (map == NULL) {
-      ret = PIPE_ERROR_OUT_OF_MEMORY;
-      goto done;
+   if (!map) {
+      pipe_resource_reference(outbuf, NULL);
+      return;
    }
 
    if (0)
       debug_printf("upload ptr %p ofs %d sz %d\n", map, offset, size);
 
-   ret = u_upload_data( upload, 
-                        size,
-                        map + offset,
-                        out_offset,
-                        outbuf );
-   if (ret)
-      goto done;
-
-done:
-   if (map)
-      pipe_buffer_unmap( upload->screen, inbuf );
-
-   return ret;
+   u_upload_data(upload, min_out_offset, size, alignment,
+                 map, out_offset, outbuf);
+   pipe_buffer_unmap( upload->pipe, transfer );
 }

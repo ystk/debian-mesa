@@ -37,14 +37,14 @@ void
 pipe_linear_to_tile(size_t src_stride, const void *src_ptr,
 		    struct pipe_tile_info *t, void *dst_ptr)
 {
-   int x, y, z;
+   unsigned x, y, z;
    char *ptr;
    size_t bytes = t->cols * t->block.size;
    char *dst_ptr2 = (char *) dst_ptr;
 
    assert(pipe_linear_check_tile(t));
 
-   /* lets write lineary to the tiled buffer */
+   /* lets write linearly to the tiled buffer */
    for (y = 0; y < t->tiles_y; y++) {
       for (x = 0; x < t->tiles_x; x++) {
 	 /* this inner loop could be replace with SSE magic */
@@ -61,12 +61,12 @@ pipe_linear_to_tile(size_t src_stride, const void *src_ptr,
 void pipe_linear_from_tile(struct pipe_tile_info *t, const void *src_ptr,
 			   size_t dst_stride, void *dst_ptr)
 {
-   int x, y, z;
+   unsigned x, y, z;
    char *ptr;
    size_t bytes = t->cols * t->block.size;
    const char *src_ptr2 = (const char *) src_ptr;
 
-   /* lets read lineary from the tiled buffer */
+   /* lets read linearly from the tiled buffer */
    for (y = 0; y < t->tiles_y; y++) {
       for (x = 0; x < t->tiles_x; x++) {
 	 /* this inner loop could be replace with SSE magic */
@@ -82,7 +82,7 @@ void pipe_linear_from_tile(struct pipe_tile_info *t, const void *src_ptr,
 
 void
 pipe_linear_fill_info(struct pipe_tile_info *t,
-		      const struct pipe_format_block *block,
+		      const struct u_linear_format_block *block,
 		      unsigned tile_width, unsigned tile_height,
 		      unsigned tiles_x, unsigned tiles_y)
 {

@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2003 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -18,7 +18,7 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL TUNGSTEN GRAPHICS AND/OR ITS SUPPLIERS BE LIABLE FOR
+ * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -35,303 +35,140 @@
  *   Brian Paul
  */
 
-
-
 #include "main/imports.h"
 #include "main/mtypes.h"
-#include "main/macros.h"
-#include "shader/program.h"
+#include "main/framebuffer.h"
+#include "main/texobj.h"
+#include "main/texstate.h"
+#include "program/program.h"
 
 #include "pipe/p_context.h"
 #include "pipe/p_shader_tokens.h"
-
 #include "util/u_simple_shaders.h"
-
 #include "cso_cache/cso_context.h"
+#include "util/u_debug.h"
 
 #include "st_context.h"
 #include "st_atom.h"
 #include "st_program.h"
-#include "st_atom_shader.h"
+#include "st_texture.h"
+
+
+/** Compress the fog function enums into a 2-bit value */
+static GLuint
+translate_fog_mode(GLenum mode)
+{
+   switch (mode) {
+   case GL_LINEAR: return 1;
+   case GL_EXP:    return 2;
+   case GL_EXP2:   return 3;
+   default:
+      return 0;
+   }
+}
+
+static unsigned
+get_texture_target(struct gl_context *ctx, const unsigned unit)
+{
+   struct gl_texture_object *texObj = _mesa_get_tex_unit(ctx, unit)->_Current;
+   gl_texture_index index;
+
+   if (texObj) {
+      index = _mesa_tex_target_to_index(ctx, texObj->Target);
+   } else {
+      /* fallback for missing texture */
+      index = TEXTURE_2D_INDEX;
+   }
+
+   /* Map mesa texture target to TGSI texture target.
+    * Copied from st_mesa_to_tgsi.c, the shadow part is omitted */
+   switch(index) {
+   case TEXTURE_2D_MULTISAMPLE_INDEX: return TGSI_TEXTURE_2D_MSAA;
+   case TEXTURE_2D_MULTISAMPLE_ARRAY_INDEX: return TGSI_TEXTURE_2D_ARRAY_MSAA;
+   case TEXTURE_BUFFER_INDEX: return TGSI_TEXTURE_BUFFER;
+   case TEXTURE_1D_INDEX:   return TGSI_TEXTURE_1D;
+   case TEXTURE_2D_INDEX:   return TGSI_TEXTURE_2D;
+   case TEXTURE_3D_INDEX:   return TGSI_TEXTURE_3D;
+   case TEXTURE_CUBE_INDEX: return TGSI_TEXTURE_CUBE;
+   case TEXTURE_CUBE_ARRAY_INDEX: return TGSI_TEXTURE_CUBE_ARRAY;
+   case TEXTURE_RECT_INDEX: return TGSI_TEXTURE_RECT;
+   case TEXTURE_1D_ARRAY_INDEX:   return TGSI_TEXTURE_1D_ARRAY;
+   case TEXTURE_2D_ARRAY_INDEX:   return TGSI_TEXTURE_2D_ARRAY;
+   case TEXTURE_EXTERNAL_INDEX:   return TGSI_TEXTURE_2D;
+   default:
+      debug_assert(0);
+      return TGSI_TEXTURE_1D;
+   }
+}
 
 
 /**
- * This represents a vertex program, especially translated to match
- * the inputs of a particular fragment shader.
+ * Update fragment program state/atom.  This involves translating the
+ * Mesa fragment program into a gallium fragment program and binding it.
  */
-struct translated_vertex_program
+static void
+update_fp( struct st_context *st )
 {
-   struct st_vertex_program *master;
+   struct st_fragment_program *stfp;
+   struct st_fp_variant_key key;
 
-   /** The fragment shader "signature" this vertex shader is meant for: */
-   GLbitfield frag_inputs;
+   assert(st->ctx->FragmentProgram._Current);
+   stfp = st_fragment_program(st->ctx->FragmentProgram._Current);
+   assert(stfp->Base.Base.Target == GL_FRAGMENT_PROGRAM_ARB);
 
-   /** Compared against master vertex program's serialNo: */
-   GLuint serialNo;
+   memset(&key, 0, sizeof(key));
+   key.st = st->has_shareable_shaders ? NULL : st;
 
-   /** Maps VERT_RESULT_x to slot */
-   GLuint output_to_slot[VERT_RESULT_MAX];
-   ubyte output_to_semantic_name[VERT_RESULT_MAX];
-   ubyte output_to_semantic_index[VERT_RESULT_MAX];
+   /* _NEW_FRAG_CLAMP */
+   key.clamp_color = st->clamp_frag_color_in_shader &&
+                     st->ctx->Color._ClampFragmentColor;
 
-   /** Pointer to the translated vertex program */
-   struct st_vertex_program *vp;
+   /* _NEW_MULTISAMPLE | _NEW_BUFFERS */
+   key.persample_shading =
+      st->force_persample_in_shader &&
+      _mesa_is_multisample_enabled(st->ctx) &&
+      st->ctx->Multisample.SampleShading &&
+      st->ctx->Multisample.MinSampleShadingValue *
+      _mesa_geometric_samples(st->ctx->DrawBuffer) > 1;
 
-   struct translated_vertex_program *next;  /**< next in linked list */
+   if (stfp->ati_fs) {
+      unsigned u;
+
+      if (st->ctx->Fog.Enabled) {
+         key.fog = translate_fog_mode(st->ctx->Fog.Mode);
+      }
+
+      for (u = 0; u < MAX_NUM_FRAGMENT_REGISTERS_ATI; u++) {
+         key.texture_targets[u] = get_texture_target(st->ctx, u);
+      }
+   }
+
+   key.external = st_get_external_sampler_key(st, &stfp->Base.Base);
+
+   st->fp_variant = st_get_fp_variant(st, stfp, &key);
+
+   st_reference_fragprog(st, &st->fp, stfp);
+
+   cso_set_fragment_shader_handle(st->cso_context,
+                                  st->fp_variant->driver_shader);
+}
+
+
+const struct st_tracked_state st_update_fp = {
+   update_fp  					/* update */
 };
 
 
 
 /**
- * Given a vertex program output attribute, return the corresponding
- * fragment program input attribute.
- * \return -1 for vertex outputs that have no corresponding fragment input
+ * Update vertex program state/atom.  This involves translating the
+ * Mesa vertex program into a gallium fragment program and binding it.
  */
-static GLint
-vp_out_to_fp_in(GLuint vertResult)
-{
-   if (vertResult >= VERT_RESULT_TEX0 &&
-       vertResult < VERT_RESULT_TEX0 + MAX_TEXTURE_COORD_UNITS)
-      return FRAG_ATTRIB_TEX0 + (vertResult - VERT_RESULT_TEX0);
-
-   if (vertResult >= VERT_RESULT_VAR0 &&
-       vertResult < VERT_RESULT_VAR0 + MAX_VARYING)
-      return FRAG_ATTRIB_VAR0 + (vertResult - VERT_RESULT_VAR0);
-
-   switch (vertResult) {
-   case VERT_RESULT_HPOS:
-      return FRAG_ATTRIB_WPOS;
-   case VERT_RESULT_COL0:
-      return FRAG_ATTRIB_COL0;
-   case VERT_RESULT_COL1:
-      return FRAG_ATTRIB_COL1;
-   case VERT_RESULT_FOGC:
-      return FRAG_ATTRIB_FOGC;
-   default:
-      /* Back-face colors, edge flags, etc */
-      return -1;
-   }
-}
-
-
-/**
- * Find a translated vertex program that corresponds to stvp and
- * has outputs matched to stfp's inputs.
- * This performs vertex and fragment translation (to TGSI) when needed.
- */
-static struct translated_vertex_program *
-find_translated_vp(struct st_context *st,
-                   struct st_vertex_program *stvp,
-                   struct st_fragment_program *stfp)
-{
-   static const GLuint UNUSED = ~0;
-   struct translated_vertex_program *xvp;
-   const GLbitfield fragInputsRead = stfp->Base.Base.InputsRead;
-
-   /*
-    * Translate fragment program if needed.
-    */
-   if (!stfp->state.tokens) {
-      GLuint inAttr, numIn = 0;
-
-      for (inAttr = 0; inAttr < FRAG_ATTRIB_MAX; inAttr++) {
-         if (fragInputsRead & (1 << inAttr)) {
-            stfp->input_to_slot[inAttr] = numIn;
-            numIn++;
-         }
-         else {
-            stfp->input_to_slot[inAttr] = UNUSED;
-         }
-      }
-
-      stfp->num_input_slots = numIn;
-
-      assert(stfp->Base.Base.NumInstructions > 0);
-
-      st_translate_fragment_program(st, stfp, stfp->input_to_slot);
-   }
-
-
-   /* See if we've got a translated vertex program whose outputs match
-    * the fragment program's inputs.
-    * XXX This could be a hash lookup, using InputsRead as the key.
-    */
-   for (xvp = stfp->vertex_programs; xvp; xvp = xvp->next) {
-      if (xvp->master == stvp && xvp->frag_inputs == fragInputsRead) {
-         break;
-      }
-   }
-
-   /* No?  Allocate translated vp object now */
-   if (!xvp) {
-      xvp = ST_CALLOC_STRUCT(translated_vertex_program);
-      xvp->frag_inputs = fragInputsRead;
-      xvp->master = stvp;
-
-      xvp->next = stfp->vertex_programs;
-      stfp->vertex_programs = xvp;
-   }
-
-   /* See if we need to translate vertex program to TGSI form */
-   if (xvp->serialNo != stvp->serialNo) {
-      GLuint outAttr;
-      const GLbitfield64 outputsWritten = stvp->Base.Base.OutputsWritten;
-      GLuint numVpOuts = 0;
-      GLboolean emitPntSize = GL_FALSE, emitBFC0 = GL_FALSE, emitBFC1 = GL_FALSE;
-      GLbitfield usedGenerics = 0x0;
-      GLbitfield usedOutputSlots = 0x0;
-
-      /* Compute mapping of vertex program outputs to slots, which depends
-       * on the fragment program's input->slot mapping.
-       */
-      for (outAttr = 0; outAttr < VERT_RESULT_MAX; outAttr++) {
-         /* set defaults: */
-         xvp->output_to_slot[outAttr] = UNUSED;
-         xvp->output_to_semantic_name[outAttr] = TGSI_SEMANTIC_COUNT;
-         xvp->output_to_semantic_index[outAttr] = 99;
-
-         if (outAttr == VERT_RESULT_HPOS) {
-            /* always put xformed position into slot zero */
-            GLuint slot = 0;
-            xvp->output_to_slot[VERT_RESULT_HPOS] = slot;
-            xvp->output_to_semantic_name[outAttr] = TGSI_SEMANTIC_POSITION;
-            xvp->output_to_semantic_index[outAttr] = 0;
-            numVpOuts++;
-            usedOutputSlots |= (1 << slot);
-         }
-         else if (outputsWritten & (1 << outAttr)) {
-            /* see if the frag prog wants this vert output */
-            GLint fpInAttrib = vp_out_to_fp_in(outAttr);
-            if (fpInAttrib >= 0) {
-               GLuint fpInSlot = stfp->input_to_slot[fpInAttrib];
-               if (fpInSlot != ~0) {
-                  /* match this vp output to the fp input */
-                  GLuint vpOutSlot = stfp->input_map[fpInSlot];
-                  xvp->output_to_slot[outAttr] = vpOutSlot;
-                  xvp->output_to_semantic_name[outAttr] = stfp->input_semantic_name[fpInSlot];
-                  xvp->output_to_semantic_index[outAttr] = stfp->input_semantic_index[fpInSlot];
-                  numVpOuts++;
-                  usedOutputSlots |= (1 << vpOutSlot);
-               }
-               else {
-#if 0 /*debug*/
-                  printf("VP output %d not used by FP\n", outAttr);
-#endif
-               }
-            }
-            else if (outAttr == VERT_RESULT_PSIZ)
-               emitPntSize = GL_TRUE;
-            else if (outAttr == VERT_RESULT_BFC0)
-               emitBFC0 = GL_TRUE;
-            else if (outAttr == VERT_RESULT_BFC1)
-               emitBFC1 = GL_TRUE;
-         }
-#if 0 /*debug*/
-         printf("assign vp output_to_slot[%d] = %d\n", outAttr, 
-                xvp->output_to_slot[outAttr]);
-#endif
-      }
-
-      /* must do these last */
-      if (emitPntSize) {
-         GLuint slot = numVpOuts++;
-         xvp->output_to_slot[VERT_RESULT_PSIZ] = slot;
-         xvp->output_to_semantic_name[VERT_RESULT_PSIZ] = TGSI_SEMANTIC_PSIZE;
-         xvp->output_to_semantic_index[VERT_RESULT_PSIZ] = 0;
-         usedOutputSlots |= (1 << slot);
-      }
-      if (emitBFC0) {
-         GLuint slot = numVpOuts++;
-         xvp->output_to_slot[VERT_RESULT_BFC0] = slot;
-         xvp->output_to_semantic_name[VERT_RESULT_BFC0] = TGSI_SEMANTIC_COLOR;
-         xvp->output_to_semantic_index[VERT_RESULT_BFC0] = 0;
-         usedOutputSlots |= (1 << slot);
-      }
-      if (emitBFC1) {
-         GLuint slot = numVpOuts++;
-         xvp->output_to_slot[VERT_RESULT_BFC1] = slot;
-         xvp->output_to_semantic_name[VERT_RESULT_BFC1] = TGSI_SEMANTIC_COLOR;
-         xvp->output_to_semantic_index[VERT_RESULT_BFC1] = 1;
-         usedOutputSlots |= (1 << slot);
-      }
-
-      /* build usedGenerics mask */
-      usedGenerics = 0x0;
-      for (outAttr = 0; outAttr < VERT_RESULT_MAX; outAttr++) {
-         if (xvp->output_to_semantic_name[outAttr] == TGSI_SEMANTIC_GENERIC) {
-            usedGenerics |= (1 << xvp->output_to_semantic_index[outAttr]);
-         }
-      }
-
-      /* For each vertex program output that doesn't match up to a fragment
-       * program input, map the vertex program output to a free slot and
-       * free generic attribute.
-       */
-      for (outAttr = 0; outAttr < VERT_RESULT_MAX; outAttr++) {
-         if (outputsWritten & (1 << outAttr)) {
-            if (xvp->output_to_slot[outAttr] == UNUSED) {
-               GLint freeGeneric = _mesa_ffs(~usedGenerics) - 1;
-               GLint freeSlot = _mesa_ffs(~usedOutputSlots) - 1;
-               usedGenerics |= (1 << freeGeneric);
-               usedOutputSlots |= (1 << freeSlot);
-               xvp->output_to_slot[outAttr] = freeSlot;
-               xvp->output_to_semantic_name[outAttr] = TGSI_SEMANTIC_GENERIC;
-               xvp->output_to_semantic_index[outAttr] = freeGeneric;
-            }
-         }
-
-#if 0 /*debug*/
-         printf("vp output_to_slot[%d] = %d\n", outAttr, 
-                xvp->output_to_slot[outAttr]);
-#endif
-      }
-
-      st_translate_vertex_program(st, stvp, xvp->output_to_slot,
-                                  xvp->output_to_semantic_name,
-                                  xvp->output_to_semantic_index);
-
-      xvp->vp = stvp;
-
-      /* translated VP is up to date now */
-      xvp->serialNo = stvp->serialNo;
-   }
-
-   return xvp;
-}
-
-
-void
-st_free_translated_vertex_programs(struct st_context *st,
-                                   struct translated_vertex_program *xvp)
-{
-   struct translated_vertex_program *next;
-
-   while (xvp) {
-      next = xvp->next;
-      _mesa_free(xvp);
-      xvp = next;
-   }
-}
-
-
-static void *
-get_passthrough_fs(struct st_context *st)
-{
-   if (!st->passthrough_fs) {
-      st->passthrough_fs =
-         util_make_fragment_passthrough_shader(st->pipe);
-   }
-
-   return st->passthrough_fs;
-}
-
-
 static void
-update_linkage( struct st_context *st )
+update_vp( struct st_context *st )
 {
    struct st_vertex_program *stvp;
-   struct st_fragment_program *stfp;
-   struct translated_vertex_program *xvp;
+   struct st_vp_variant_key key;
 
    /* find active shader and params -- Should be covered by
     * ST_NEW_VERTEX_PROGRAM
@@ -340,35 +177,151 @@ update_linkage( struct st_context *st )
    stvp = st_vertex_program(st->ctx->VertexProgram._Current);
    assert(stvp->Base.Base.Target == GL_VERTEX_PROGRAM_ARB);
 
-   assert(st->ctx->FragmentProgram._Current);
-   stfp = st_fragment_program(st->ctx->FragmentProgram._Current);
-   assert(stfp->Base.Base.Target == GL_FRAGMENT_PROGRAM_ARB);
+   memset(&key, 0, sizeof key);
+   key.st = st->has_shareable_shaders ? NULL : st;
 
-   xvp = find_translated_vp(st, stvp, stfp);
+   /* When this is true, we will add an extra input to the vertex
+    * shader translation (for edgeflags), an extra output with
+    * edgeflag semantics, and extend the vertex shader to pass through
+    * the input to the output.  We'll need to use similar logic to set
+    * up the extra vertex_element input for edgeflags.
+    */
+   key.passthrough_edgeflags = st->vertdata_edgeflags;
+
+   key.clamp_color = st->clamp_vert_color_in_shader &&
+                     st->ctx->Light._ClampVertexColor &&
+                     (stvp->Base.Base.OutputsWritten &
+                      (VARYING_SLOT_COL0 |
+                       VARYING_SLOT_COL1 |
+                       VARYING_SLOT_BFC0 |
+                       VARYING_SLOT_BFC1));
+
+   st->vp_variant = st_get_vp_variant(st, stvp, &key);
 
    st_reference_vertprog(st, &st->vp, stvp);
-   st_reference_fragprog(st, &st->fp, stfp);
 
-   cso_set_vertex_shader_handle(st->cso_context, stvp->driver_shader);
+   cso_set_vertex_shader_handle(st->cso_context, 
+                                st->vp_variant->driver_shader);
 
-   if (st->missing_textures) {
-      /* use a pass-through frag shader that uses no textures */
-      void *fs = get_passthrough_fs(st);
-      cso_set_fragment_shader_handle(st->cso_context, fs);
-   }
-   else {
-      cso_set_fragment_shader_handle(st->cso_context, stfp->driver_shader);
-   }
-
-   st->vertex_result_to_slot = xvp->output_to_slot;
+   st->vertex_result_to_slot = stvp->result_to_output;
 }
 
 
-const struct st_tracked_state st_update_shader = {
-   "st_update_shader",					/* name */
-   {							/* dirty */
-      0,						/* mesa */
-      ST_NEW_VERTEX_PROGRAM | ST_NEW_FRAGMENT_PROGRAM	/* st */
-   },
-   update_linkage					/* update */
+const struct st_tracked_state st_update_vp = {
+   update_vp						/* update */
+};
+
+
+
+static void
+update_gp( struct st_context *st )
+{
+   struct st_geometry_program *stgp;
+
+   if (!st->ctx->GeometryProgram._Current) {
+      cso_set_geometry_shader_handle(st->cso_context, NULL);
+      st_reference_geomprog(st, &st->gp, NULL);
+      return;
+   }
+
+   stgp = st_geometry_program(st->ctx->GeometryProgram._Current);
+   assert(stgp->Base.Base.Target == GL_GEOMETRY_PROGRAM_NV);
+
+   st->gp_variant = st_get_basic_variant(st, PIPE_SHADER_GEOMETRY,
+                                         &stgp->tgsi, &stgp->variants);
+
+   st_reference_geomprog(st, &st->gp, stgp);
+
+   cso_set_geometry_shader_handle(st->cso_context,
+                                  st->gp_variant->driver_shader);
+}
+
+const struct st_tracked_state st_update_gp = {
+   update_gp  				/* update */
+};
+
+
+
+static void
+update_tcp( struct st_context *st )
+{
+   struct st_tessctrl_program *sttcp;
+
+   if (!st->ctx->TessCtrlProgram._Current) {
+      cso_set_tessctrl_shader_handle(st->cso_context, NULL);
+      st_reference_tesscprog(st, &st->tcp, NULL);
+      return;
+   }
+
+   sttcp = st_tessctrl_program(st->ctx->TessCtrlProgram._Current);
+   assert(sttcp->Base.Base.Target == GL_TESS_CONTROL_PROGRAM_NV);
+
+   st->tcp_variant = st_get_basic_variant(st, PIPE_SHADER_TESS_CTRL,
+                                          &sttcp->tgsi, &sttcp->variants);
+
+   st_reference_tesscprog(st, &st->tcp, sttcp);
+
+   cso_set_tessctrl_shader_handle(st->cso_context,
+                                  st->tcp_variant->driver_shader);
+}
+
+const struct st_tracked_state st_update_tcp = {
+   update_tcp  				/* update */
+};
+
+
+
+static void
+update_tep( struct st_context *st )
+{
+   struct st_tesseval_program *sttep;
+
+   if (!st->ctx->TessEvalProgram._Current) {
+      cso_set_tesseval_shader_handle(st->cso_context, NULL);
+      st_reference_tesseprog(st, &st->tep, NULL);
+      return;
+   }
+
+   sttep = st_tesseval_program(st->ctx->TessEvalProgram._Current);
+   assert(sttep->Base.Base.Target == GL_TESS_EVALUATION_PROGRAM_NV);
+
+   st->tep_variant = st_get_basic_variant(st, PIPE_SHADER_TESS_EVAL,
+                                          &sttep->tgsi, &sttep->variants);
+
+   st_reference_tesseprog(st, &st->tep, sttep);
+
+   cso_set_tesseval_shader_handle(st->cso_context,
+                                  st->tep_variant->driver_shader);
+}
+
+const struct st_tracked_state st_update_tep = {
+   update_tep  				/* update */
+};
+
+
+
+static void
+update_cp( struct st_context *st )
+{
+   struct st_compute_program *stcp;
+
+   if (!st->ctx->ComputeProgram._Current) {
+      cso_set_compute_shader_handle(st->cso_context, NULL);
+      st_reference_compprog(st, &st->cp, NULL);
+      return;
+   }
+
+   stcp = st_compute_program(st->ctx->ComputeProgram._Current);
+   assert(stcp->Base.Base.Target == GL_COMPUTE_PROGRAM_NV);
+
+   st->cp_variant = st_get_cp_variant(st, &stcp->tgsi, &stcp->variants);
+
+   st_reference_compprog(st, &st->cp, stcp);
+
+   cso_set_compute_shader_handle(st->cso_context,
+                                 st->cp_variant->driver_shader);
+}
+
+const struct st_tracked_state st_update_cp = {
+   update_cp  				/* update */
 };
