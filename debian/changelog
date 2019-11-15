@@ -1,3 +1,14 @@
+mesa (10.3.2-1+deb8u2) jessie-security; urgency=high
+
+  * Non-maintainer upload by the LTS Security Team.
+  * CVE-2019-5068: an exploitable shared memory permissions
+    vulnerability exists in the functionality of X11 Mesa 3D Graphics
+    Library 19.1.2. An attacker can access the shared memory without
+    any specific permissions to trigger this vulnerability.
+  * Drop extra .dir-locals.el files (fixes patch-system-but-direct-changes-in-diff).
+
+ -- Sylvain Beucler <beuc@debian.org>  Thu, 14 Nov 2019 17:49:36 +0100
+
 mesa (10.3.2-1+deb8u1) jessie; urgency=medium
 
   [ Timo Aaltonen ]
